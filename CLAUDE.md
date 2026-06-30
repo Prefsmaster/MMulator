@@ -119,22 +119,24 @@ behaviour. This is the key to a manageable cycle-stepped core.
 | Template | T-states | Pin behaviour summary                                            |
 |----------|----------|------------------------------------------------------------------|
 | **M1** (opcode fetch) | 4 | T1: addr=PC, M1 asserted, PC++. T2: MREQ+RD pulse (1 T-state; stretched by Tw while WAIT is asserted). T3: opcode sampled off the data bus; addr=IR refresh address (R *before* increment), RFSH asserted, data bus echoes the sampled opcode; R=(R&0x80)\|((R+1)&0x7F). T4: addr=IR refresh address held, RFSH asserted, no other signals. |
-| **MR** (memory read)  | 3 | T1: addr set, MREQ+RD. T2: WAIT sampled, data sampled. T3: done. |
-| **MW** (memory write) | 3 | T1: addr set, MREQ. T2: WR + data driven. T3: done.             |
-| **IOR** (I/O read)    | 4 | adds one automatic wait T-state; IORQ+RD.                        |
-| **IOW** (I/O write)   | 4 | adds one automatic wait T-state; IORQ+WR.                        |
+| **MR** (memory read)  | 3 | T1: addr set, no signals. T2: MREQ+RD pulse (1 T-state; data still null this tick; stretched by Tw while WAIT is asserted). T3: data now present on the bus, no signals. |
+| **MW** (memory write) | 3 | T1: addr set, no signals. T2: MREQ+WR pulse *with the data already driven this same tick* (stretched by Tw). T3: nothing — no data, no signals. |
+| **IOR** (I/O read)    | 4 | T1: addr set, no signals. T2: addr held, no signals (automatic wait T-state). T3: IORQ+RD pulse, data still null (stretched by Tw). T4: data now present, no signals. |
+| **IOW** (I/O write)   | 4 | T1: addr set, no signals. T2: addr held, no signals (automatic wait T-state). T3: IORQ+WR pulse *with the data already driven this same tick* (stretched by Tw). T4: nothing. |
 | **Internal**          | n | no bus activity; burns n T-states (e.g. ADD HL,ss internal time).|
 | **INT ack**           | 6 | M1+IORQ asserted, 2 wait T-states; mode-dependent follow-up.     |
 
-The M1 row above is confirmed against SingleStepTests/z80's actual JSON cycle data
-(default "simplified memory access T-states" config): MREQ+RD assert at T2, not T1 as
-a naive reading of the Z80 manual's 2-T pulse would suggest, and the refresh address uses
-the *pre*-increment R. The suite's `cycles` entries only encode address/data/RD/WR/MREQ/
-IORQ — M1 and RFSH have no bit of their own in the test data, so drive them per real
-silicon (M1 high for all 4 T-states, RFSH high for T3-T4) but treat them as unverified by
-this particular suite. MR/MW/IOR/IOW above are still the original prose estimate and are
-not yet cross-checked against real read/write-opcode JSON — confirm each against its data
-file the same way before relying on its exact pulse position.
+All five rows above are now confirmed against SingleStepTests/z80's actual JSON cycle
+data (default "simplified memory access T-states" config), not just the Z80 manual's
+prose: every pulse (MREQ/IORQ + RD/WR) lands one T-state later than a naive 2-T-pulse
+reading would suggest, and — the detail most likely to bite a reimplementation — **reads
+show their data one T-state *after* the pulse, but writes drive their data in the *same*
+T-state as the pulse**, since the CPU doesn't need to wait on a peripheral to drive a
+write. M1's refresh address uses the *pre*-increment R. The suite's `cycles` entries only
+encode address/data/RD/WR/MREQ/IORQ — M1 and RFSH have no bit of their own in the test
+data, so drive them per real silicon (M1 high for all 4 M1 T-states, RFSH high for M1's
+T3-T4) but treat them as unverified by this particular suite. INT ack above is still
+unverified prose — confirm it the same way when interrupts are implemented (milestone 7).
 
 An instruction = a sequence of these templates. The micro-step counter indexes the
 current T-state within the current template; the opcode (plus prefix state) selects the

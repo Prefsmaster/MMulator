@@ -2,3 +2,7 @@ bin/
 obj/
 *.user
 .vs/
+
+# SingleStepTests/z80 JSON fixtures: downloaded on demand by
+# SingleStepTestLoader, not vendored (see CLAUDE.md §7a).
+tests/Z80.Tests/SingleStepTests/data/

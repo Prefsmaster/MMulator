@@ -24,8 +24,4 @@
     <ProjectReference Include="..\..\src\Z80.Core\Z80.Core.csproj" />
   </ItemGroup>
 
-  <ItemGroup>
-    <None Include="SingleStepTests\data\**\*.json" CopyToOutputDirectory="PreserveNewest" />
-  </ItemGroup>
-
 </Project>

@@ -1,4 +1,4 @@
-# CLAUDE.md — Z80 Cycle-Stepped Core (.NET)
+# CLAUDE.md - Z80 Cycle-Stepped Core (.NET)
 
 This file is the standing contract for this repository. Read it fully at the start of
 every session. It defines the architecture, the hard rules, and the validation gates.
@@ -12,7 +12,7 @@ A **cycle-stepped, T-state-accurate, bus-exposing Z80 CPU emulator** written in 
 intended as the core of a future cycle-exact Philips P2000T emulator. **This build
 delivers the CPU core and its test harness ONLY.** No P2000T hardware, no video, no
 machine wiring. The core must remain a pure Z80 that knows nothing about any host machine
-— it only drives and samples a bus.
+- it only drives and samples a bus.
 
 The reason for cycle-stepping: the eventual machine needs to detect bus contention
 between the CPU and a video circuit on a per-T-state basis. That is only possible if the
@@ -47,8 +47,8 @@ One `ulong`. Bit positions (match floooh `z80.h` so external references line up)
 
 | Bits  | Meaning                         |
 |-------|---------------------------------|
-| 0–15  | Address bus A0–A15              |
-| 16–23 | Data bus D0–D7                  |
+| 0-15  | Address bus A0-A15              |
+| 16-23 | Data bus D0-D7                  |
 | 24    | M1   (opcode fetch / int ack)   |
 | 25    | MREQ (memory request)           |
 | 26    | IORQ (I/O request)              |
@@ -118,13 +118,23 @@ behaviour. This is the key to a manageable cycle-stepped core.
 
 | Template | T-states | Pin behaviour summary                                            |
 |----------|----------|------------------------------------------------------------------|
-| **M1** (opcode fetch) | 4 | T1: addr=PC, M1+MREQ+RD, PC++. T2: sample opcode. T3: addr=IR, MREQ+RFSH, R=(R&0x80)\|((R+1)&0x7F). T4: refresh. |
+| **M1** (opcode fetch) | 4 | T1: addr=PC, M1 asserted, PC++. T2: MREQ+RD pulse (1 T-state; stretched by Tw while WAIT is asserted). T3: opcode sampled off the data bus; addr=IR refresh address (R *before* increment), RFSH asserted, data bus echoes the sampled opcode; R=(R&0x80)\|((R+1)&0x7F). T4: addr=IR refresh address held, RFSH asserted, no other signals. |
 | **MR** (memory read)  | 3 | T1: addr set, MREQ+RD. T2: WAIT sampled, data sampled. T3: done. |
 | **MW** (memory write) | 3 | T1: addr set, MREQ. T2: WR + data driven. T3: done.             |
 | **IOR** (I/O read)    | 4 | adds one automatic wait T-state; IORQ+RD.                        |
 | **IOW** (I/O write)   | 4 | adds one automatic wait T-state; IORQ+WR.                        |
 | **Internal**          | n | no bus activity; burns n T-states (e.g. ADD HL,ss internal time).|
 | **INT ack**           | 6 | M1+IORQ asserted, 2 wait T-states; mode-dependent follow-up.     |
+
+The M1 row above is confirmed against SingleStepTests/z80's actual JSON cycle data
+(default "simplified memory access T-states" config): MREQ+RD assert at T2, not T1 as
+a naive reading of the Z80 manual's 2-T pulse would suggest, and the refresh address uses
+the *pre*-increment R. The suite's `cycles` entries only encode address/data/RD/WR/MREQ/
+IORQ — M1 and RFSH have no bit of their own in the test data, so drive them per real
+silicon (M1 high for all 4 T-states, RFSH high for T3-T4) but treat them as unverified by
+this particular suite. MR/MW/IOR/IOW above are still the original prose estimate and are
+not yet cross-checked against real read/write-opcode JSON — confirm each against its data
+file the same way before relying on its exact pulse position.
 
 An instruction = a sequence of these templates. The micro-step counter indexes the
 current T-state within the current template; the opcode (plus prefix state) selects the
@@ -161,14 +171,14 @@ These are the things SingleStepTests and ZEXALL specifically catch. Get them rig
   - INT sampled only at instruction boundary; EI has a one-instruction delay (the EI
     backlog) before interrupts are enabled.
 - **HALT:** PC does NOT advance past the HALT; the CPU executes NOPs (still doing M1
-  fetches/refresh) until an interrupt. (Known historical bug source — verify PC behaviour.)
+  fetches/refresh) until an interrupt. (Known historical bug source - verify PC behaviour.)
 - **RESET:** PC=0, I=R=0, IFF1=IFF2=0, IM0, SP and AF behaviour per spec.
 
 ---
 
-## 7. Validation gates (REQUIRED — the project is not "done" until both pass)
+## 7. Validation gates (REQUIRED - the project is not "done" until both pass)
 
-### 7a. SingleStepTests z80 (PRIMARY — per-cycle bus assertion)
+### 7a. SingleStepTests z80 (PRIMARY - per-cycle bus assertion)
 - Source: https://github.com/SingleStepTests/z80 (JSON, one file per opcode, ~1000 cases each).
 - Each case has `initial` and `final` CPU+RAM state, plus a **`cycles` array describing
   per-T-state bus activity** (address, data, active control pins). **Confirm the exact
@@ -176,7 +186,7 @@ These are the things SingleStepTests and ZEXALL specifically catch. Get them rig
 - The harness MUST assert, for every case:
   1. final register state (incl. WZ, R, Q, IFF1/2, IM), and
   2. final RAM, and
-  3. **the per-cycle bus activity** — address, data, and which control pins are active on
+  3. **the per-cycle bus activity** - address, data, and which control pins are active on
      every T-state. This is the assertion that proves cycle/bus accuracy; do not skip it.
 - Run a representative subset in CI on every commit; full suite as a nightly/full gate.
 - **Build the harness FIRST, before implementing opcodes.** Implement opcode 0x00 (NOP)
@@ -202,7 +212,7 @@ A core passing BOTH gates is trustworthy enough to build the machine/contention 
 /CLAUDE.md
 /Z80.sln
 /src/
-  Z80.Core/                 # the library — ZERO external dependencies
+  Z80.Core/                 # the library - ZERO external dependencies
     Z80.cs                  # CPU: state + Step()
     Pins.cs                 # pin mask consts + get/set helpers
     Registers.cs            # AF/BC/DE/HL + primes, IX/IY, SP, PC, I, R, WZ, IFF, IM, Q
@@ -227,7 +237,7 @@ A core passing BOTH gates is trustworthy enough to build the machine/contention 
 
 ## 9. Coding conventions
 
-- Correctness and debuggability first. Performance second — the eventual target is 2.5 MHz,
+- Correctness and debuggability first. Performance second - the eventual target is 2.5 MHz,
   trivially within reach, so do NOT sacrifice clarity for micro-optimisation. If a hot path
   later needs `[MethodImpl(AggressiveInlining)]` or struct tweaks, do it with a benchmark,
   not on spec.
@@ -276,14 +286,14 @@ Do not move to the next milestone while the current milestone's tests are red.
 ## 12. References
 
 - floooh cycle-stepped Z80 design (THE architectural model for our tick/pin approach):
-  https://floooh.github.io/2021/12/17/cycle-stepped-z80.html — and code:
+  https://floooh.github.io/2021/12/17/cycle-stepped-z80.html - and code:
   https://github.com/floooh/chips (`z80.h`).
 - SingleStepTests z80: https://github.com/SingleStepTests/z80
-- "The Undocumented Z80 Documented" (Sean Young) — flags, WZ, undocumented opcodes.
-- Z80 User Manual (Zilog) — official M-cycle / T-state timing.
-- Dotneteer/spectrum-dotnet-engine — C# reference for per-T-state stepping (study only;
+- "The Undocumented Z80 Documented" (Sean Young) - flags, WZ, undocumented opcodes.
+- Z80 User Manual (Zilog) - official M-cycle / T-state timing.
+- Dotneteer/spectrum-dotnet-engine - C# reference for per-T-state stepping (study only;
   its contention is wait-state based, opposite polarity to our future video model).
-- Konamiman/Z80dotNet — instruction-behaviour cross-check oracle (NOT our architecture).
+- Konamiman/Z80dotNet - instruction-behaviour cross-check oracle (NOT our architecture).
 
 ---
 

@@ -196,16 +196,19 @@ These are the things SingleStepTests and ZEXALL specifically catch. Get them rig
     flags (S/Z/H/N/P/C) keep following the base op's normal formula. CPIR additionally
     stops repeating early on a match (`Z=1`), not just when BC reaches 0.
   - **INIR/INDR/OTIR/OTDR**, repeat-continuation iteration only: Y/X follow the same
-    PC-high-byte rule as above (confirmed). **H and P/V do not** — neither the base
-    INI-style formula, nor the carry/parity formula with any tried substitution of operand
-    (B, C, val, PCH, PCL, or pairwise XOR/sum combinations of those), nor several PCH-XOR
-    hybrids, reproduces them; the best single hypothesis found still mismatches roughly
-    75% of repeat-continuation cases. This is left unimplemented (current code applies the
-    base INI/OUTI carry/parity formula, known wrong for this one case) rather than ship an
-    unverified guess. `ed b2/ba/b3/bb.json`'s repeat-continuation cases are excluded from
-    the passing test suite for exactly this reason — see `EdBlockRepeatIoFlagsKnownGap` in
-    `tests/Z80.Tests/Opcodes/EdBlockTests.cs`. Revisit with a reference implementation
-    (e.g. MAME's Z80 core) or the corrected Sean Young errata, not by guessing further.
+    PC-high-byte rule as above. H and P/V resisted brute-force bit-correlation entirely
+    (every tried operand substitution and PCH-XOR hybrid mismatched ~75% of cases) until
+    the user pointed at MAME's source (`src/devices/cpu/z80/z80.cpp`,
+    `z80_device::block_io_interrupted_flags()`), which gave the right shape: with `B`
+    already decremented and the base op's carry/parity already computed,
+    `H = 0` unless carry, in which case `H = ((B&0xF)==0)` when the transferred byte's
+    bit 7 is set else `((B&0xF)==0xF)`; the same carry/bit7 branch picks a 3-bit `pvRaw`
+    (`(B∓1)&7` or `B&7`), and final P/V is the *old* parity flag combined with
+    `parity(pvRaw)`. One transcription point flipped from the source: MAME's C++ reads as
+    an XOR of old-parity and new-parity; only the XNOR (equivalence) matched real hardware
+    (100% across all four opcodes' repeat-continuation cases, ~4000 cases total) — kept as
+    XNOR per the data over the literal source reading. Implemented in
+    `Z80.OverrideIoRepeatFlags`.
 - **Interrupts:**
   - NMI: 11 T-states, pushes PC, jumps to 0x0066, IFF1→IFF2 saved, IFF1 cleared.
   - INT modes 0/1/2 with correct acknowledge timing. IM2 uses I register + bus vector.

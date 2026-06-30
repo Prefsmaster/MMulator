@@ -431,7 +431,7 @@ public sealed partial class Z80
                 if (!InternalCycle(pins, 5)) return pins;
                 _reg.PC -= 2;
                 _reg.WZ = (ushort)(_reg.PC + 1);
-                OverrideRepeatYX();
+                OverrideIoRepeatFlags(_latchLo);
                 return FinishInstruction(pins);
 
             default:
@@ -475,7 +475,7 @@ public sealed partial class Z80
                 if (!InternalCycle(pins, 5)) return pins;
                 _reg.PC -= 2;
                 _reg.WZ = (ushort)(_reg.PC + 1);
-                OverrideRepeatYX();
+                OverrideIoRepeatFlags(_latchLo);
                 return FinishInstruction(pins);
 
             default:
@@ -514,6 +514,60 @@ public sealed partial class Z80
             | (carry ? (Alu.HF | Alu.CF) : 0)
             | ((value & 0x80) != 0 ? Alu.NF : 0)
             | (Popcount((byte)((k & 7) ^ b)) % 2 == 0 ? Alu.PF : 0));
+        _reg.Q = _reg.F;
+    }
+
+    /// <summary>
+    /// INIR/INDR/OTIR/OTDR repeat-continuation only: Y/X come from PC's high
+    /// byte like the LD/CP block family, but H and P/V get a further
+    /// recomputation on top of the base op's already-set carry/parity, which
+    /// no amount of brute-force bit-correlation against the SingleStepTests
+    /// data alone reproduced (see CLAUDE.md §6). Ported directly from MAME's
+    /// z80_device::block_io_interrupted_flags() (src/devices/cpu/z80/z80.cpp)
+    /// after the user pointed at that source — its Y/X line matched what had
+    /// already been confirmed empirically, which is why the rest of it is
+    /// trusted here rather than re-derived from scratch. Call with B already
+    /// decremented and PC already rolled back, after the base op's carry (C)
+    /// and parity (P/V) flags have been set by <see cref="ApplyBlockIoFlags"/>.
+    /// </summary>
+    private void OverrideIoRepeatFlags(byte value)
+    {
+        var pch = (byte)(_reg.PC >> 8);
+        var carry = (_reg.F & Alu.CF) != 0;
+        var pvOld = (_reg.F & Alu.PF) != 0;
+        var b = _reg.B;
+
+        bool newH;
+        int pvRaw;
+        if (carry)
+        {
+            if ((value & 0x80) != 0)
+            {
+                newH = (b & 0x0F) == 0x00;
+                pvRaw = (b - 1) & 0x07;
+            }
+            else
+            {
+                newH = (b & 0x0F) == 0x0F;
+                pvRaw = (b + 1) & 0x07;
+            }
+        }
+        else
+        {
+            newH = false;
+            pvRaw = b & 0x07;
+        }
+        var newPvParity = Popcount((byte)pvRaw) % 2 == 0;
+        // MAME's source reads as an XOR of the old and new parity bits, but
+        // that produced 0/996+ matches against real hardware; the equivalence
+        // (XNOR) matched 100% across all four opcodes' repeat-continuation
+        // cases instead — kept as XNOR per the data, despite the source.
+        var finalPv = pvOld == newPvParity;
+
+        _reg.F = (byte)((_reg.F & ~(Alu.YF | Alu.XF | Alu.HF | Alu.PF))
+            | (pch & (Alu.YF | Alu.XF))
+            | (newH ? Alu.HF : 0)
+            | (finalPv ? Alu.PF : 0));
         _reg.Q = _reg.F;
     }
 }

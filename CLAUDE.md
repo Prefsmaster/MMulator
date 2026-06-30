@@ -180,6 +180,32 @@ These are the things SingleStepTests and ZEXALL specifically catch. Get them rig
     timing differ from CB.
 - **Block instructions** (LDIR/LDDR/CPIR/CPDR/INIR/OTIR etc.): correct repeat timing
   (extra 5 T-states when repeating) and undocumented flag behaviour.
+  - LDI/LDD/CPI/CPD and the INI/IND/OUTI/OUTD non-repeat forms: undocumented flags fully
+    confirmed against their opcode files (`ed a0/a8/a1/a9/a2/aa/a3/ab.json`) — LDI/LDD's
+    Y/X come from bits 1/3 of `A + transferred byte`; CPI/CPD's from bits 1/3 of
+    `(A-(HL)) - H`; INI/IND/OUTI/OUTD's S/Z/Y/X come from B *after* decrement, N from bit
+    7 of the transferred byte, H/C from `(value + k) > 0xFF` (k = `(C±1)&0xFF` for IN,
+    `L` *after* it moves for OUT), P/V from `parity((k&7) ^ B_after)`. OUTI/OUTD's port
+    address uses B *after* decrement (`(B-1)<<8|C`); INI/IND's port uses B *before*.
+  - **LDIR/LDDR/CPIR/CPDR**, repeat-continuation iteration only: Y/X stop following the
+    single-iteration formula above and instead come directly from bits 5/3 of PC's high
+    byte (no shift — found by brute-force bit-correlating every flag bit against every
+    candidate register byte across 400+ real cases of `ed b0.json`, after the plain
+    LDI-style formula matched 0% of repeat cases despite matching 100% of LDI's own).
+    Implemented in `Z80.OverrideRepeatYX`, applied after PC is rolled back by 2. All other
+    flags (S/Z/H/N/P/C) keep following the base op's normal formula. CPIR additionally
+    stops repeating early on a match (`Z=1`), not just when BC reaches 0.
+  - **INIR/INDR/OTIR/OTDR**, repeat-continuation iteration only: Y/X follow the same
+    PC-high-byte rule as above (confirmed). **H and P/V do not** — neither the base
+    INI-style formula, nor the carry/parity formula with any tried substitution of operand
+    (B, C, val, PCH, PCL, or pairwise XOR/sum combinations of those), nor several PCH-XOR
+    hybrids, reproduces them; the best single hypothesis found still mismatches roughly
+    75% of repeat-continuation cases. This is left unimplemented (current code applies the
+    base INI/OUTI carry/parity formula, known wrong for this one case) rather than ship an
+    unverified guess. `ed b2/ba/b3/bb.json`'s repeat-continuation cases are excluded from
+    the passing test suite for exactly this reason — see `EdBlockRepeatIoFlagsKnownGap` in
+    `tests/Z80.Tests/Opcodes/EdBlockTests.cs`. Revisit with a reference implementation
+    (e.g. MAME's Z80 core) or the corrected Sean Young errata, not by guessing further.
 - **Interrupts:**
   - NMI: 11 T-states, pushes PC, jumps to 0x0066, IFF1→IFF2 saved, IFF1 cleared.
   - INT modes 0/1/2 with correct acknowledge timing. IM2 uses I register + bus vector.

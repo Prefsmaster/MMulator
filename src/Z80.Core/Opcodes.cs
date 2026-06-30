@@ -84,6 +84,7 @@ public sealed partial class Z80
         _reg.LastWasLdAIR = false;
 
         if (_prefix == Prefix.CB) return DispatchCB(pins);
+        if (_prefix == Prefix.ED) return DispatchED(pins);
 
         if (_opcode == 0x76) return DispatchHalt(pins);
         if (_opcode is >= 0x40 and <= 0x7F) return DispatchLdRR(pins);
@@ -96,6 +97,7 @@ public sealed partial class Z80
     private ulong RunExecute(ulong pins)
     {
         if (_prefix == Prefix.CB) return ExecuteCB(pins);
+        if (_prefix == Prefix.ED) return ExecuteED(pins);
 
         if (_opcode is >= 0x40 and <= 0x7F and not 0x76) return ExecuteLdRR(pins);
         if (_opcode is >= 0x80 and <= 0xBF) return ExecuteAluR(pins);

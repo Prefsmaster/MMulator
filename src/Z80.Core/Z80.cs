@@ -58,7 +58,7 @@ public sealed partial class Z80
     /// decoded against that page's table. Stays set for the whole instruction
     /// (through Dispatch and any Execute-phase calls) and is only cleared by
     /// <see cref="FinishInstruction"/>, since RunExecute needs it on every call.</summary>
-    private enum Prefix { None, CB }
+    private enum Prefix { None, CB, ED }
     private Prefix _prefix;
 
     public Z80()
@@ -140,13 +140,13 @@ public sealed partial class Z80
                 _tstate = 0;
                 _step = 0;
 
-                if (_opcode == 0xCB && _prefix == Prefix.None)
+                if (_prefix == Prefix.None && (_opcode == 0xCB || _opcode == 0xED))
                 {
                     // Prefix byte: its M1 is now complete, but it isn't itself
                     // dispatched. The next Step() call starts a fresh M1 for the
                     // following byte, which Dispatch() will decode against the
-                    // CB page instead of the base page.
-                    _prefix = Prefix.CB;
+                    // CB/ED page instead of the base page.
+                    _prefix = _opcode == 0xCB ? Prefix.CB : Prefix.ED;
                     return pins;
                 }
 

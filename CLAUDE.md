@@ -163,14 +163,15 @@ These are the things SingleStepTests and ZEXALL specifically catch. Get them rig
     result (every other ALU op takes them from the result byte). Implemented and tested in
     `Alu.Cp8` — confirmed by a unit test showing it diverges from plain `Sub8` on inputs
     where the operand's and the result's bits 3/5 differ.
-  - **SCF / CCF**: `Alu.Scf`/`Alu.Ccf` currently use the simple, widely-documented "YF/XF
-    from A" rule. The real chip's YF/XF for these two also depend on the Q register
-    (Patrik Rak's research: roughly, the result differs depending on whether the
-    *previous* instruction touched the flags) — not yet implemented, because the exact
-    formula wasn't available to verify against rather than guess. Before wiring SCF/CCF
-    into the opcode dispatch (main unprefixed page, milestone 5), cross-check `Alu.Scf`/
-    `Alu.Ccf` against SingleStepTests' actual `scf`/`ccf` JSON cases the same way the M1
-    fetch timing in §5 was confirmed against real test data instead of assumed from prose.
+  - **SCF / CCF**: confirmed exactly against all 1000 cases of `37.json`/`3f.json` while
+    wiring up milestone 5 — Patrik Rak's Q-dependent rule is real and is exactly: when the
+    *incoming* Q (flags as left by whichever instruction last touched them) equals the
+    *incoming* F, Y/X come from A alone; otherwise Y/X come from `(F | A)`. Implemented in
+    `Alu.Scf`/`Alu.Ccf` (both take `q` as an explicit third parameter — pure functions,
+    no hidden state) and in `Z80.Dispatch`, which captures `_incomingQ` *before* the
+    per-instruction default of clearing Q, since by the time an opcode handler runs,
+    `Reg.Q` has already been reset for this instruction and no longer holds the prior
+    instruction's value.
 - **Prefixes:** CB, ED, DD, FD, DDCB, FDCB.
   - DD/FD swap HL→IX/IY and (HL)→(IX+d)/(IY+d); they also expose IXH/IXL/IYH/IYL for
     register ops (undocumented). DD/FD are each a full M1 and stack/chain correctly

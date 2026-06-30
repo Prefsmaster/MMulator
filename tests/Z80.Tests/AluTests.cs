@@ -254,16 +254,30 @@ public class AluTests
     [Fact]
     public void Scf_SetsCarryClearsHN()
     {
-        var flags = Alu.Scf(0x00, Alu.HF | Alu.NF | Alu.SF);
+        var oldFlags = (byte)(Alu.HF | Alu.NF | Alu.SF);
+        var flags = Alu.Scf(0x00, oldFlags, q: oldFlags); // Q == F: Y/X from A (here 0)
         Assert.Equal(Alu.SF | Alu.CF, flags);
     }
 
     [Fact]
     public void Ccf_TogglesCarryAndMovesOldCarryToHalfCarry()
     {
-        var flags = Alu.Ccf(0x00, Alu.CF);
+        var flags = Alu.Ccf(0x00, Alu.CF, q: Alu.CF); // Q == F: Y/X from A (here 0)
         Assert.True((flags & Alu.CF) == 0);
         Assert.True((flags & Alu.HF) != 0);
+    }
+
+    [Fact]
+    public void Scf_QDependentXY_UsesAWhenQMatchesF_OtherwiseForOA()
+    {
+        // Patrik Rak's quirk, confirmed against SingleStepTests' 37.json: when
+        // incoming Q == incoming F, Y/X come from A alone; otherwise from (F | A).
+        byte a = 0x00; // contributes no Y/X bits on its own
+        byte oldFlags = Alu.YF; // F alone has bit 5 set
+        var whenQMatches = Alu.Scf(a, oldFlags, q: oldFlags);
+        var whenQDiffers = Alu.Scf(a, oldFlags, q: 0x00);
+        Assert.Equal(0, whenQMatches & (Alu.YF | Alu.XF));      // A alone: no Y/X
+        Assert.Equal(Alu.YF, whenQDiffers & (Alu.YF | Alu.XF)); // F|A: Y from F
     }
 
     [Fact]

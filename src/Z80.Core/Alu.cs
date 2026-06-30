@@ -269,23 +269,27 @@ public static class Alu
     }
 
     /// <summary>
-    /// SCF: set carry. S, Z, P/V preserved; H and N cleared; C set.
-    /// Y/X here use the simple, widely-documented "from A" rule. The real chip's
-    /// behaviour additionally depends on the Q register (Patrik Rak's research) in
-    /// ways not yet verified against SingleStepTests' own scf/ccf case data — revisit
-    /// when SCF/CCF are wired up in milestone 5, the same way the M1 timing was
-    /// confirmed against real JSON before relying on it (see CLAUDE.md §5).
+    /// SCF: set carry. S, Z, P/V preserved; H and N cleared; C set. Y/X follow
+    /// Patrik Rak's Q-dependent rule, confirmed exactly against all 1000 cases
+    /// of SingleStepTests' 37.json while wiring up milestone 5: when the
+    /// incoming Q (the flags as left by whichever instruction last touched them)
+    /// equals the incoming F, Y/X come from A alone; otherwise from (F | A).
+    /// Q reads the same either way it differs from F only in bits SCF/CCF don't
+    /// otherwise touch.
     /// </summary>
-    public static byte Scf(byte a, byte oldFlags) =>
-        (byte)((oldFlags & (SF | ZF | PF)) | CF | (a & (YF | XF)));
+    public static byte Scf(byte a, byte oldFlags, byte q) =>
+        (byte)((oldFlags & (SF | ZF | PF)) | CF | ScfCcfXy(a, oldFlags, q));
 
-    /// <summary>CCF: complement carry. H takes the old carry; same unverified Y/X
-    /// caveat as <see cref="Scf"/>.</summary>
-    public static byte Ccf(byte a, byte oldFlags)
+    /// <summary>CCF: complement carry. H takes the old carry; same Q-dependent
+    /// Y/X rule as <see cref="Scf"/>, confirmed against 3f.json.</summary>
+    public static byte Ccf(byte a, byte oldFlags, byte q)
     {
         var oldCarry = (oldFlags & CF) != 0;
-        return (byte)((oldFlags & (SF | ZF | PF)) | (oldCarry ? HF : 0) | (a & (YF | XF)) | (oldCarry ? 0 : CF));
+        return (byte)((oldFlags & (SF | ZF | PF)) | (oldCarry ? HF : 0) | ScfCcfXy(a, oldFlags, q) | (oldCarry ? 0 : CF));
     }
+
+    private static byte ScfCcfXy(byte a, byte oldFlags, byte q) =>
+        (byte)((q == oldFlags ? a : (oldFlags | a)) & (YF | XF));
 
     // ---- DAA --------------------------------------------------------------------
 

@@ -78,6 +78,7 @@ public sealed partial class Z80
     /// <summary>Entry point called once, synchronously, the instant M1 completes.</summary>
     private ulong Dispatch(ulong pins)
     {
+        _incomingQ = _reg.Q; // SCF/CCF need this; every other handler ignores it.
         _reg.Q = 0;
         _reg.EiPending = false;
         _reg.LastWasLdAIR = false;
@@ -85,15 +86,9 @@ public sealed partial class Z80
         if (_opcode == 0x76) return DispatchHalt(pins);
         if (_opcode is >= 0x40 and <= 0x7F) return DispatchLdRR(pins);
         if (_opcode is >= 0x80 and <= 0xBF) return DispatchAluR(pins);
+        if (_opcode <= 0x3F) return DispatchQuadrant00(pins);
 
-        switch (_opcode)
-        {
-            case 0x00: // NOP
-                return pins;
-
-            default:
-                throw new NotImplementedException($"Opcode 0x{_opcode:X2} is not implemented yet.");
-        }
+        throw new NotImplementedException($"Opcode 0x{_opcode:X2} is not implemented yet.");
     }
 
     /// <summary>Entry point called for every Step() while _phase == Execute.</summary>
@@ -101,9 +96,23 @@ public sealed partial class Z80
     {
         if (_opcode is >= 0x40 and <= 0x7F and not 0x76) return ExecuteLdRR(pins);
         if (_opcode is >= 0x80 and <= 0xBF) return ExecuteAluR(pins);
+        if (_opcode <= 0x3F) return ExecuteQuadrant00(pins);
 
         throw new NotImplementedException($"Opcode 0x{_opcode:X2} has no Execute-phase handler yet.");
     }
+
+    private bool TestCondition(int cc) => cc switch
+    {
+        0 => (_reg.F & Alu.ZF) == 0, // NZ
+        1 => (_reg.F & Alu.ZF) != 0, // Z
+        2 => (_reg.F & Alu.CF) == 0, // NC
+        3 => (_reg.F & Alu.CF) != 0, // C
+        4 => (_reg.F & Alu.PF) == 0, // PO
+        5 => (_reg.F & Alu.PF) != 0, // PE
+        6 => (_reg.F & Alu.SF) == 0, // P
+        7 => (_reg.F & Alu.SF) != 0, // M
+        _ => throw new InvalidOperationException($"TestCondition({cc}) out of range."),
+    };
 
     // ---- 0x76 HALT -------------------------------------------------------------
 

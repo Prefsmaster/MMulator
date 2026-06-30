@@ -41,6 +41,17 @@ public sealed partial class Z80
     // never used as incidental scratch space.
     private byte _latchLo;
     private byte _latchHi;
+    private sbyte _displacement;
+
+    /// <summary>Holds a resolved 16-bit (nn) address across an instruction's
+    /// remaining cycles once _latchLo/_latchHi have been re-used for a second
+    /// pair of bytes (e.g. LD HL,(nn)'s value bytes, fetched after nn itself).</summary>
+    private ushort _addrLatch;
+
+    /// <summary>Q as it was at the start of the current instruction, captured
+    /// before Dispatch() resets _reg.Q to its default-cleared state. Only SCF
+    /// and CCF read this (Patrik Rak's Q-dependent Y/X flag quirk).</summary>
+    private byte _incomingQ;
 
     public Z80()
     {

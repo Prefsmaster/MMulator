@@ -489,18 +489,24 @@ public sealed partial class Z80
     /// M1, so R does not increment for them). The CB operation then targets
     /// (IX+d)/(IY+d); for z≠6 the result is ALSO written into register z
     /// (undocumented dual-write, except for BIT which has no write-back).</summary>
+    /// <summary>DDCB/FDCB four-byte form. Exact timing confirmed against
+    /// dd cb __ 06.json (RLC, 23T) / dd cb __ 40.json (BIT, 20T) / dd cb __ 86.json (RES, 23T):
+    /// step 0: MR(displacement d, 3T); step 1: MR(CB-table opcode, 3T);
+    /// step 2: Internal(2T); step 3: MR(value at IX+d, 3T);
+    /// step 4: Internal(1T) + operation; BIT finishes here (20T total);
+    /// step 5 (rotate/RES/SET only): MW(3T) + optional dual-write to register z (z≠6).</summary>
     private ulong ExecuteDdCb(ulong pins)
     {
         switch (_step)
         {
-            case 0: // fetch displacement via MR
+            case 0: // MR: fetch displacement
                 if (!MemRead(ref pins, _reg.PC, out _latchLo)) return pins;
                 _reg.PC++;
                 _displacement = (sbyte)_latchLo;
                 _step = 1;
                 return pins;
 
-            case 1: // fetch CB-page opcode byte via MR (not M1)
+            case 1: // MR: fetch CB-table opcode (plain MR, not M1 — R does not increment)
                 if (!MemRead(ref pins, _reg.PC, out _latchHi)) return pins;
                 _reg.PC++;
                 _addrLatch = (ushort)(GetIndexReg() + _displacement);
@@ -508,39 +514,30 @@ public sealed partial class Z80
                 _step = 2;
                 return pins;
 
-            default:
-                return ExecuteDdCbOp(pins);
-        }
-    }
-
-    private ulong ExecuteDdCbOp(ulong pins)
-    {
-        var cbOp = _latchHi;
-        var x = (cbOp >> 6) & 3;
-        var y = (cbOp >> 3) & 7;
-        var z = cbOp & 7;
-
-        switch (_step)
-        {
-            case 2:
-                if (!MemRead(ref pins, _addrLatch, out _latchLo)) return pins;
-                if (x == 1) // BIT: compute flags, no write-back
-                {
-                    _reg.F = Alu.Bit(_latchLo, y, flagSource: (byte)(_reg.WZ >> 8), _reg.F);
-                    _reg.Q = _reg.F;
-                    _step = 3; // BIT still burns 1 extra internal T (same as CB BIT (HL))
-                    return pins;
-                }
+            case 2: // Internal(2T): address calculation
+                if (!InternalCycle(pins, 2)) return pins;
                 _step = 3;
                 return pins;
 
-            case 3:
-                if (x == 1)
+            case 3: // MR: read value at (IX+d)
+                if (!MemRead(ref pins, _addrLatch, out _latchLo)) return pins;
+                _step = 4;
+                return pins;
+
+            case 4: // Internal(1T): compute result; BIT finishes here
+            {
+                if (!InternalCycle(pins, 1)) return pins;
+                var cbOp = _latchHi;
+                var x = (cbOp >> 6) & 3;
+                var y = (cbOp >> 3) & 7;
+                var z = cbOp & 7;
+                if (x == 1) // BIT n,(IX+d): 20T total, no write-back
                 {
-                    if (!InternalCycle(pins, 1)) return pins;
+                    _reg.F = Alu.Bit(_latchLo, y, flagSource: (byte)(_reg.WZ >> 8), _reg.F);
+                    _reg.Q = _reg.F;
                     return FinishInstruction(pins);
                 }
-                if (!InternalCycle(pins, 1)) return pins;
+                // Rotate/RES/SET: compute result, proceed to MW
                 _latchLo = x switch
                 {
                     0 => ApplyCbRotate(y, _latchLo),
@@ -548,14 +545,18 @@ public sealed partial class Z80
                     3 => (byte)(_latchLo | (1 << y)),
                     _ => throw new InvalidOperationException(),
                 };
-                _step = 4;
+                _step = 5;
                 return pins;
+            }
 
-            case 4:
+            case 5: // MW: write result to (IX+d); dual-write to register z when z≠6
+            {
+                var cbOp = _latchHi;
+                var z = cbOp & 7;
                 if (!MemWrite(ref pins, _addrLatch, _latchLo)) return pins;
-                // Undocumented dual-write: result is ALSO stored in register z (when z≠6).
-                if (z != 6) Set8(z, _latchLo);
+                if (z != 6) Set8(z, _latchLo); // undocumented: result also stored in r[z]
                 return FinishInstruction(pins);
+            }
 
             default: throw new InvalidOperationException();
         }

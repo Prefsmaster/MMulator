@@ -152,31 +152,35 @@ public sealed partial class Z80
                         // instruction for the SCF/CCF Q-quirk, confirmed against dd 37.json:
                         // when initial Q == initial F, DD resets Q to 0 so the subsequent
                         // SCF sees Q≠F and uses the (F|A) Y/X formula instead of A-only.
+                        // EiPending/LastWasLdAIR also decay here since Dispatch() is
+                        // bypassed for prefix bytes; for DDCB/FDCB it's the ONLY reset.
                         _prefix = _opcode == 0xDD ? Prefix.DD : Prefix.FD;
                         _reg.Q = 0;
+                        _reg.EiPending = false;
+                        _reg.LastWasLdAIR = false;
                         return pins;
                     }
                     if (_opcode == 0xCB)
                     {
-                        // Plain CB, OR DDCB/FDCB if a DD/FD was pending. For DDCB/FDCB
-                        // the NEXT byte is the displacement (a plain MR, not M1), which
-                        // is handled in ExecuteIndexed once the Execute phase starts.
                         _prefix = _prefix switch
                         {
                             Prefix.DD => Prefix.DDCB,
                             Prefix.FD => Prefix.FDCB,
                             _ => Prefix.CB,
                         };
-                        _reg.Q = 0; // prefix M1, same Q-reset semantics as DD/FD
+                        _reg.Q = 0;
+                        _reg.EiPending = false;
+                        _reg.LastWasLdAIR = false;
                         if (_prefix is Prefix.DDCB or Prefix.FDCB)
                             return EnterExecute(pins); // fetch displacement via MR, not M1
                         return pins; // plain CB: continue to next M1
                     }
                     if (_opcode == 0xED)
                     {
-                        // ED byte: cancels any pending DD/FD ("DD ED" → ED takes over).
                         _prefix = Prefix.ED;
-                        _reg.Q = 0; // prefix M1, same Q-reset semantics
+                        _reg.Q = 0;
+                        _reg.EiPending = false;
+                        _reg.LastWasLdAIR = false;
                         return pins;
                     }
                 }

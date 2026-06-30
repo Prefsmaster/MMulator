@@ -83,6 +83,8 @@ public sealed partial class Z80
         _reg.EiPending = false;
         _reg.LastWasLdAIR = false;
 
+        if (_prefix == Prefix.CB) return DispatchCB(pins);
+
         if (_opcode == 0x76) return DispatchHalt(pins);
         if (_opcode is >= 0x40 and <= 0x7F) return DispatchLdRR(pins);
         if (_opcode is >= 0x80 and <= 0xBF) return DispatchAluR(pins);
@@ -93,6 +95,8 @@ public sealed partial class Z80
     /// <summary>Entry point called for every Step() while _phase == Execute.</summary>
     private ulong RunExecute(ulong pins)
     {
+        if (_prefix == Prefix.CB) return ExecuteCB(pins);
+
         if (_opcode is >= 0x40 and <= 0x7F and not 0x76) return ExecuteLdRR(pins);
         if (_opcode is >= 0x80 and <= 0xBF) return ExecuteAluR(pins);
         if (_opcode <= 0x3F) return ExecuteQuadrant00(pins);

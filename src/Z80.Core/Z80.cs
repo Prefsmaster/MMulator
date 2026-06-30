@@ -53,6 +53,14 @@ public sealed partial class Z80
     /// and CCF read this (Patrik Rak's Q-dependent Y/X flag quirk).</summary>
     private byte _incomingQ;
 
+    /// <summary>Which prefix page is currently active. Set when a prefix byte's
+    /// M1 completes (instead of dispatching), so the *next* M1 fetch's result is
+    /// decoded against that page's table. Stays set for the whole instruction
+    /// (through Dispatch and any Execute-phase calls) and is only cleared by
+    /// <see cref="FinishInstruction"/>, since RunExecute needs it on every call.</summary>
+    private enum Prefix { None, CB }
+    private Prefix _prefix;
+
     public Z80()
     {
         Reset();
@@ -131,6 +139,17 @@ public sealed partial class Z80
                 pins |= PinBits.RFSH;
                 _tstate = 0;
                 _step = 0;
+
+                if (_opcode == 0xCB && _prefix == Prefix.None)
+                {
+                    // Prefix byte: its M1 is now complete, but it isn't itself
+                    // dispatched. The next Step() call starts a fresh M1 for the
+                    // following byte, which Dispatch() will decode against the
+                    // CB page instead of the base page.
+                    _prefix = Prefix.CB;
+                    return pins;
+                }
+
                 return Dispatch(pins);
 
             default:
@@ -145,6 +164,7 @@ public sealed partial class Z80
         _phase = Phase.Fetch;
         _tstate = 0;
         _step = 0;
+        _prefix = Prefix.None;
         return pins;
     }
 

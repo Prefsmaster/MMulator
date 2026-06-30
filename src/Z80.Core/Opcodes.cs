@@ -50,7 +50,13 @@ public sealed partial class Z80
     {
         0 => _reg.BC,
         1 => _reg.DE,
-        2 => _reg.HL,
+        // Under DD/FD the HL slot (p==2) maps to IX or IY, so all existing 16-bit
+        // helpers (LD rp,nn, INC/DEC rp, PUSH/POP, ADD HL,rp) gain IX/IY support
+        // for free as long as they use Get16(2)/Set16(2) — only methods that name
+        // _reg.HL directly need separate indexed implementations in QuadrantDD.cs.
+        2 => _prefix is Prefix.DD or Prefix.DDCB ? _reg.IX
+           : _prefix is Prefix.FD or Prefix.FDCB ? _reg.IY
+           : _reg.HL,
         3 => _reg.SP,
         _ => throw new InvalidOperationException($"Get16({p}) out of range."),
     };
@@ -61,7 +67,11 @@ public sealed partial class Z80
         {
             case 0: _reg.BC = value; break;
             case 1: _reg.DE = value; break;
-            case 2: _reg.HL = value; break;
+            case 2:
+                if      (_prefix is Prefix.DD or Prefix.DDCB) _reg.IX = value;
+                else if (_prefix is Prefix.FD or Prefix.FDCB) _reg.IY = value;
+                else _reg.HL = value;
+                break;
             case 3: _reg.SP = value; break;
             default: throw new InvalidOperationException($"Set16({p}) out of range.");
         }
@@ -85,6 +95,8 @@ public sealed partial class Z80
 
         if (_prefix == Prefix.CB) return DispatchCB(pins);
         if (_prefix == Prefix.ED) return DispatchED(pins);
+        if (_prefix is Prefix.DD or Prefix.FD && IsIndexAffected(_opcode))
+            return DispatchIndexed(pins);
 
         if (_opcode == 0x76) return DispatchHalt(pins);
         if (_opcode is >= 0x40 and <= 0x7F) return DispatchLdRR(pins);
@@ -98,6 +110,8 @@ public sealed partial class Z80
     {
         if (_prefix == Prefix.CB) return ExecuteCB(pins);
         if (_prefix == Prefix.ED) return ExecuteED(pins);
+        if (_prefix is Prefix.DDCB or Prefix.FDCB) return ExecuteIndexed(pins);
+        if (_prefix is Prefix.DD or Prefix.FD && IsIndexAffected(_opcode)) return ExecuteIndexed(pins);
 
         if (_opcode is >= 0x40 and <= 0x7F and not 0x76) return ExecuteLdRR(pins);
         if (_opcode is >= 0x80 and <= 0xBF) return ExecuteAluR(pins);

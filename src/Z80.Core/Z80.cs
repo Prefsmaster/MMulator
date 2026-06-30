@@ -58,7 +58,7 @@ public sealed partial class Z80
     /// decoded against that page's table. Stays set for the whole instruction
     /// (through Dispatch and any Execute-phase calls) and is only cleared by
     /// <see cref="FinishInstruction"/>, since RunExecute needs it on every call.</summary>
-    private enum Prefix { None, CB, ED }
+    private enum Prefix { None, CB, ED, DD, FD, DDCB, FDCB }
     private Prefix _prefix;
 
     public Z80()
@@ -140,14 +140,45 @@ public sealed partial class Z80
                 _tstate = 0;
                 _step = 0;
 
-                if (_prefix == Prefix.None && (_opcode == 0xCB || _opcode == 0xED))
+                // Prefix-byte detection — applies whenever we're not yet inside a
+                // terminal prefix (CB/ED only use their second byte as a real opcode,
+                // never as another prefix; DD/FD can still chain or receive a new prefix):
+                if (_prefix is not Prefix.CB and not Prefix.ED)
                 {
-                    // Prefix byte: its M1 is now complete, but it isn't itself
-                    // dispatched. The next Step() call starts a fresh M1 for the
-                    // following byte, which Dispatch() will decode against the
-                    // CB/ED page instead of the base page.
-                    _prefix = _opcode == 0xCB ? Prefix.CB : Prefix.ED;
-                    return pins;
+                    if (_opcode == 0xDD || _opcode == 0xFD)
+                    {
+                        // DD/FD: "last wins" chaining. Each prefix byte is its own M1.
+                        // Resets Q to 0 — the prefix M1 acts like a non-flag-modifying
+                        // instruction for the SCF/CCF Q-quirk, confirmed against dd 37.json:
+                        // when initial Q == initial F, DD resets Q to 0 so the subsequent
+                        // SCF sees Q≠F and uses the (F|A) Y/X formula instead of A-only.
+                        _prefix = _opcode == 0xDD ? Prefix.DD : Prefix.FD;
+                        _reg.Q = 0;
+                        return pins;
+                    }
+                    if (_opcode == 0xCB)
+                    {
+                        // Plain CB, OR DDCB/FDCB if a DD/FD was pending. For DDCB/FDCB
+                        // the NEXT byte is the displacement (a plain MR, not M1), which
+                        // is handled in ExecuteIndexed once the Execute phase starts.
+                        _prefix = _prefix switch
+                        {
+                            Prefix.DD => Prefix.DDCB,
+                            Prefix.FD => Prefix.FDCB,
+                            _ => Prefix.CB,
+                        };
+                        _reg.Q = 0; // prefix M1, same Q-reset semantics as DD/FD
+                        if (_prefix is Prefix.DDCB or Prefix.FDCB)
+                            return EnterExecute(pins); // fetch displacement via MR, not M1
+                        return pins; // plain CB: continue to next M1
+                    }
+                    if (_opcode == 0xED)
+                    {
+                        // ED byte: cancels any pending DD/FD ("DD ED" → ED takes over).
+                        _prefix = Prefix.ED;
+                        _reg.Q = 0; // prefix M1, same Q-reset semantics
+                        return pins;
+                    }
                 }
 
                 return Dispatch(pins);

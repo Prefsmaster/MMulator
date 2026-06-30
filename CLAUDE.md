@@ -176,8 +176,28 @@ These are the things SingleStepTests and ZEXALL specifically catch. Get them rig
   - DD/FD swap HL→IX/IY and (HL)→(IX+d)/(IY+d); they also expose IXH/IXL/IYH/IYL for
     register ops (undocumented). DD/FD are each a full M1 and stack/chain correctly
     (DD DD ... only the last takes effect; each consumes an M1).
-  - DDCB/FDCB: displacement byte comes **before** the final opcode byte; addressing and
-    timing differ from CB.
+  - **Mixed-operand quirk (DD/FD):** when a single LD r,r' accesses (HL)/(IX+d) on one
+    side AND H/L on the other, H/L stays as the *real* H/L register, not IXH/IXL.
+    H/L→IXH/IXL substitution only applies when *both* operands are pure registers (neither
+    is the (HL)/(IX+d) slot).
+  - **Prefix-byte Q-reset (DD/FD/CB/ED):** every prefix M1 resets Q to 0 — confirmed
+    against `dd 37.json`: when initial Q==F, DD+SCF produces a different Y/X result than
+    plain SCF, because the DD byte resets Q to 0 so the subsequent SCF sees Q≠F and uses
+    the `(F|A)` branch instead of the `A`-only branch.
+  - **Quadrant-11 opcode collision in DD/FD dispatch:** opcodes 0xE1/0xE3/0xE5/0xE9/0xF9
+    have z/y bit-field values that collide with quadrant-00 cases in the decoder (e.g.
+    PUSH IX 0xE5 has z=5,y=4, matching DEC IXH). The quadrant-11 group must be checked
+    *before* the z-field switch in both the Dispatch and Execute phases.
+  - **DDCB/FDCB:** displacement byte and CB-table opcode byte are *both* fetched via plain
+    MR (not M1 — R does not increment for either byte). Timing confirmed against
+    `dd cb __ 06/40/86.json`: rotate/RES/SET = 23T
+    (M1+M1+MR(d)+MR(op)+Internal(2)+MR(value)+Internal(1)+MW); BIT = 20T (same without
+    the trailing MW). The Internal(2) *between* the opcode fetch and the value read is easy
+    to miss. Undocumented dual-write: for z≠6 the result is also stored in register r[z].
+  - **DDCB/FDCB transient-flag decay:** `EiPending` and `LastWasLdAIR` must be explicitly
+    reset when prefix bytes are detected in RunFetch, because Dispatch() is never called
+    for any of the four prefix bytes in a DDCB/FDCB sequence — the standard per-opcode
+    reset in Dispatch() never runs.
 - **Block instructions** (LDIR/LDDR/CPIR/CPDR/INIR/OTIR etc.): correct repeat timing
   (extra 5 T-states when repeating) and undocumented flag behaviour.
   - LDI/LDD/CPI/CPD and the INI/IND/OUTI/OUTD non-repeat forms: undocumented flags fully

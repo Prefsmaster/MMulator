@@ -157,6 +157,18 @@ These are the things SingleStepTests and ZEXALL specifically catch. Get them rig
   and is updated by many instructions. SingleStepTests checks `wz`. Implement it.
 - **Undocumented flags (bits 3 & 5, "YF"/"XF"):** set from result/operand as documented in
   "The Undocumented Z80 Documented" (Sean Young). ZEXALL depends on these.
+  - **CP r / CP n** is the one arithmetic op where YF/XF come from the *operand*, not the
+    result (every other ALU op takes them from the result byte). Implemented and tested in
+    `Alu.Cp8` — confirmed by a unit test showing it diverges from plain `Sub8` on inputs
+    where the operand's and the result's bits 3/5 differ.
+  - **SCF / CCF**: `Alu.Scf`/`Alu.Ccf` currently use the simple, widely-documented "YF/XF
+    from A" rule. The real chip's YF/XF for these two also depend on the Q register
+    (Patrik Rak's research: roughly, the result differs depending on whether the
+    *previous* instruction touched the flags) — not yet implemented, because the exact
+    formula wasn't available to verify against rather than guess. Before wiring SCF/CCF
+    into the opcode dispatch (main unprefixed page, milestone 5), cross-check `Alu.Scf`/
+    `Alu.Ccf` against SingleStepTests' actual `scf`/`ccf` JSON cases the same way the M1
+    fetch timing in §5 was confirmed against real test data instead of assumed from prose.
 - **Prefixes:** CB, ED, DD, FD, DDCB, FDCB.
   - DD/FD swap HL→IX/IY and (HL)→(IX+d)/(IY+d); they also expose IXH/IXL/IYH/IYL for
     register ops (undocumented). DD/FD are each a full M1 and stack/chain correctly

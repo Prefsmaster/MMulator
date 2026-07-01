@@ -44,7 +44,7 @@ public sealed partial class Z80
         var y = (_opcode >> 3) & 7;
         switch (y)
         {
-            case 0: return pins; // NOP
+            case 0: return FinishInstruction(pins); // NOP
             case 1:
                 (_reg.AF, _reg.AF_) = (_reg.AF_, _reg.AF);
                 return FinishInstruction(pins);

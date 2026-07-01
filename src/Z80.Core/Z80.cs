@@ -18,8 +18,25 @@ public sealed partial class Z80
     /// convenience for harness/debug inspection between calls.</summary>
     public ulong Pins;
 
-    private enum Phase { Fetch, Execute }
+    private enum Phase { Fetch, Execute, Interrupt }
     private Phase _phase;
+
+    // ---- Interrupt / HALT state --------------------------------------------------
+
+    /// <summary>True while the CPU is in the HALT loop. PC stays fixed; M1 fetches
+    /// repeat at <c>_haltAddr</c> without incrementing PC.</summary>
+    private bool _halted;
+    private ushort _haltAddr;
+
+    /// <summary>Edge-triggered NMI latch: set on a rising edge of the NMI pin,
+    /// cleared when the NMI sequence begins.</summary>
+    private bool _nmiPending;
+    /// <summary>Previous-tick NMI pin level, used purely for edge detection.</summary>
+    private bool _prevNmi;
+
+    /// <summary>Which interrupt type is being serviced while <c>_phase == Interrupt</c>.</summary>
+    private enum IntType { Nmi, Int }
+    private IntType _intType;
 
     // T-state sub-counter, shared by the M1 template and every machine-cycle
     // helper in MachineCycles.cs. Always 0 at the start of a new cycle.
@@ -79,12 +96,22 @@ public sealed partial class Z80
         _phase = Phase.Fetch;
         _tstate = 0;
         _step = 0;
+        _prefix = Prefix.None;
+        _halted = false;
+        _nmiPending = false;
+        _prevNmi = false;
         Pins = 0;
     }
 
     public ulong Step(ulong pins)
     {
-        pins = _phase == Phase.Fetch ? RunFetch(pins) : RunExecute(pins);
+        pins = _phase switch
+        {
+            Phase.Fetch     => RunFetch(pins),
+            Phase.Execute   => RunExecute(pins),
+            Phase.Interrupt => RunInterrupt(pins),
+            _               => throw new InvalidOperationException($"Unknown phase {_phase}."),
+        };
         Pins = pins;
         return pins;
     }
@@ -104,7 +131,45 @@ public sealed partial class Z80
     {
         switch (_tstate)
         {
-            case 0: // T1
+            case 0: // T1 — also the instruction-boundary where NMI/INT are sampled
+                // NMI edge detection: latch on rising edge (0→1 of NMI pin).
+                var nmiNow = (pins & PinBits.NMI) != 0;
+                if (nmiNow && !_prevNmi) _nmiPending = true;
+                _prevNmi = nmiNow;
+
+                // --- Interrupt sampling at TRUE instruction boundaries only ---
+                // A prefix byte (DD/FD/CB/ED) is NOT an instruction boundary: the real
+                // Z80 defers both NMI and INT until the prefixed instruction completes.
+                // _prefix == None means we are at a real boundary (no prefix pending).
+                if (_prefix == Prefix.None)
+                {
+                    if (_nmiPending)
+                    {
+                        _nmiPending = false;
+                        if (_halted) { _halted = false; pins &= ~PinBits.HALT; }
+                        _intType = IntType.Nmi;
+                        return EnterInterrupt(pins);
+                    }
+                    if ((pins & PinBits.INT) != 0 && _reg.IFF1 && !_reg.EiPending)
+                    {
+                        if (_halted) { _halted = false; pins &= ~PinBits.HALT; }
+                        _intType = IntType.Int;
+                        return EnterInterrupt(pins);
+                    }
+                }
+
+                // --- HALT loop: re-fetch at _haltAddr without incrementing PC ---
+                if (_halted)
+                {
+                    _fetchAddr = _haltAddr;
+                    pins = PinBits.SetAddress(pins, _fetchAddr);
+                    pins |= PinBits.M1 | PinBits.HALT;
+                    pins &= ~(PinBits.MREQ | PinBits.RD | PinBits.RFSH);
+                    _tstate = 1;
+                    return pins;
+                }
+
+                // --- Normal M1 T1 ---
                 _fetchAddr = _reg.PC;
                 _reg.PC++;
                 pins = PinBits.SetAddress(pins, _fetchAddr);
@@ -139,6 +204,14 @@ public sealed partial class Z80
                 pins |= PinBits.RFSH;
                 _tstate = 0;
                 _step = 0;
+
+                // HALT loop: discard the opcode byte, keep HALT asserted, and loop
+                // back for another M1 cycle without dispatching.
+                if (_halted)
+                {
+                    pins |= PinBits.HALT;
+                    return pins; // _phase remains Fetch; next Step() is T1 again
+                }
 
                 // Prefix-byte detection — applies whenever we're not yet inside a
                 // terminal prefix (CB/ED only use their second byte as a real opcode,
@@ -212,5 +285,17 @@ public sealed partial class Z80
         _tstate = 0;
         _step = 0;
         return pins;
+    }
+
+    /// <summary>Begins the Interrupt phase and runs T1 of the NMI or INT-ack
+    /// sequence immediately (so the caller's Step() sees T1 of the interrupt cycle,
+    /// not a wasted instruction-boundary tick).</summary>
+    private ulong EnterInterrupt(ulong pins)
+    {
+        _phase = Phase.Interrupt;
+        _prefix = Prefix.None;
+        _tstate = 0;
+        _step = 0;
+        return RunInterrupt(pins);
     }
 }

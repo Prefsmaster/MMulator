@@ -136,12 +136,17 @@ public sealed partial class Z80
 
     private ulong DispatchHalt(ulong pins)
     {
-        // This single execution of HALT advances PC exactly like any other
-        // one-byte opcode (confirmed against SingleStepTests' 76.json — PC is
-        // NOT reverted here). The "PC doesn't advance past HALT" behaviour in
-        // CLAUDE.md §6 is about *subsequent* M1 re-fetches while halted staying
-        // pinned at this address, which belongs to the interrupts milestone
-        // (HALT pin asserted now so that machinery has something to key off).
+        // The M1 that fetched HALT already incremented PC to HALT_addr+1.
+        // Record the actual HALT address so the halted-loop M1 re-fetches from
+        // there without advancing PC further. PC stays at HALT_addr+1 so the
+        // stack push on interrupt gives the correct return address.
+        _haltAddr = (ushort)(_reg.PC - 1);
+        _halted = true;
+        // Clear any stale prefix (e.g. DD HALT) so the interrupt check in the
+        // halted loop fires correctly — _prefix must be None for NMI/INT to be seen.
+        _prefix = Prefix.None;
+        // SingleStepTests 76.json confirms PC = HALT_addr+1 in the final state,
+        // so the first (and only) test-harness execution ends right here.
         return pins | PinBits.HALT;
     }
 

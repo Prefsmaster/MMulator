@@ -371,7 +371,7 @@ dotnet run --project tests/Z80.Conformance -- zexall   # CP/M ZEXALL run
    with all 67 test groups reporting OK and no ERROR lines. Harness in
    `tests/Z80.Conformance/`: 64K flat memory, BDOS interception at PC=0x0005 via
    `AtInstructionBoundary`, warm-boot exit at PC=0x0000, I/O reads return 0xFF.
-10. Tag a release of `Z80.Core`. Hand-off point for the machine layer (future project).
+10. ✅ Tagged `v1.0.0`. Hand-off point for the machine layer (future project).
 
 Do not move to the next milestone while the current milestone's tests are red.
 

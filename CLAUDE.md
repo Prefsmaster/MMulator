@@ -135,8 +135,9 @@ T-state as the pulse**, since the CPU doesn't need to wait on a peripheral to dr
 write. M1's refresh address uses the *pre*-increment R. The suite's `cycles` entries only
 encode address/data/RD/WR/MREQ/IORQ — M1 and RFSH have no bit of their own in the test
 data, so drive them per real silicon (M1 high for all 4 M1 T-states, RFSH high for M1's
-T3-T4) but treat them as unverified by this particular suite. INT ack above is still
-unverified prose — confirm it the same way when interrupts are implemented (milestone 7).
+T3-T4) but treat them as unverified by this particular suite. INT ack timing is confirmed
+by unit tests in `InterruptTests.cs` (milestone 7) — T-state counts match the Z80 manual:
+NMI=11T, IM1=13T, IM2=19T.
 
 An instruction = a sequence of these templates. The micro-step counter indexes the
 current T-state within the current template; the opcode (plus prefix state) selects the
@@ -229,13 +230,35 @@ These are the things SingleStepTests and ZEXALL specifically catch. Get them rig
     (100% across all four opcodes' repeat-continuation cases, ~4000 cases total) — kept as
     XNOR per the data over the literal source reading. Implemented in
     `Z80.OverrideIoRepeatFlags`.
-- **Interrupts:**
-  - NMI: 11 T-states, pushes PC, jumps to 0x0066, IFF1→IFF2 saved, IFF1 cleared.
-  - INT modes 0/1/2 with correct acknowledge timing. IM2 uses I register + bus vector.
-  - INT sampled only at instruction boundary; EI has a one-instruction delay (the EI
-    backlog) before interrupts are enabled.
-- **HALT:** PC does NOT advance past the HALT; the CPU executes NOPs (still doing M1
-  fetches/refresh) until an interrupt. (Known historical bug source - verify PC behaviour.)
+- **Interrupts (milestone 7, implemented in `Interrupts.cs`):**
+  - **NMI:** 11T = 5T aborted M1 (M1 no-MREQ; T3 RFSH/R++; T5 internal SP--) + 3T MW
+    PCH + 3T MW PCL. IFF2←IFF1, IFF1←0 at aborted-M1 T1. PC←0x0066, WZ←0x0066.
+    Edge-triggered (`_prevNmi` tracks previous NMI pin level; latch set only on 0→1).
+  - **INT ack M-cycle:** 6T with M1+IORQ asserted together (the int-ack signature — not
+    M1+MREQ like a normal fetch). T1: M1 no-MREQ, IFF1/IFF2←0. T2: M1+IORQ auto-wait-1.
+    T3: M1+IORQ auto-wait-2 (WAIT-stretchable). T4: M1+IORQ, ack byte sampled from data
+    bus into `_latchLo`. T5: RFSH, R++. T6: RFSH done → `DispatchIntMode` (synchronous,
+    no extra T-state). IM0: ack byte dispatched as opcode. IM1: 1T internal (SP--) +
+    3T MW PCH + 3T MW PCL, PC←0x0038 (13T total). IM2: 1T internal (SP--) + 3T MW PCH
+    + 3T MW PCL + 3T MR vecLo + 3T MR vecHi, PC←vector (19T total); vector address is
+    `(I<<8)|(ack&0xFE)` (low bit forced 0). **The 1T internal** between ack T6 and push
+    is a genuine separate Step() call — easy to miss, confirmed by the 13T/19T count tests.
+  - INT sampled only at instruction boundary; EI has a one-instruction delay (`EiPending`
+    flag) before interrupts re-enable. DI clears IFF1/IFF2 immediately.
+  - **Prefix-boundary inhibition:** interrupts (both NMI and INT) are gated on
+    `_prefix == Prefix.None` in RunFetch T1 — they are NOT taken between a prefix byte
+    (DD/FD/CB/ED) and its following opcode. The real Z80 defers to the end of the
+    prefixed instruction.
+  - **NOP prefix-clear bug (found during milestone 7):** `DispatchZ0` for NOP originally
+    returned bare `pins` without calling `FinishInstruction`, leaving `_prefix = DD` set
+    after DD+NOP. The subsequent T1 would then see `_prefix != None` and skip the
+    interrupt check indefinitely. Fixed: NOP now calls `FinishInstruction`.
+  - **HALT prefix-clear:** `DispatchHalt` also clears `_prefix = Prefix.None` explicitly,
+    so that `DD HALT` (unusual but valid) does not trap interrupts in the halted loop.
+- **HALT:** PC stays at HALT_addr+1 (the M1 that fetched HALT already incremented it);
+  the halted loop re-fetches M1 from `_haltAddr` without advancing PC. HALT pin stays
+  asserted throughout. NMI/INT wake the CPU: `_halted` is cleared before `EnterInterrupt`
+  so the interrupt sequence pushes the correct return address (HALT_addr+1).
 - **RESET:** PC=0, I=R=0, IFF1=IFF2=0, IM0, SP and AF behaviour per spec.
 
 ---
@@ -331,14 +354,14 @@ dotnet run --project tests/Z80.Conformance -- zexall   # CP/M ZEXALL run
 
 ## 11. Build order (milestones)
 
-1. Solution skeleton + `Pins` + `Registers` + empty `Z80.Step()` returning idle pins.
-2. **SingleStepTests harness** wired to a flat 64K byte array, able to load a JSON file,
+1. ✅ Solution skeleton + `Pins` + `Registers` + empty `Z80.Step()` returning idle pins.
+2. ✅ **SingleStepTests harness** wired to a flat 64K byte array, able to load a JSON file,
    run a case by stepping, service the bus, and assert final state + per-cycle bus log.
-3. **M1 fetch template + NOP (0x00)** passing its SingleStepTests file end-to-end.
-4. ALU + flags (incl. YF/XF) with unit tests.
-5. Main (unprefixed) opcode set via the machine-cycle templates → pass all base-page tests.
-6. CB prefix; then ED; then DD/FD; then DDCB/FDCB. Pass each page's tests before moving on.
-7. Interrupts (NMI, IM0/1/2), EI delay, HALT semantics. Pass relevant tests.
+3. ✅ **M1 fetch template + NOP (0x00)** passing its SingleStepTests file end-to-end.
+4. ✅ ALU + flags (incl. YF/XF) with unit tests.
+5. ✅ Main (unprefixed) opcode set via the machine-cycle templates → pass all base-page tests.
+6. ✅ CB prefix; then ED; then DD/FD; then DDCB/FDCB. Pass each page's tests before moving on.
+7. ✅ Interrupts (NMI, IM0/1/2), EI delay, HALT semantics. 18 new tests; 1662 total passing.
 8. Full SingleStepTests suite green.
 9. CP/M harness → ZEXDOC pass → ZEXALL pass.
 10. Tag a release of `Z80.Core`. Hand-off point for the machine layer (future project).

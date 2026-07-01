@@ -367,7 +367,10 @@ dotnet run --project tests/Z80.Conformance -- zexall   # CP/M ZEXALL run
    256 FDCB) + 58 unit tests (AluTests + InterruptTests) = 1662 total, all passing.
    ED page covers only the 80 files the suite provides (40-7F documented + A0-BB block
    instructions); undefined ED opcodes have no JSON file and are not tested.
-9. CP/M harness → ZEXDOC pass → ZEXALL pass.
+9. ✅ CP/M harness → ZEXDOC pass → ZEXALL pass. Both exercisers run to "Tests complete"
+   with all 67 test groups reporting OK and no ERROR lines. Harness in
+   `tests/Z80.Conformance/`: 64K flat memory, BDOS interception at PC=0x0005 via
+   `AtInstructionBoundary`, warm-boot exit at PC=0x0000, I/O reads return 0xFF.
 10. Tag a release of `Z80.Core`. Hand-off point for the machine layer (future project).
 
 Do not move to the next milestone while the current milestone's tests are red.

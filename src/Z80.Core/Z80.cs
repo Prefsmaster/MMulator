@@ -103,6 +103,13 @@ public sealed partial class Z80
         Pins = 0;
     }
 
+    /// <summary>True between instructions (just after one completed, just before the
+    /// next M1 fetch begins). At this point <see cref="Registers.PC"/> holds the
+    /// address of the instruction that is about to be fetched. The host may inspect
+    /// or modify register state here without disrupting the execution stream.</summary>
+    public bool AtInstructionBoundary =>
+        _phase == Phase.Fetch && _tstate == 0 && _prefix == Prefix.None && !_halted;
+
     public ulong Step(ulong pins)
     {
         pins = _phase switch

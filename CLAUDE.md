@@ -362,7 +362,7 @@ dotnet run --project tests/Z80.Conformance -- zexall   # CP/M ZEXALL run
 5. ✅ Main (unprefixed) opcode set via the machine-cycle templates → pass all base-page tests.
 6. ✅ CB prefix; then ED; then DD/FD; then DDCB/FDCB. Pass each page's tests before moving on.
 7. ✅ Interrupts (NMI, IM0/1/2), EI delay, HALT semantics. 18 new tests; 1662 total passing.
-8. Full test suite green: all SingleStepTests JSON opcode files + all unit tests (ALU, interrupt, etc.).
+8. ✅ Full test suite green: all SingleStepTests JSON opcode files + all unit tests (ALU, interrupt, etc.).
 9. CP/M harness → ZEXDOC pass → ZEXALL pass.
 10. Tag a release of `Z80.Core`. Hand-off point for the machine layer (future project).
 

@@ -8,7 +8,10 @@ namespace Z80.Core;
 /// </summary>
 public sealed partial class Z80
 {
-    private static readonly int[] ImByY = { 0, 0, 1, 2, 0, 0, 1, 2 };
+    /// <summary>Numeric IM value per y, derived from the shared <see cref="Z80Tables.Im"/>
+    /// text ordering ("0/1" parses to 0 — the undocumented duplicate still sets IM 0)
+    /// so the core and the disassembler read one source of truth for this mapping.</summary>
+    private static readonly int[] ImByY = Array.ConvertAll(Z80Tables.Im, s => int.Parse(s[..1]));
 
     private ulong DispatchED(ulong pins)
     {

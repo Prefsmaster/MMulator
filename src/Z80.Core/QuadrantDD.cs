@@ -51,8 +51,11 @@ public sealed partial class Z80
     /// <summary>Returns true when the opcode changes behaviour under DD/FD: i.e.
     /// it references H, L, (HL), or HL as a 16-bit pair in a way that must be
     /// substituted with IXH/IXL, (IX+d), or IX.  Everything else just runs as the
-    /// base-page version (wasted prefix).</summary>
-    private static bool IsIndexAffected(byte op)
+    /// base-page version (wasted prefix). Internal (not private) and exposed to
+    /// Z80.Disassembler via <c>InternalsVisibleTo</c> so the disassembler's
+    /// "affected vs. wasted-prefix" classification can never drift from the
+    /// core's: it calls this exact method instead of mirroring the logic.</summary>
+    internal static bool IsIndexAffected(byte op)
     {
         if (op is >= 0x40 and <= 0x7F and not 0x76)
         {

@@ -13,8 +13,11 @@ the nearest project file); the closer file wins on any conflict.
 A cycle-exact emulator of the Philips **P2000T** (and later **P2000M**) 8-bit microcomputer,
 built in .NET as a layered set of projects. Fidelity goal: cycle-exact, bus-accurate,
 including the T's CPU-vs-video contention glitches. The full machine architecture and
-hardware reference lives in the P2000T reference document (kept outside the code, in the
-project notes) — consult it for machine-layer work.
+hardware reference lives at **`docs/P2000T-reference.md`** (repo root) — the confirmed memory
+map, I/O ports, slot pin-outs, interrupt architecture, contention model, and device details.
+It is **read on demand** (not auto-loaded); open it for machine-layer hardware work. It is the
+clean **source of truth** — do not edit it from within a project; findings during
+implementation go in the relevant project's CLAUDE.md and the human syncs them back.
 
 ---
 
@@ -59,7 +62,7 @@ debugger lie. See each project's CLAUDE.md for its side of this rule.
 - **Target framework:** current .NET LTS, cross-platform (Windows/macOS/Linux). Default
   `net8.0`; bump only if asked. `Z80.Core` has **zero NuGet dependencies**; other projects
   keep dependencies minimal and justified.
-- **No platform APIs / no `unsafe`** unless justified, checked with the human and benchmarked.
+- **No platform APIs / no `unsafe`** unless justified and benchmarked.
 - **Determinism:** the core and machine emulation are deterministic — no threads, clocks,
   `DateTime`, or randomness in emulation code. The host/UI owns wall-clock timing.
 - **Thread boundary (spans projects):** emulation runs on its own thread and produces

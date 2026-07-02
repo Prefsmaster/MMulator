@@ -363,4 +363,21 @@ marked synced. Do NOT edit the reference doc from this project.
 - **Synced:** no
 -->
 
-_(no entries yet)_
+### 2026-07-02 — Milestone 2: page table
+- **Assumed:** nothing to confirm on the ROM/RAM/expansion/open-bus shape — those are all
+  CONFIRMED hardware (reference doc §5) and implemented as documented.
+- **Found (documented default for an unconfirmed item):** the 0x94 bank register's
+  power-on/reset value is reference doc open item #2 ("which bank is the normal top-of-RAM
+  that non-banking software sees"), left unconfirmed there. Implemented as bank 0 by
+  construction (`PageTable._bankIndex` defaults to 0) — the least-surprising default, and
+  harmless for faithful T/102 behaviour since the real firmware always writes 0-5 itself
+  before depending on banking. Revisit if a disassembly/schematic confirms otherwise.
+- **Found (scope decision, not a hardware finding):** `RamVariant` implements only T38/T54/
+  T102. PTC-96K is deliberately NOT modelled — reference doc open item #4 (how its 16 KB +
+  64 KB expansions combine, and whether the extra 64 KB rides port 0x94 or a separate
+  scheme) is unconfirmed, and PTC-96K is a floppyboard-only variant, so it has no confirmed
+  shape to build against while floppy support is deferred (project CLAUDE.md §14). Add it
+  once floppy support is undertaken and the addressing scheme is confirmed.
+- **Applies to:** reference doc §5 (memory map, RAM variants, bank switching, open items
+  #2 and #4) / `src/P2000.Machine/Memory/PageTable.cs`, `src/P2000.Machine/MachineConfig.cs`.
+- **Synced:** no

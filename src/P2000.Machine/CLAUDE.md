@@ -167,7 +167,11 @@ Per the reference doc; implement to boot + run:
 - **Cassette / MDCR:** digital block device (not analog). Two-level `TimingPolicy` — authentic
   bit-level at 6000 baud (RDC/RDA self-clocking, drive off master clock, deterministic) OR
   turbo ROM-trap block transfer. Separate always-fast host-side `.cas` manipulation API. CIP
-  reflects whether a `.cas` is mounted (bare = no cassette).
+  reflects whether a `.cas` is mounted (bare = no cassette). **CIP is a LIVE transition:** the
+  bare-machine ROM busy-waits polling CIP, so mounting a `.cas` at RUNTIME must flip CIP while
+  the machine runs — cassette insert/eject is a **runtime operation, an exception to
+  reset-to-apply** (real hardware hot-swaps tapes). On insertion the ROM rewinds and auto-loads
+  a **'P'-type file**, so `.cas` parsing must expose the per-file **type byte** (ref doc §5b).
 - **Sound (1-bit beeper):** square-wave from the beeper line; push samples to audio out.
 
 ---
@@ -294,8 +298,12 @@ This file is the working scratchpad; the reference doc is the clean source of tr
    Unit tests render known VRAM to expected pixels. → commit.
 6. Interrupt aggregator: video 50 Hz → IM1 RST 0x0038. Test the tick fires and vectors. →
    commit.
-7. **BOOT milestone:** monitor ROM + BASIC cartridge → BASIC prompt; RAM-sizing probe sizes the
-   variant. Integration test. → commit.
+7. **BOOT milestone (two outcomes):** load the monitor ROM and verify both boot paths (ref
+   doc §5b boot sequence):
+   (a) **Bare machine (no SLOT1):** RAM check sizes the variant via open-bus → on-screen
+   cassette-wait prompt, ROM polling CIP. This is the fundamental default and needs no
+   cartridge. (b) **SLOT1 populated (BASIC cartridge):** boots into BASIC → prompt.
+   Integration tests for both. → commit.
 8. Keyboard device: matrix + ghosting + KBIEN protocol; apply host input at frame boundary.
    Test typing into BASIC. → commit.
 9. Cassette (MDCR): authentic bit engine + turbo ROM-trap `TimingPolicy`; host-side `.cas` API;

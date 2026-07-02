@@ -27,7 +27,7 @@ implementation go in the relevant project's CLAUDE.md and the human syncs them b
 src/
   Z80.Core/           # cycle-stepped, T-state-accurate, bus-exposing Z80 CPU. DONE (v1.0.0).
   Z80.Disassembler/   # read-only Z80 disassembler for the debugger. Depends on Z80.Core.
-  (future) P2000.Machine/  # bus, memory page table, devices, slots, interrupts. Depends on Z80.Core.
+  P2000.Machine/  # bus, memory page table, devices, slots, interrupts. Depends on Z80.Core.
   (future) P2000.UI/       # Avalonia UI: display, config, keyboard, debugger. Depends on Machine (+ Disassembler).
 tests/
   Z80.Tests/          # SingleStepTests runner + unit tests for the core.

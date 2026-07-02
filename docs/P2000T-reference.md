@@ -95,9 +95,20 @@ Correct model:
 3. **Keyboard window** — shows the original P2000 key layout; also serves as a soft
    keyboard (click keys) and a reference for the host-key mapping.
 4. **Debugger window** — full debugger (spec below).
-5. **Cassette "deck" window** — tape program directory (from the MDCR directory command),
-   current position, play/stop/rewind, and the **authentic vs turbo speed** toggle lives
-   here naturally. Surfaces the "which program on this tape" problem.
+5. **Cassette "deck" window** — the MDCR is **fully computer-controlled**: the CPU drives the
+   tape via CPOUT (FWD/REV/WCD/WDA); there are **NO user transport controls** (no play/stop/
+   rewind buttons on the real hardware — the software moves the tape, e.g. the auto-boot
+   rewind). The deck window is therefore **status indicators + the one physical control
+   (eject)**:
+   - **Direction indicator** — forward/reverse/stopped, reflecting CPOUT FWD/REV bits.
+   - **Read/write activity indicators** — "reading" when RDC (CPRIN) is toggling, "writing"
+     when WCD/WDA (CPOUT) are driven. (Same source as the status-bar activity LED.)
+   - Optional: tape position + program directory (from the MDCR directory).
+   - **Eject** (the only physical button) → unmount the `.cas`, flip CIP to "no cassette".
+     Insertion is done via file dialog / drag-and-drop (mount `.cas` → CIP "present", a
+     runtime action, §5b).
+   - The **authentic/turbo speed** setting is NOT a transport control — it's a config/settings
+     option about mechanism speed, not a deck button.
 
 ### Control surface: menu + toolbar + status bar (NOT custom title-bar buttons)
 Mature emulators (MAME, Fuse, VICE, ares) converge on menu + status bar, shortcuts layered
@@ -664,6 +675,35 @@ consumer of the SAA5020-derived master clock. Three additions:
 
 ## 5b. Cassette drive (MDCR) — device design
 
+### Boot sequence & the bare-machine cassette-wait (CONFIRMED from disassembly)
+What the monitor ROM does at startup, and why the cassette matters even on a bare machine:
+1. **RAM check** (sizes memory via open-bus probing; stops at first gap — §5).
+2. **SLOT1 cartridge check.** If a ROM cartridge (BASIC etc.) is present in SLOT1, boot into
+   it (the "into BASIC" path). SLOT1-empty is detected via **open bus** in the cartridge
+   region — same presence-probe pattern.
+3. **If SLOT1 is empty (the default BARE machine):** the ROM shows a **prompt text on
+   screen** and enters a **wait-for-cassette loop** — busy-waiting, but polling **CIP**
+   (cassette-in-place, CPRIN bit 4).
+4. **On cassette insertion** (CIP transitions to present): the ROM **rewinds** the tape (FWD/
+   REV drive lines) and tries to **auto-load and run a 'P'-type (Program/executable) file**,
+   then starts it.
+
+**Consequences:**
+- The bare machine has a real, demonstrable behavior — not a dead idle loop. It exercises the
+  SLOT1 open-bus check, video (the prompt text), and cassette **status polling** (CIP), then
+  the drive lines and read path. Good first integration target (needs no cartridge).
+- **CIP must be a LIVE transition, not a static bit.** The ROM loops reading CPRIN waiting for
+  CIP to flip, so mounting a `.cas` **while the machine runs** must change the CIP bit the
+  device returns in real time.
+- **Cassette insertion/ejection is a RUNTIME operation — a deliberate exception to
+  reset-to-apply.** Real hardware hot-swaps tapes; inserting a `.cas` is live (unlike RAM/slot
+  topology, which is reset-to-apply). This is why the cassette-deck UI (§3a) has **insert/
+  eject** as runtime actions. (There are NO play/stop/rewind controls — the MDCR is
+  computer-controlled; the deck shows direction + read/write status only. See §3a.)
+- **The 'P' file-type filter is a real `.cas`-format detail:** the auto-boot path selects on
+  the per-file **type byte**. The cassette device + `.cas` parsing must expose file type so
+  this ROM path resolves. (Get the type-byte encoding from the disassembly / M2000 format.)
+
 ### The key fact that reshapes everything: the MDCR is DIGITAL
 The Philips MDCR (Mini Digital Cassette Recorder) is a **digital block device**, not an
 analog audio cassette. You do NOT model waveforms / pulse trains the way a C64 or
@@ -1093,20 +1133,30 @@ confirmation it was the right call):
 
 ## 5f. Keyboard (input device) — CONFIRMED from monitor disassembly
 
-### Two objects, opposite sides of the thread boundary
-"Keyboard" = two things sharing a name:
-- **Keyboard DEVICE** (emulation thread, bus peripheral): holds the physical matrix state,
-  answers the ISR's I/O port reads. Behind the common device interface (Reset/SaveState/
-  LoadState).
-- **Keyboard WINDOW** (UI thread, observer): shows layout, click-to-press soft keyboard,
-  reflects keys down.
+### The keyboard is an I/O DEVICE — same shape as the cassette (two faces)
+The keyboard is an ordinary I/O device, not a special input path. Like the cassette, it has
+**two faces**, and it's important not to confuse them:
+- **Bus face (identical discipline to the cassette):** the CPU does an `IN` from a keyboard
+  port; the device puts row bits on the data bus. Plain I/O port dispatch — no different in
+  kind from the cassette answering a CPRIN read. Keyboard answers ports 0x00–0x09; cassette
+  answers CPRIN (0x20) and consumes CPOUT (0x10) writes.
+- **Host face (also shared with the cassette):** the matrix state is fed from host key events,
+  exactly as the cassette's tape content is fed from a mounted `.cas`. Both are external feeds
+  the emulation thread samples at a safe point (**frame boundary**), so input can't race the
+  50 Hz scan.
 
-**Data flow is REVERSED vs display/debug.** Display + debug are device→UI (UI observes).
-Keyboard is **UI→device**: the first INPUT device. Host key events originate on the Avalonia
-UI thread, queue, and are applied to the device matrix **at a frame boundary** on the
-emulation thread (per §3). The ISR reads that matrix via ports. The queuing discipline is
-what keeps input from racing the 50 Hz scan; frame-boundary application is naturally aligned
-to it, so keypresses aren't missed or doubled.
+So "keyboard" spans a **device** (emulation-thread bus peripheral, behind the common device
+interface) and a **window** (UI-thread observer: layout, click-to-press, reflects keys down) —
+but the device itself is a peer of the cassette, not a different category. **They even share
+port 0x10 (CPOUT):** KBIEN (keyboard scan enable) lives in the same latch as the cassette
+FWD/REV/WCD/WDA lines, so keyboard and cassette register on the port dispatch the same way and
+the `CPoutLatch` fans a 0x10 write out to both. Do NOT model the keyboard as a special
+non-I/O input path.
+
+Note on data direction: earlier framing called the keyboard "reversed-flow" vs display/debug.
+That refers only to the HOST face (host input feeding in), NOT the bus face — and the cassette
+has the same host-fed face (its `.cas`). On the bus both are ordinary I/O devices. Don't let
+"input device" imply a different bus discipline.
 
 ### Scan protocol (CONFIRMED — active-LOW, pressed = 0)
 Scanning is driven by **KBIEN = bit 6 (0x40) of port 0x10 (CPOUT)**:

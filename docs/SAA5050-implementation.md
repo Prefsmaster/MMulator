@@ -34,9 +34,13 @@ for our needs** (see §6 contention seam, §7 P2000T specifics). MAME is the bet
 - Character cell: **6×10** logical pixels, from a 5×9 glyph in a 6×10 box.
 - Display: **40 columns × 24 rows** on the P2000T.
 - Each logical scanline is **doubled to 2** for interlace → 20 rendered rows/char (the code
-  counts 10, renders 20 via the CRS/RA0 odd/even line).
-- Horizontal: each of the 6 cell columns renders **2 pixels** → 12px wide before rounding; the
-  C#/JS store glyph rows as **2 bits/pixel** packed into a `uint` (12 px × 2 bits = 24 bits).
+  counts 10, renders 20 via the CRS/RA0 odd/even line). → **480 px high** (24 × 20).
+- Horizontal: the renderer emits **16 pixel-lanes per character**, NOT a naive 6×2=12. The
+  horizontal rounding is computed at sub-pixel resolution: glyph rows are stored **2 bits/pixel**
+  packed into a `uint`, and the render loop unrolls the 32-bit `chardef` **16 times** per char
+  (both jsbeeb and the C# port agree). → **640 px wide** (40 × 16). **The machine framebuffer is
+  therefore 640×480** (CLAUDE.md §3 framebuffer contract — do NOT reduce to 480 wide; that
+  discards horizontal smoothing).
 - Frame rate 50 Hz PAL (§ reference doc §4a). Flash cadence: ~48-frame counter, on for the
   first 16 (JS/C#) — MAME uses >38 of 50; keep the JS/C# cadence since we adopt that renderer.
 

@@ -1,3 +1,4 @@
+using P2000.Machine.Devices;
 using P2000.Machine.Io;
 using P2000.Machine.Memory;
 using Z80.Core;
@@ -25,12 +26,17 @@ public sealed class Machine
 
     public CprinReader CpIn { get; } = new();
 
+    /// <summary>SAA5050 + fetch timing (T only - the M's display is a separate, deferred
+    /// device; project CLAUDE.md §1/§14).</summary>
+    public Video Video { get; }
+
     private ulong _pins;
 
     public Machine(MachineConfig? config = null)
     {
         Config = config ?? new MachineConfig();
         Memory = new PageTable(Config);
+        Video = new Video(Memory);
 
         Ports.RegisterWrite(CPoutLatch.Port, CpOut.Write);
         Ports.RegisterRead(CprinReader.Port, CpIn.Read);
@@ -46,14 +52,17 @@ public sealed class Machine
         Cpu.Reset();
         CpOut.Reset();
         CpIn.Reset();
+        Video.Reset();
         _pins = 0;
     }
 
     /// <summary>Advances the whole machine by exactly one T-state (project CLAUDE.md §3):
-    /// step the CPU, then service whatever bus request it made this tick against the page
-    /// table (MREQ) or the port dispatch (IORQ).</summary>
+    /// tick the video fetch unit, step the CPU, then service whatever bus request it made
+    /// this tick against the page table (MREQ) or the port dispatch (IORQ).</summary>
     public void Tick()
     {
+        Video.Tick();
+
         _pins = Cpu.Step(_pins);
 
         if ((_pins & Pins.MREQ) != 0)

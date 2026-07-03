@@ -81,6 +81,34 @@ Rules:
 - INT-ack is a normal bus service: when the CPU asserts M1+IORQ, the port/interrupt layer
   supplies the vector on the data bus (core already handles the ack timing).
 
+### The framebuffer (the machine→UI output seam — a first-class surface)
+The SAA5050 generate stage writes pixels into a **framebuffer the MACHINE owns**, not an
+ad-hoc array inside the video device. This is the single output surface the video path writes
+and any consumer (Avalonia display, a test, a screenshot writer) reads. Define it explicitly:
+- **Format & size:** a `uint[]` of BGRA pixels (matches the SAA5050 render path). The SAA5050
+  renderer emits **16 pixel-lanes per character** (NOT a naive 6×2=12) — the horizontal rounding
+  is computed at sub-pixel resolution, which is why the glyph tables pack 2 bits/pixel and both
+  jsbeeb and the owner's C# port unroll a 32-bit `chardef` 16× per character. So the framebuffer
+  is **640 × 480** for 40×24 (40 chars × 16 lanes = 640 wide; 24 rows × 20 rendered scanlines =
+  480 high, the 20 being 10 logical lines doubled for interlace). Do NOT "simplify" the width to
+  480 — that discards the horizontal smoothing information. (See `SAA5050-implementation.md` §1/§2;
+  this contract was corrected from an earlier mistaken 480×480 that under-counted the lanes.)
+  The machine emits these pixels as-is; PAL aspect correction + integer scaling are the **UI's**
+  job — and at 640×480 the pixels are already near-square on 4:3, so the UI scale is close to a
+  straight integer scale, not a stretch.
+- **Ownership:** the **machine owns the buffer(s)** and hands the video device a target to
+  render into. The video device stays a pure pixel producer; the machine owns the frame
+  lifecycle (render → complete → swap → expose).
+- **Double/triple buffer across the thread boundary:** the emulation thread renders into a
+  back buffer; on **frame completion (50 Hz DEW/VBLANK)** it swaps to a front buffer the UI
+  reads. This is reference doc §3's "completed frames into a ring/triple-buffer" made concrete
+  — the framebuffer is what flows through it. The UI/observer NEVER reads a buffer mid-render.
+- **Consumers are interchangeable:** Avalonia copies the front buffer into a `WriteableBitmap`;
+  a test asserts on its contents (this is how milestone 5/7 video tests work — headless, no
+  window); a screenshot writer serializes it. The framebuffer is the contract.
+- The machine stays **headless**: it fills and exposes framebuffers; it never opens a window.
+  Windowing is the separate `P2000.UI` phase (§16 / root map).
+
 ---
 
 ## 4. The common device interface
@@ -157,8 +185,10 @@ address, and the read path must **combine** contributing bits. Confirmed ports f
 Per the reference doc; implement to boot + run:
 - **Video (SAA5050 + fetch timing):** char generator over VRAM (0x5000–0x57FF), 40×24, the
   160–255 inverted-colour trick (needed for Ghosthunt), the panning viewport, 50 Hz PAL
-  frame, produces a WriteableBitmap-ready framebuffer. The fetch-timing unit (SAA5020 role)
-  re-reads each char row for 10 scanlines (confirmed) and is the contention source (§10).
+  frame. **Writes pixels into the machine-owned framebuffer** (§3 framebuffer contract — the
+  device is a pure pixel producer; the machine owns the buffer + swap). See
+  `docs/SAA5050-implementation.md` for the full device guide (rounding, control codes, palette,
+  the fetch/generate split).
 - **Keyboard (I/O device — same shape as the cassette):** an ordinary I/O device with two
   faces, exactly like the cassette:
   - **Bus face:** plain port reads on 0x00–0x09 (the CPU does `IN`; the device puts row bits
@@ -184,6 +214,9 @@ Per the reference doc; implement to boot + run:
   the machine runs — cassette insert/eject is a **runtime operation, an exception to
   reset-to-apply** (real hardware hot-swaps tapes). On insertion the ROM rewinds and auto-loads
   a **'P'-type file**, so `.cas` parsing must expose the per-file **type byte** (ref doc §5b).
+  See `docs/MDCR-implementation.md` for the full device guide (phase-bitstream model, the
+  phase-locked bit recovery, the authoritative `.cas` format + checksum, and the open items:
+  WEN active-sense reconcile, toggleable reverse-direction mapping, seeded blank-tape fill).
 - **Sound (1-bit beeper):** square-wave from the beeper line; push samples to audio out.
 
 ---
@@ -307,7 +340,8 @@ This file is the working scratchpad; the reference doc is the clean source of tr
    in a test. → commit.
 4. Port dispatch + fan-out/combine; CPoutLatch (0x10) + CPRIN (0x20) with unit tests. → commit.
 5. Video device: SAA5050 char gen, VRAM, framebuffer, 50 Hz frame, inverted-colour trick.
-   Unit tests render known VRAM to expected pixels. → commit.
+   Unit tests render known VRAM to expected pixels. **See `docs/SAA5050-implementation.md`.**
+   → commit.
 6. Interrupt aggregator: video 50 Hz → IM1 RST 0x0038. Test the tick fires and vectors. →
    commit.
 7. **BOOT milestone (two outcomes).** The monitor ROM is part of the base machine — it's
@@ -320,7 +354,8 @@ This file is the working scratchpad; the reference doc is the clean source of tr
 8. Keyboard device: matrix + ghosting + KBIEN protocol; apply host input at frame boundary.
    Test typing into BASIC. → commit.
 9. Cassette (MDCR): authentic bit engine + turbo ROM-trap `TimingPolicy`; host-side `.cas` API;
-   CIP/BET/WEN. **RUN milestone:** load + run a real `.cas`. → commit.
+   CIP/BET/WEN. **See `docs/MDCR-implementation.md`.** **RUN milestone:** load + run a real
+   `.cas`. → commit.
 10. Contention model: video fetch as bus participant, Z80-priority single-cell corruption,
     debug overlay hook. Stress test (speckle vs clean). → commit.
 11. Config + state serialization: `.cfg` load/save, `.state` with embedded config header,
@@ -420,4 +455,48 @@ marked synced. Do NOT edit the reference doc from this project.
 - **Applies to:** reference doc §5f (CPOUT/CPRIN bit maps, shared-port fan-out/combine) /
   `src/P2000.Machine/Io/PortDispatch.cs`, `src/P2000.Machine/Io/CPoutLatch.cs`,
   `src/P2000.Machine/Io/CprinReader.cs`, `src/P2000.Machine/Machine.cs`.
+- **Synced:** no
+
+### 2026-07-03 — Milestone 5: video device (SAA5050 + fetch timing)
+- **Assumed:** the framebuffer would be 480×480 (12 px/char-column) per this file's §3 as
+  first written.
+- **Found (spec correction, confirmed by tracing the reference renderers bit-for-bit):** the
+  hard-won C#/jsbeeb renderer blends adjacent glyph columns into **16 output pixel lanes per
+  character**, not a plain 6×2=12 doubling - verified by decoding the `MakeHiresGlyphs`
+  multiplier constants bit-by-bit (each of the 12 raw column bits spreads across 3-4 output
+  bits with deliberate overlap between neighbours, the anti-aliasing mechanism itself). This
+  makes the real framebuffer **640×480**, not 480×480. §3 was corrected before implementation
+  started (both by me and, in parallel, by the human editing the same section) rather than
+  silently re-deriving the smoothing math to fit 12 lanes.
+- **Found (hardware confirmation, resolves an implementation-doc ambiguity):** the reference
+  doc §5 explicitly confirms the 160-255 trick as "inverted (**swapped** fg/bg) colours", not
+  a per-channel complement. This matches the C# port's `PERender` variant (swap the palette
+  shift positions, `invert ? 2:5 / 5:2`) rather than MAME's `color ^= 0x07` (a channel
+  complement, mathematically different unless fg/bg happen to be exact complements). Built
+  the swap model; MAME's own comment header flags it disagrees with jsbeeb's rounding anyway,
+  so it was already the weaker semantics reference for this quirk.
+- **Found (untested-in-the-wild quirk, ported deliberately):** `PERender`'s `previousLineData`
+  cache — double-height's bottom half re-shows the TOP row's byte at each column instead of
+  whatever is actually in that column's own VRAM row — was carried into `BeginCell`. This is
+  easy to miss (the non-PE `Render()` path in the same reference file does NOT have it) and
+  would silently break any double-height text whose authoring tool doesn't duplicate the top
+  row's bytes into the row below.
+- **Found (unconfirmed CPU-facing control, scoped decision):** the reference doc confirms the
+  panning MECHANISM (screen buffer is 80 cols × 24 rows, viewport pans by an upper-left X
+  0-40) but not which port/register the CPU writes to set it. Exposed as a plain settable
+  `Video.PanX` property for now, same pattern as `CprinReader`'s properties ahead of the
+  cassette device (milestone 4 finding) - wire it to the real control once found.
+- **Found (fetch-slot timing, acknowledged approximation):** the SAA5020's real per-slot bus
+  occupancy is confirmed-unconfirmed (reference doc §4a). `VideoFetchUnit` schedules the 40
+  column fetches at `floor(column × 2.5)` T-states within the 100 T-state active window -
+  evenly spaced integer slots, the best available approximation until a logic-analyzer
+  capture pins the real waveform. Swappable without touching `Video`/`Saa5050Generator`.
+- **Found (scope decision, not a hardware finding):** framebuffer pixel contents are NOT
+  included in `Video.SaveState` - only the fetch-unit counters and generator attribute state
+  are, which is sufficient for validation gate §12.5 ("subsequent frames" must match; a
+  mid-render buffer snapshot is not required for that guarantee) and keeps state files small.
+- **Applies to:** reference doc §5/§5f (VRAM layout, panning, 160-255 trick), §4a (fetch
+  timing) / `docs/SAA5050-implementation.md` (whole device guide) /
+  `src/P2000.Machine/Devices/Video.cs`, `src/P2000.Machine/Devices/Saa5050/*.cs`,
+  `src/P2000.Machine/Contention/VideoFetchUnit.cs`.
 - **Synced:** no

@@ -1,3 +1,4 @@
+using P2000.Machine.Contention;
 using P2000.Machine.Io;
 using P2000.Machine.Memory;
 
@@ -164,5 +165,38 @@ public class MachineTests
         }
 
         Assert.Equal(0xEE, machine.Memory.Read(PageTable.BankedWindowStart));
+    }
+
+    // ---- Video wiring (milestone 5) --------------------------------------------------------
+
+    [Fact]
+    public void Tick_DrivesTheVideoDevice_AlongsideTheCpu()
+    {
+        var machine = new Machine();
+        machine.Memory.Write(PageTable.VideoRamStart, (byte)'@');
+
+        for (var i = 0; i < VideoFetchUnit.TStatesPerFrame; i++)
+        {
+            machine.Tick();
+        }
+
+        // A frame's worth of master ticks must have completed and swapped in a rendered
+        // front buffer - not still all-zero (Video's own tests pin the exact pixel values).
+        Assert.Contains(machine.Video.FrontBuffer, pixel => pixel != 0);
+    }
+
+    [Fact]
+    public void Reset_ClearsTheVideoFrontBuffer()
+    {
+        var machine = new Machine();
+        machine.Memory.Write(PageTable.VideoRamStart, (byte)'@');
+        for (var i = 0; i < VideoFetchUnit.TStatesPerFrame; i++)
+        {
+            machine.Tick();
+        }
+
+        machine.Reset();
+
+        Assert.All(machine.Video.FrontBuffer, pixel => Assert.Equal(0u, pixel));
     }
 }

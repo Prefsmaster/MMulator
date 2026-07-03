@@ -117,6 +117,18 @@ Build a **page table** over the 64 KB space at machine-assembly time from the co
 - ROM pages read-only; SLOT1 cartridge region 0x1000–0x4FFF with CARS1 (0x1000–0x2FFF) /
   CARS2 (0x3000–0x4FFF); banked 0xE000–0xFFFF via port 0x94 with a **configurable bank
   count** (6 for T/102, up to 256 for a homebrew module; index ≥ populated → open bus).
+- **Monitor ROM is the BASE machine, not a cartridge.** Fixed 4 KB at 0x0000–0x0FFF, present
+  from power-on on every machine. The emulator loads a **built-in default monitor ROM**
+  automatically; `MachineConfig` exposes an OPTIONAL `MonitorRomPath` override (null → default)
+  for custom/patched monitor revisions. Do NOT model it as a slot/cartridge.
+  - **The default monitor ROM is EMBEDDED as a compiled-in resource, not a loose file.** A bare
+    machine must boot **out of the box with zero setup** (like flipping on a real P2000T) — no
+    assets folder required, no file dialog, no missing-file failure mode on the default path.
+    The `MonitorRomPath` override reads from disk only when deliberately set; the default path
+    can never fail.
+- **BASIC is a SLOT1 CARTRIDGE image, not a boot ROM.** It populates SLOT1 (0x1000–0x4FFF) via
+  the normal slot config (image path). Empty SLOT1 → cassette-wait boot; populated → into
+  BASIC (§5b). Keep monitor ROM and cartridge images as distinct config concepts.
 - Fixed base RAM 0x6000–0x9FFF; 16 KB expansion 0xA000–0xDFFF (board-provided).
 
 ---
@@ -298,11 +310,12 @@ This file is the working scratchpad; the reference doc is the clean source of tr
    Unit tests render known VRAM to expected pixels. → commit.
 6. Interrupt aggregator: video 50 Hz → IM1 RST 0x0038. Test the tick fires and vectors. →
    commit.
-7. **BOOT milestone (two outcomes):** load the monitor ROM and verify both boot paths (ref
-   doc §5b boot sequence):
+7. **BOOT milestone (two outcomes).** The monitor ROM is part of the base machine — it's
+   present at 0x0000 from power-on (loaded automatically, §5), NOT a per-test fixture. Verify
+   the two boot outcomes that depend on SLOT1 population (ref doc §5b boot sequence):
    (a) **Bare machine (no SLOT1):** RAM check sizes the variant via open-bus → on-screen
-   cassette-wait prompt, ROM polling CIP. This is the fundamental default and needs no
-   cartridge. (b) **SLOT1 populated (BASIC cartridge):** boots into BASIC → prompt.
+   cassette-wait prompt, ROM polling CIP. The fundamental default; needs no cartridge.
+   (b) **SLOT1 populated (BASIC cartridge image):** boots into BASIC → prompt.
    Integration tests for both. → commit.
 8. Keyboard device: matrix + ghosting + KBIEN protocol; apply host input at frame boundary.
    Test typing into BASIC. → commit.
@@ -380,4 +393,31 @@ marked synced. Do NOT edit the reference doc from this project.
   once floppy support is undertaken and the addressing scheme is confirmed.
 - **Applies to:** reference doc §5 (memory map, RAM variants, bank switching, open items
   #2 and #4) / `src/P2000.Machine/Memory/PageTable.cs`, `src/P2000.Machine/MachineConfig.cs`.
+- **Synced:** no
+
+### 2026-07-03 — Milestone 4: port dispatch, CPoutLatch, CprinReader
+- **Assumed:** the CPOUT/CPRIN bit maps and shared-port fan-out/combine model (reference doc
+  §5f) were CONFIRMED hardware and implemented as documented.
+- **Found (design decision, not a hardware finding):** `PortDispatch` combines multiple read
+  sources on one port by bitwise OR, on the assumption each source only ever sets the bits it
+  owns and leaves the rest 0. This works cleanly for CPRIN (cassette bits vs. future printer
+  bits are disjoint) but would silently corrupt a port where two sources legitimately
+  disagree on the same bit — there is no such port today, but a future shared port must keep
+  its sources bit-disjoint or this combine strategy needs revisiting.
+- **Found (scope decision, not a hardware finding):** `CprinReader` currently owns ALL of
+  CIP/BET/WEN/RDC/RDA directly (settable properties) rather than combining a separate
+  cassette-device read source, because the cassette device is milestone 9. PRI/READY/STRAP
+  read as 0 (inactive) since the printer is deferred entirely (§14) and has no confirmed
+  hardware shape yet. When the cassette device lands, decide whether it registers its own
+  `PortDispatch` read source for 0x20 (letting `CprinReader` shrink to printer-only bits) or
+  keeps feeding these same properties — either is compatible with the fan-out/combine model.
+- **Found (doc self-correction applied):** the reference doc's illustrative CPRIN read
+  sketch (§5f) has a confusing/self-contradictory comment on the WEN bit ("WEN=0 writable ->
+  so set when NOT protected?"). Implemented literally per the doc's own bit TABLE instead:
+  bit 3 = 1 means write-protected, bit 3 = 0 means writable (`CprinReader.WriteProtected`
+  sets the bit when `true`). The doc itself flags the sketch as illustrative, not
+  authoritative — no correction needed there, just noting which reading was implemented.
+- **Applies to:** reference doc §5f (CPOUT/CPRIN bit maps, shared-port fan-out/combine) /
+  `src/P2000.Machine/Io/PortDispatch.cs`, `src/P2000.Machine/Io/CPoutLatch.cs`,
+  `src/P2000.Machine/Io/CprinReader.cs`, `src/P2000.Machine/Machine.cs`.
 - **Synced:** no

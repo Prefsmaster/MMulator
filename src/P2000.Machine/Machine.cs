@@ -1,15 +1,15 @@
+using P2000.Machine.Io;
 using P2000.Machine.Memory;
 using Z80.Core;
 
 namespace P2000.Machine;
 
 /// <summary>
-/// Assembles a <see cref="Z80.Core.Z80"/> CPU plus memory (and, eventually, devices) into
-/// a cycle-exact, bus-accurate P2000T/M and owns the deterministic emulation loop (project
+/// Assembles a <see cref="Z80.Core.Z80"/> CPU plus memory and I/O devices into a
+/// cycle-exact, bus-accurate P2000T/M and owns the deterministic emulation loop (project
 /// CLAUDE.md §3). <see cref="Tick"/> steps the core one T-state at a time and services
-/// every memory request (opcode fetch, data read, write) against the <see cref="Memory"/>
-/// page table. I/O port dispatch doesn't exist yet (milestone 4), so IORQ+RD reads answer
-/// open bus for now, the same presence-probe convention the page table already uses.
+/// whatever bus request it made this tick: MREQ against the <see cref="Memory"/> page
+/// table, IORQ against the <see cref="Ports"/> dispatch.
 /// </summary>
 public sealed class Machine
 {
@@ -19,12 +19,23 @@ public sealed class Machine
 
     public PageTable Memory { get; }
 
+    public PortDispatch Ports { get; } = new();
+
+    public CPoutLatch CpOut { get; } = new();
+
+    public CprinReader CpIn { get; } = new();
+
     private ulong _pins;
 
     public Machine(MachineConfig? config = null)
     {
         Config = config ?? new MachineConfig();
         Memory = new PageTable(Config);
+
+        Ports.RegisterWrite(CPoutLatch.Port, CpOut.Write);
+        Ports.RegisterRead(CprinReader.Port, CpIn.Read);
+        Ports.RegisterWrite(PageTable.BankSelectPort, Memory.SelectBank);
+
         Cpu.Reset();
     }
 
@@ -33,12 +44,14 @@ public sealed class Machine
     public void Reset()
     {
         Cpu.Reset();
+        CpOut.Reset();
+        CpIn.Reset();
         _pins = 0;
     }
 
     /// <summary>Advances the whole machine by exactly one T-state (project CLAUDE.md §3):
     /// step the CPU, then service whatever bus request it made this tick against the page
-    /// table.</summary>
+    /// table (MREQ) or the port dispatch (IORQ).</summary>
     public void Tick()
     {
         _pins = Cpu.Step(_pins);
@@ -54,9 +67,19 @@ public sealed class Machine
                 Memory.Write(Pins.GetAddress(_pins), Pins.GetData(_pins));
             }
         }
-        else if ((_pins & Pins.IORQ) != 0 && (_pins & Pins.RD) != 0)
+        else if ((_pins & Pins.IORQ) != 0)
         {
-            _pins = Pins.SetData(_pins, PageTable.OpenBus);
+            // Reference doc §5c: the P2000T decodes only A0-A7 for I/O (8-bit port space).
+            var port = (byte)Pins.GetAddress(_pins);
+
+            if ((_pins & Pins.RD) != 0)
+            {
+                _pins = Pins.SetData(_pins, Ports.Read(port));
+            }
+            else if ((_pins & Pins.WR) != 0)
+            {
+                Ports.Write(port, Pins.GetData(_pins));
+            }
         }
     }
 }

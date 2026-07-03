@@ -38,6 +38,11 @@ public sealed class PageTable
     public const ushort BankedWindowEnd = 0xFFFF;
     private const int BankSize = BankedWindowEnd - BankedWindowStart + 1; // 8 KB per bank
 
+    /// <summary>I/O port 0x94 (reference doc §5), the write-only bank-select register for
+    /// the 0xE000-0xFFFF window. <see cref="Machine"/> wires a write here to
+    /// <see cref="SelectBank"/> via the port dispatch.</summary>
+    public const byte BankSelectPort = 0x94;
+
     private readonly byte[] _rom = new byte[RomSize];
 
     private readonly ushort _videoRamEnd;
@@ -78,9 +83,8 @@ public sealed class PageTable
     /// <summary>Sets the raw byte written to I/O port 0x94, selecting which 8 KB bank
     /// answers at 0xE000-0xFFFF. Stored unmasked (reference doc §5: the hardware places no
     /// range restriction on this register); an index at or beyond the configured bank
-    /// count reads open bus, same as any other unpopulated region. The I/O port dispatch
-    /// (milestone 4) calls this on a write to 0x94 — this milestone only exposes the
-    /// mechanism directly.</summary>
+    /// count reads open bus, same as any other unpopulated region. <see cref="Machine"/>
+    /// registers this as the port dispatch's write listener for <see cref="BankSelectPort"/>.</summary>
     public void SelectBank(byte index) => _bankIndex = index;
 
     public byte Read(ushort address)

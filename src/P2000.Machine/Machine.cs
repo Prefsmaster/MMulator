@@ -1,4 +1,5 @@
 using P2000.Machine.Devices;
+using P2000.Machine.Interrupts;
 using P2000.Machine.Io;
 using P2000.Machine.Memory;
 using Z80.Core;
@@ -30,6 +31,11 @@ public sealed class Machine
     /// device; project CLAUDE.md §1/§14).</summary>
     public Video Video { get; }
 
+    /// <summary>Wired-OR INT aggregator (project CLAUDE.md §8). The video 50 Hz VBLANK is
+    /// the only registered source for the T-first build; future CTC and IM2 daisy-chain
+    /// sources call <see cref="InterruptAggregator.RaiseInt"/> from their own handlers.</summary>
+    public InterruptAggregator Interrupts { get; } = new();
+
     private ulong _pins;
 
     public Machine(MachineConfig? config = null)
@@ -42,6 +48,9 @@ public sealed class Machine
         Ports.RegisterRead(CprinReader.Port, CpIn.Read);
         Ports.RegisterWrite(PageTable.BankSelectPort, Memory.SelectBank);
 
+        // Wire the 50 Hz video VBLANK → INT (project CLAUDE.md §8: T-first INT source).
+        Video.FieldComplete += Interrupts.RaiseInt;
+
         Cpu.Reset();
     }
 
@@ -53,15 +62,24 @@ public sealed class Machine
         CpOut.Reset();
         CpIn.Reset();
         Video.Reset();
+        Interrupts.Reset();
         _pins = 0;
     }
 
     /// <summary>Advances the whole machine by exactly one T-state (project CLAUDE.md §3):
-    /// tick the video fetch unit, step the CPU, then service whatever bus request it made
-    /// this tick against the page table (MREQ) or the port dispatch (IORQ).</summary>
+    /// tick the video fetch unit, assert the INT pin if pending, step the CPU, then service
+    /// whatever bus request it made this tick against the page table (MREQ) or the port
+    /// dispatch (IORQ); detect the int-ack cycle (M1+IORQ) and acknowledge the aggregator.</summary>
     public void Tick()
     {
         Video.Tick();
+
+        // Drive the INT pin level into the pin word before the CPU samples it at the
+        // next instruction boundary (project CLAUDE.md §8, Z80.Core §4 host-loop shape).
+        if (Interrupts.IntPending)
+            _pins |= Pins.INT;
+        else
+            _pins &= ~Pins.INT;
 
         _pins = Cpu.Step(_pins);
 
@@ -81,7 +99,15 @@ public sealed class Machine
             // Reference doc §5c: the P2000T decodes only A0-A7 for I/O (8-bit port space).
             var port = (byte)Pins.GetAddress(_pins);
 
-            if ((_pins & Pins.RD) != 0)
+            if ((_pins & Pins.M1) != 0)
+            {
+                // INT-ack cycle: M1+IORQ asserted together (Z80.Core §5 "INT ack" template).
+                // The aggregator clears its pending latch and returns the vector byte; for IM1
+                // the CPU ignores the byte (uses the fixed 0x0038 vector) but we drive it anyway
+                // so the bus looks correct and a future IM2 source can supply a real vector.
+                _pins = Pins.SetData(_pins, Interrupts.Acknowledge());
+            }
+            else if ((_pins & Pins.RD) != 0)
             {
                 _pins = Pins.SetData(_pins, Ports.Read(port));
             }

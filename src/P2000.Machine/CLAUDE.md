@@ -540,6 +540,29 @@ marked synced. Do NOT edit the reference doc from this project.
   `src/P2000.Machine/Contention/VideoFetchUnit.cs`.
 - **Synced:** no
 
+### 2026-07-03 — Milestone 6: interrupt aggregator (video 50 Hz → IM1 RST 0x0038)
+- **Assumed:** nothing to confirm on the IM1/RST-38 vector or the wired-OR structure —
+  those are CONFIRMED hardware (reference doc §5e/§8) and implemented as documented.
+- **Found (design decision, not a hardware finding):** `InterruptAggregator.Acknowledge()`
+  returns 0xFF (passive pull-up) regardless of source — for IM1 the CPU ignores the bus
+  byte entirely, so any value is correct; 0xFF reflects a real undriven bus rather than
+  inventing a fictitious RST-38 byte. When a future IM2 source registers, `Acknowledge`
+  will need a priority/daisy-chain scheme to pick the winning vector — flagged in the seam
+  comment but deliberately not pre-built (root CLAUDE.md: no hypothetical abstractions).
+- **Found (design decision, not a hardware finding):** INT is kept as a continuous level in
+  `_pins` (assert while `IntPending`, deassert otherwise) rather than a one-tick pulse.
+  The CPU samples it only at instruction boundaries when IFF1=1, so a multi-tick assertion
+  is harmless and avoids a race window where a single-tick pulse could be missed if the CPU
+  is mid-instruction when it fires.
+- **Found (int-ack detection):** M1+IORQ (without RD/WR) is the int-ack signature per the
+  Z80 core's Interrupts.cs comment and pin table. Added as the first branch inside the
+  `IORQ` block in `Machine.Tick()` — before the plain IORQ+RD read path — so a future
+  normal IORQ read can never be mistaken for an int-ack.
+- **Applies to:** reference doc §5e (interrupt sources, wired-OR INT), §8 (video 50 Hz →
+  IM1 RST 0x0038) / `src/P2000.Machine/Interrupts/InterruptAggregator.cs`,
+  `src/P2000.Machine/Machine.cs`.
+- **Synced:** no
+
 ### 2026-07-03 — Milestone 5 (rework): fields vs frames, single persistent buffer
 - **Assumed:** the machine's 50 Hz video cycle was a progressive FRAME - the original
   implementation rendered BOTH the even and odd sub-scanline rows for every physical scanline

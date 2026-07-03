@@ -216,8 +216,33 @@ config override.**
     shows #/£ swapped.
 - **Default font: embed `FN_SAA5050Data.cs`'s `makeChars()` set** (the standard 5050 UK set) as
   a compiled-in resource.
-- **Config override:** `MachineConfig` exposes an optional character-set path (null → embedded
-  default), parallel to `MonitorRomPath` — for anyone wanting a national variant or custom font.
+- **On-disk font format = HUMAN-READABLE TEXT** (`.` = 0, `*` = 1). 96 glyphs × 10 rows × 6 cols,
+  editable in any text editor, no tool needed — you can see the glyph shapes directly. Optional
+  `#`-comment header per glyph (char index/label) for navigation; comments ignored on parse.
+  Example:
+  ```
+  # 0x41 'A'
+  ..**..
+  .*..*.
+  *....*
+  *....*
+  ******
+  *....*
+  *....*
+  ......
+  ......
+  ......
+  ```
+  Parse: read 6-wide `.`/`*` rows, 10 per glyph → the `makeChars()` 0/1 pixel form. This is the
+  authoring/save format (load + save).
+- **Built-in variants converted to this text format:** the SAA505x dumps (5050 UK default; 5051
+  German, 5052 Swedish, 5053 Italian, 5054 Belgian, 5055 US, 5056 Hebrew, 5057 Cyrillic) ship as
+  text-format presets. Source dumps are `uint16[960]` (one row/uint16, low 6 bits, **bit 5 =
+  leftmost** — matches `getLoResGlyphRow` x0..x5); convert each uint16 to a `.`/`*` row by
+  emitting bits 5..0. Standard 5050 (UK) is the embedded default.
+- **Fonts loadable from an ARBITRARY FILE:** `MachineConfig` exposes an optional character-set
+  file path (null → embedded default), parallel to `MonitorRomPath`. Any conforming text font
+  loads — custom/edited fonts are first-class.
 
 ---
 

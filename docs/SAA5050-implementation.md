@@ -128,6 +128,25 @@ Mirror the pin-driven resets (all three agree on the shape):
 - Per-cell in `Render()`: latch `previousColor`/`currentGlyphs` BEFORE processing the cell's
   control code (set-after), fetch the glyph row, emit pixels.
 
+### Fields, frames, and CRS (the two-pass interlace — REQUIRED for rounding)
+The rounded image is built from **two interlaced fields per frame** (this is the P2000T's real
+50 Hz interlaced timing, and it's how the smoothing lands — not optional polish):
+- **Even field:** sub-scanlines from y=0, `SetCRS(false)` → the raw rows.
+- **Odd field:** sub-scanlines from y=1, `SetCRS(true)` → the **smoothed** rows (CRS/RA0 selects
+  the rounding scanline). `SetDEW` fires on the even field to start a new frame.
+- So a complete 640×480 rounded image exists only after BOTH fields. The fetch/render loop runs
+  two interleaved passes per frame.
+- **Timing split (see machine CLAUDE.md §3):** the 50 Hz **interrupt + CTC channel-3 clock fire
+  per FIELD**; **present to the UI per FIELD into a single PERSISTENT buffer with NO inter-field
+  clear** — this reproduces the interlace **comb** artifact in fast horizontal motion (authentic;
+  the owner's deliberate choice). Interlaced/comb is the DEFAULT; a progressive (per-frame,
+  composited) display option exists for a smooth image. The owner's `P2000Video.cs` exposes
+  `FieldComplete` (every field) and `FrameComplete` (odd-field only) to drive both cadences.
+- **Height = 480 (24 rows × 20), NOT 500.** The owner's reference `P2000Video.cs` allocated
+  640×500 and ran to bitmapY 499/501 — that's **BBC-Micro heritage** (BBC teletext = 25 rows).
+  The P2000T is 24 rows. Fix the buffer height, the end-of-field test, and the field/frame
+  discriminator together to 480-based values; don't copy the 500 arithmetic.
+
 ---
 
 ## 6. The CONTENTION SEAM — restructure vs the reference code (IMPORTANT)

@@ -134,6 +134,13 @@ Config changes that alter hardware topology **require a machine reset to take ef
 (simplest, most authentic). Apply by queueing the new config and performing a cold reset.
 - **Model selector (top-level axis): P2000T vs P2000M.** Gates everything else — M implies
   its disk/CTC; T offers the slot cards. Put this above RAM/slots.
+- **Monitor ROM (base machine, default + override).** The 4 KB monitor at 0x0000 is present on
+  every machine from power-on — NOT a cartridge/slot. The emulator loads a **built-in default**
+  automatically; config exposes an optional **custom boot-ROM override** (`MonitorRomPath`,
+  null → default) for patched/alternate monitor revisions. The default ROM is **embedded as a
+  compiled-in resource** so a bare machine boots **out of the box with zero setup** (like a
+  real P2000T powering on) — no assets folder, no file dialog, no missing-file failure on the
+  default path. The override reads from disk only when deliberately set.
 - **RAM configuration = variant selector** (T/38 16 KB · T/54 32 KB · T/102 80 KB ·
   PTC-96K). This expands into which regions are populated and whether port-0x94 banking is
   active at 0xE000–0xFFFF (see §5 memory map). Reset-to-apply. NB: driven by the
@@ -147,8 +154,13 @@ Config changes that alter hardware topology **require a machine reset to take ef
   **internal extension** (floppy/CTC card — populated in M, optional on T).
 - **Disk interface present?** (internal-slot floppy/CTC card) + mounted disk image(s).
 - **Cassette:** `.cas` file selectable via file dialog (also drag-and-drop).
-- **Display:** integer-scaling toggle (crisp nearest-neighbour vs smoothed), PAL
-  aspect-ratio correction, optional scanline/CRT shader, **"show contention glitches"
+- **Display mode (4-way, over the same rendered scanlines):** **interlaced (comb)** — authentic
+  default (per-field persistent non-erased buffer → reproduces comb in fast motion);
+  **progressive** — both fields composited per frame, smooth; **even-only** / **odd-only** —
+  present a single field (discard the other), no comb, half vertical detail. Odd-only is slightly
+  smoother (the CRS/RA0 rounding lands on odd sub-scanlines); field-only defaults to line-doubling.
+  Plus: integer-scaling toggle (crisp nearest-neighbour vs smoothed), PAL aspect-ratio correction,
+  optional scanline/CRT shader, **"show contention glitches"
   toggle**, and a debug overlay highlighting which character cells were corrupted this
   frame (turns the headline feature into something visible/testable).
 - **Audio:** mute + volume (minor for a 1-bit beeper, but present).
@@ -1108,6 +1120,11 @@ confirmation it was the right call):
   ZC/TO (if present), optionally interrupt.
 - **Time constant 0 = 256.**
 - **Channel 3 has NO output pin** → the conventional pure timekeeping/interrupt channel.
+- **CTC channel 3 CLK/TRG is wired to the video 50 Hz (per field)** — CONFIRMED from the owner's
+  working video code (`P2000Video.cs` calls `Ctc.ClkTrg(3)` once per field). This is the concrete
+  wiring behind the CTC-as-system-tick mechanism (§5e): the video field signal clocks CTC ch3,
+  so when a CTC is present ch3 counts fields and can generate the system tick; absent a CTC, the
+  same 50 Hz drives the IM1 video tick directly. (Fires per FIELD = 50 Hz, not per frame.)
 - **Cascading:** ZC/TO of channel n → CLK/TRG of channel n+1 for longer periods
   (e.g. ch2→ch3 for a 16-bit timer / slow tick).
 - **Control word** (bit0=1): bit7 int-enable, bit6 mode (0=timer/1=counter), bit5

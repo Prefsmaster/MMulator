@@ -90,12 +90,51 @@ and any consumer (Avalonia display, a test, a screenshot writer) reads. Define i
   is computed at sub-pixel resolution, which is why the glyph tables pack 2 bits/pixel and both
   jsbeeb and the owner's C# port unroll a 32-bit `chardef` 16× per character. So the framebuffer
   is **640 × 480** for 40×24 (40 chars × 16 lanes = 640 wide; 24 rows × 20 rendered scanlines =
-  480 high, the 20 being 10 logical lines doubled for interlace). Do NOT "simplify" the width to
-  480 — that discards the horizontal smoothing information. (See `SAA5050-implementation.md` §1/§2;
-  this contract was corrected from an earlier mistaken 480×480 that under-counted the lanes.)
-  The machine emits these pixels as-is; PAL aspect correction + integer scaling are the **UI's**
-  job — and at 640×480 the pixels are already near-square on 4:3, so the UI scale is close to a
-  straight integer scale, not a stretch.
+  480 high, the 20 being 10 logical lines doubled). Do NOT "simplify" the width to 480 — that
+  discards horizontal smoothing. **NB: NOT 500 high** — the owner's reference video code used
+  640×500 (25 rows), which is **BBC-Micro heritage** (BBC teletext is 25 rows); the P2000T is
+  **24 rows = 480**. Fix the three coupled constants together (buffer height, end-of-field test,
+  field/frame discriminator) — don't copy the 500-based arithmetic.
+- **Fields vs frames (interlaced — model BOTH distinctly):** the P2000T runs **50 fields/sec**,
+  interlaced: an **even field** (sub-scanlines from y=0, `CRS=false`) and an **odd field** (from
+  y=1, `CRS=true`) interleave into the display. The odd field is where the diagonal smoothing
+  lands (CRS/RA0 selects it). Consequences:
+  - **Interrupt + CTC trigger fire per FIELD (50 Hz):** the video 50 Hz VBLANK (→ IM1 RST 0x0038,
+    §8) and the CTC channel-3 clock (reference doc §5e; when a CTC is present) tick once per
+    field. DEW resets on the even field.
+  - **Present to the UI per FIELD (50 Hz), into a SINGLE PERSISTENT buffer — do NOT clear/erase
+    between fields.** Each field writes ONLY its own scanlines (even field → even lines, odd →
+    odd) into one persistent 640×480 buffer, leaving the other field's lines (from ~20 ms ago)
+    untouched. Presenting every field with no inter-field clear **reproduces the real interlace
+    "comb" artifact**: fast horizontal motion serrates because adjacent scanlines are 1/50 s out
+    of sync — an authentic CRT behaviour, deliberately preserved. (This REPLACES the earlier
+    per-frame back/front swap idea — it's a single persistent buffer, not a swap chain.)
+  - **Thread boundary:** the persistent buffer is owned by the emulation thread; at each **field
+    boundary** hand the UI a read-only view or a fast copy of the whole buffer, then continue
+    writing the next field into the SAME buffer (no clear). Snapshot-at-field-boundary avoids
+    tearing while keeping the comb.
+  - **No inter-field erase = maximum comb (simplest + authentic).** Do NOT model phosphor decay
+    /field dimming unless asked — leaving the previous field's lines as-is is both simplest and
+    the strongest, most faithful effect.
+  - **Display mode (owner decision) — four options over the SAME rendered scanlines; default
+    interlaced/comb:**
+    1. **Interlaced (comb) — DEFAULT:** both fields, single persistent buffer, present per field,
+       no inter-field clear → authentic comb on fast horizontal motion (as above).
+    2. **Progressive:** both fields composited per frame, no comb, full vertical detail.
+    3. **Even-only:** present only the even field (raw sub-scanlines), discard odd.
+    4. **Odd-only:** present only the odd field (the SMOOTHED sub-scanlines — CRS/RA0 rounding
+       lands here), discard even.
+    - Even-only vs odd-only are NOT identical: odd-only looks slightly smoother (it's the rounded
+      scanlines), even-only slightly harder-edged. Both eliminate comb (single temporal field) at
+      the cost of half the vertical info.
+    - **Field-only default = line-double** (draw each field line twice to fill 480, gap-free,
+      chunky). A scanline-gaps look is achievable via the existing scanline/CRT shader option — do
+      NOT add a separate gaps mode.
+    - All four read the same rendered scanlines; only present-cadence + clear + which-lines differ.
+  - Do NOT collapse field==frame in the emulation timing — the interrupt/CTC are per-field
+    regardless of the display toggle. The toggle only affects UI presentation.
+  - PAL aspect correction + integer scaling are the **UI's** job; at 640×480 pixels are already
+    near-square on 4:3, so the UI scale is close to a straight integer scale, not a stretch.
 - **Ownership:** the **machine owns the buffer(s)** and hands the video device a target to
   render into. The video device stays a pure pixel producer; the machine owns the frame
   lifecycle (render → complete → swap → expose).

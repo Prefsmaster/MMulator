@@ -54,7 +54,7 @@ public class VideoFetchUnitTests
         Assert.InRange(lastColumnTState, 0, VideoFetchUnit.ActiveTStatesPerLine - 1);
     }
 
-    // ---- Line/frame boundaries -------------------------------------------------------------
+    // ---- Line/field boundaries -------------------------------------------------------------
 
     [Fact]
     public void Tick_OneLine_FiresLineCompleteExactlyOnce()
@@ -72,28 +72,28 @@ public class VideoFetchUnitTests
     }
 
     [Fact]
-    public void Tick_OneFrame_FiresFrameCompleteExactlyOnce()
+    public void Tick_OneField_FiresFieldCompleteExactlyOnce()
     {
         var unit = new VideoFetchUnit();
-        var frameCompletions = 0;
-        unit.FrameComplete += () => frameCompletions++;
+        var fieldCompletions = 0;
+        unit.FieldComplete += () => fieldCompletions++;
 
-        for (var i = 0; i < VideoFetchUnit.TStatesPerFrame; i++)
+        for (var i = 0; i < VideoFetchUnit.TStatesPerField; i++)
         {
             unit.Tick();
         }
 
-        Assert.Equal(1, frameCompletions);
+        Assert.Equal(1, fieldCompletions);
     }
 
     [Fact]
-    public void Tick_OneFrame_FetchesEveryActiveLineColumnExactlyOnce()
+    public void Tick_OneField_FetchesEveryActiveLineColumnExactlyOnce()
     {
         var unit = new VideoFetchUnit();
         var fetchCount = 0;
         unit.ColumnFetch += _ => fetchCount++;
 
-        for (var i = 0; i < VideoFetchUnit.TStatesPerFrame; i++)
+        for (var i = 0; i < VideoFetchUnit.TStatesPerField; i++)
         {
             unit.Tick();
         }
@@ -115,7 +115,7 @@ public class VideoFetchUnitTests
 
         unit.ColumnFetch += _ => fetchedDuringVblank = true;
 
-        for (var i = 0; i < (VideoFetchUnit.TStatesPerFrame - VideoFetchUnit.ActiveLines * VideoFetchUnit.TStatesPerLine); i++)
+        for (var i = 0; i < (VideoFetchUnit.TStatesPerField - VideoFetchUnit.ActiveLines * VideoFetchUnit.TStatesPerLine); i++)
         {
             unit.Tick();
         }

@@ -7,12 +7,23 @@ namespace P2000.Machine.Devices;
 
 /// <summary>
 /// The SAA5050 + fetch-timing video device (project CLAUDE.md §7/§9, reference doc §5/§5f).
-/// Owns the machine's framebuffer (§3 framebuffer contract: 640×480 BGRA, double-buffered)
-/// and wires the fetch-timing unit (<see cref="VideoFetchUnit"/>, the SAA5020's role) to the
+/// Owns the machine's framebuffer (§3 framebuffer contract: 640×480 BGRA, a SINGLE persistent
+/// buffer - the P2000T is interlaced at 50 fields/sec, not 50 progressive frames/sec) and
+/// wires the fetch-timing unit (<see cref="VideoFetchUnit"/>, the SAA5020's role) to the
 /// character generator (<see cref="Saa5050Generator"/>, the SAA5050's role) exactly along the
 /// fetch/generate split `docs/SAA5050-implementation.md` §6 calls for: the fetch unit issues a
 /// real VRAM read every column slot on the master clock (the future contention seam,
 /// milestone 10); the generator only ever consumes the byte it's handed.
+///
+/// Each 50 Hz field pass (<see cref="VideoFetchUnit.TStatesPerField"/>) renders ONLY that
+/// field's scanlines (even field → even output rows, odd field → odd rows) into the SAME
+/// buffer, with NO inter-field clear - the other field's rows are left as they were ~20 ms
+/// ago. This reproduces the real interlace "comb" artifact on fast motion and is the
+/// project-mandated default (§3: "four display modes... default interlaced/comb" - the other
+/// three are a UI-presentation concern, not a machine one, since "the toggle only affects UI
+/// presentation"). <see cref="FieldComplete"/> fires every field (50 Hz - drives the
+/// interrupt/CTC cadence); <see cref="FrameComplete"/> fires only after the odd field, once
+/// every two fields, marking a complete 640×480 image.
 /// </summary>
 public sealed class Video : IDevice
 {
@@ -27,15 +38,15 @@ public sealed class Video : IDevice
     private readonly VideoFetchUnit _fetchUnit = new();
     private readonly Saa5050Generator _generator = new();
 
-    private uint[] _backBuffer = new uint[Width * Height];
-    private uint[] _frontBuffer = new uint[Width * Height];
+    private readonly uint[] _framebuffer = new uint[Width * Height];
+    private bool _oddField;
 
     public Video(PageTable memory)
     {
         _memory = memory;
         _fetchUnit.ColumnFetch += OnColumnFetch;
         _fetchUnit.LineComplete += OnLineComplete;
-        _fetchUnit.FrameComplete += OnFrameComplete;
+        _fetchUnit.FieldComplete += OnFieldComplete;
     }
 
     /// <summary>Upper-left X of the panned 40-column viewport into the 80-column screen
@@ -46,16 +57,32 @@ public sealed class Video : IDevice
     /// (see milestone 5 findings).</summary>
     public int PanX { get; set; }
 
-    /// <summary>The most recently completed frame (project CLAUDE.md §3 framebuffer
-    /// contract). Never mutated mid-render - only swapped in whole on frame completion.</summary>
-    public uint[] FrontBuffer => _frontBuffer;
+    /// <summary>The single persistent framebuffer (project CLAUDE.md §3 framebuffer
+    /// contract). Mutated in place, field by field, with no inter-field clear - read it at a
+    /// <see cref="FieldComplete"/> boundary for a tear-free (but intentionally comb-able)
+    /// snapshot.</summary>
+    public uint[] Framebuffer => _framebuffer;
+
+    /// <summary>True while the CURRENTLY RUNNING field is the odd (CRS=true, smoothed) one.</summary>
+    public bool IsOddField => _oddField;
+
+    /// <summary>Raised at each 50 Hz field boundary (SAA5020 DEW pulse) - the video VBLANK
+    /// interrupt source (project CLAUDE.md §8) fires once per field, not once per frame.</summary>
+    public event Action? FieldComplete;
+
+    /// <summary>Raised only after the ODD field completes (`docs/SAA5050-implementation.md`
+    /// §5: "FrameComplete (odd-field only)") - once every TWO fields, marking the point where
+    /// both interlaced fields have been rendered and the persistent buffer holds a complete
+    /// 640×480 image. A future progressive/composited display mode would read on this event
+    /// instead of <see cref="FieldComplete"/>.</summary>
+    public event Action? FrameComplete;
 
     public void Reset()
     {
         _fetchUnit.Reset();
         _generator.Reset();
-        Array.Clear(_backBuffer);
-        Array.Clear(_frontBuffer);
+        _oddField = false;
+        Array.Clear(_framebuffer);
     }
 
     /// <summary>Advances the video device by one master-clock T-state (project CLAUDE.md §3
@@ -71,23 +98,31 @@ public sealed class Video : IDevice
 
         _generator.BeginCell(data, column);
 
-        var rowBase = _fetchUnit.Line * 2 * Width;
+        // Interlaced (project CLAUDE.md §3): this field pass owns only ITS rows (even or odd),
+        // not both - the other field's rows are left untouched from ~20 ms ago (the comb).
+        var row = _fetchUnit.Line * 2 + (_oddField ? 1 : 0);
         var pixelX = column * 16;
-        _generator.RenderField(_backBuffer, rowBase + pixelX, oddField: false);
-        _generator.RenderField(_backBuffer, rowBase + Width + pixelX, oddField: true);
+        _generator.RenderField(_framebuffer, row * Width + pixelX, oddField: _oddField);
     }
 
     private void OnLineComplete() => _generator.EndLine();
 
-    private void OnFrameComplete()
+    private void OnFieldComplete()
     {
-        _generator.BeginFrame();
-        (_frontBuffer, _backBuffer) = (_backBuffer, _frontBuffer);
+        var completedFieldWasOdd = _oddField; // parity of the field that JUST finished
+        _generator.BeginField();
+        _oddField = !_oddField;
+        FieldComplete?.Invoke();
+        if (completedFieldWasOdd)
+        {
+            FrameComplete?.Invoke();
+        }
     }
 
     public void SaveState(IStateWriter writer)
     {
         writer.WriteInt32(PanX);
+        writer.WriteBool(_oddField);
         _fetchUnit.SaveState(writer);
         _generator.SaveState(writer);
     }
@@ -95,6 +130,7 @@ public sealed class Video : IDevice
     public void LoadState(IStateReader reader)
     {
         PanX = reader.ReadInt32();
+        _oddField = reader.ReadBool();
         _fetchUnit.LoadState(reader);
         _generator.LoadState(reader);
     }

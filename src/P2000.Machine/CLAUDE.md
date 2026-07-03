@@ -539,3 +539,41 @@ marked synced. Do NOT edit the reference doc from this project.
   `src/P2000.Machine/Devices/Video.cs`, `src/P2000.Machine/Devices/Saa5050/*.cs`,
   `src/P2000.Machine/Contention/VideoFetchUnit.cs`.
 - **Synced:** no
+
+### 2026-07-03 — Milestone 5 (rework): fields vs frames, single persistent buffer
+- **Assumed:** the machine's 50 Hz video cycle was a progressive FRAME - the original
+  implementation rendered BOTH the even and odd sub-scanline rows for every physical scanline
+  within a single 50,000-T-state pass, double-buffered, swapping a completed 640×480 image to
+  a front buffer once per pass.
+- **Found (spec correction, this file's §3):** the P2000T is genuinely INTERLACED at 50
+  FIELDS/sec, not 50 progressive frames/sec - a field pass renders ONLY its own parity of
+  output rows (even field → even rows, odd field → odd rows) with CRS held constant for the
+  whole pass, into a SINGLE PERSISTENT buffer with NO inter-field clear (reproducing the
+  authentic interlace "comb" on fast motion). Reworked accordingly:
+  - `VideoFetchUnit.TStatesPerFrame`/`FrameComplete` renamed to `TStatesPerField`/
+    `FieldComplete` (the 50,000-T-state/240-active-line cycle IS a field; two make a frame).
+  - `Saa5050Generator.BeginFrame` renamed to `BeginField`; `RenderField` is now called ONCE
+    per cell per pass (not twice) - the field-wide `oddField` parity comes from `Video`, not
+    from looping both values internally.
+  - `Video` dropped the back/front swap for one persistent `_framebuffer` array, added
+    `IsOddField`, and toggles field parity at each `FieldComplete`.
+  - `Video.FrameComplete` added (`docs/SAA5050-implementation.md` §5: "FrameComplete
+    (odd-field only)") - fires once every TWO fields, after the odd one, for a future
+    progressive/composited display consumer; `FieldComplete` (every field, 50 Hz) is what
+    milestone 6's interrupt aggregator and a future CTC channel-3 clock must use instead.
+  - Buffer height was already 480 (24×20), NOT the 500 (25-row, BBC-heritage) the doc warned
+    against - no fix needed there.
+- **Found (reference-doc terminology, flagged for sync, not corrected here):** reference doc
+  §4a calls the 50,000-T-state/50 Hz cycle a "Frame." Per this file's §3 (now confirmed), that
+  cycle is actually a FIELD - a P2000T frame is two fields (25 Hz for a complete interlaced
+  image). Worth a wording pass in the reference doc's §4a when synced.
+- **Found (scope decision, unchanged from the first milestone 5 pass):** the four
+  display-mode options (interlaced/comb default, progressive, even-only, odd-only) in this
+  file's §3 are explicitly UI-presentation concerns ("the toggle only affects UI presentation")
+  - `Video` only produces the default interlaced/comb buffer plus the two events a UI layer
+    would need to build any of the four; no mode-switch was added to the machine layer.
+- **Applies to:** this file §3 (framebuffer contract), `docs/SAA5050-implementation.md` §5
+  (fields/frames/CRS) / `src/P2000.Machine/Devices/Video.cs`,
+  `src/P2000.Machine/Devices/Saa5050/Saa5050Generator.cs`,
+  `src/P2000.Machine/Contention/VideoFetchUnit.cs`.
+- **Synced:** no

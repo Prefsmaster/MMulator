@@ -20,12 +20,15 @@ internal enum Saa5050GlyphSet
 /// via <see cref="Video"/>).
 ///
 /// Restructured from the reference C#/JS renderers' single `Render()` (impl guide §9 - "drive
-/// the generator from OUR fetch unit... a genuine simplification") into three calls because
-/// each character cell is rendered TWICE (even + smoothed-odd field, impl guide §1) but must
-/// only be control-code-PROCESSED once: <see cref="BeginCell"/> resolves state for the cell,
-/// <see cref="RenderField"/> blits one of its two output rows, <see cref="EndLine"/>/
-/// <see cref="BeginFrame"/> replace the reference code's edge-triggered DEW/LOSE/CRS pins with
-/// plain calls (same reset semantics, no pin ceremony - impl guide §9 sanctions this).
+/// the generator from OUR fetch unit... a genuine simplification") into separate calls:
+/// <see cref="BeginCell"/> resolves state for the cell (control codes, hold-graphics, the
+/// inverted-colour trick), <see cref="RenderField"/> blits its pixels for whichever field
+/// (even/CRS=false or odd/CRS=true) is currently running - the P2000T is interlaced at 50
+/// fields/sec (project CLAUDE.md §3), so a single field pass renders each cell exactly ONCE,
+/// using a field-wide-constant CRS value <see cref="Video"/> supplies (see the milestone 5
+/// findings log for the field/frame correction). <see cref="EndLine"/>/<see cref="BeginField"/>
+/// replace the reference code's edge-triggered DEW/LOSE/CRS pins with plain calls (same reset
+/// semantics, no pin ceremony - impl guide §9 sanctions this).
 /// </summary>
 internal sealed class Saa5050Generator : IDevice
 {
@@ -50,7 +53,7 @@ internal sealed class Saa5050Generator : IDevice
     private Saa5050GlyphSet _heldGlyphSet = Saa5050GlyphSet.Normal;
     private Saa5050GlyphSet _currentGlyphSet = Saa5050GlyphSet.Normal;
 
-    // Per-cell: latched by BeginCell, consumed by RenderField for the same cell's two fields.
+    // Per-cell: latched by BeginCell, consumed by RenderField for that same cell's pass.
     private int _previousColor = 7;
     private bool _prevFlash;
     private byte _renderCode = 0x20;
@@ -85,9 +88,9 @@ internal sealed class Saa5050Generator : IDevice
         _invert = false;
     }
 
-    /// <summary>Frame-boundary reset (SAA5020 DEW pulse, impl guide §5): rewinds the
+    /// <summary>Field-boundary reset (SAA5020 DEW pulse, impl guide §5): rewinds the
     /// scan-line counter and advances the flash cadence.</summary>
-    public void BeginFrame()
+    public void BeginField()
     {
         _scanLineCounter = 0;
         _secondHalfOfDouble = false;
@@ -122,8 +125,7 @@ internal sealed class Saa5050Generator : IDevice
 
     /// <summary>Processes one column's fetched byte for the current scanline (control-code
     /// handling, hold-graphics, the 160-255 inverted-colour trick) and latches everything
-    /// <see cref="RenderField"/> needs, without touching pixels - so it runs exactly once per
-    /// cell even though the cell is rendered twice.</summary>
+    /// <see cref="RenderField"/> needs, without touching pixels.</summary>
     public void BeginCell(byte fetchedData, int column)
     {
         _invert = (fetchedData & 0x80) != 0;
@@ -158,9 +160,11 @@ internal sealed class Saa5050Generator : IDevice
         _renderCode = data;
     }
 
-    /// <summary>Renders one of the cell's two output rows (impl guide §1: 10 physical
-    /// scanlines × even/smoothed-odd field = 20 output rows per character row) into 16 BGRA
-    /// pixel lanes starting at <paramref name="offset"/>.</summary>
+    /// <summary>Renders this cell's pixels for whichever field is currently running -
+    /// <paramref name="oddField"/> is constant for the whole field pass (project CLAUDE.md
+    /// §3: interlaced 50 fields/sec), selecting the raw (even, CRS=false) or smoothed (odd,
+    /// CRS=true) glyph-row variant - into 16 BGRA pixel lanes starting at
+    /// <paramref name="offset"/>.</summary>
     public void RenderField(uint[] frameBuffer, int offset, bool oddField)
     {
         var scanLine = _scanLineCounter << 1;

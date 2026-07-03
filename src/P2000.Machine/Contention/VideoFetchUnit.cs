@@ -8,14 +8,20 @@ namespace P2000.Machine.Contention;
 /// and which column it's for. This is the seam milestone 10's bus contention plugs into -
 /// today (milestone 5) it just drives the video device's fetch/render schedule; no corruption
 /// yet (the video device always sees a clean fetch).
+///
+/// Counts in **fields**, not frames (project CLAUDE.md §3): the P2000T is interlaced at 50
+/// fields/sec, so this 50,000-T-state/240-active-line cycle is one field (either the even or
+/// odd set of sub-scanlines) - two fields make one interlaced frame. <see cref="Video"/> is
+/// the one that knows which field is currently running.
 /// </summary>
 public sealed class VideoFetchUnit : IDevice
 {
     /// <summary>64 µs/line × 2.5 MHz (reference doc §4a).</summary>
     public const int TStatesPerLine = 160;
 
-    /// <summary>50 Hz frame rate at 2.5 MHz (reference doc §4a).</summary>
-    public const int TStatesPerFrame = 50_000;
+    /// <summary>50 Hz field rate at 2.5 MHz (reference doc §4a / project CLAUDE.md §3: the
+    /// P2000T's "50 Hz" cycle is a field, not a frame).</summary>
+    public const int TStatesPerField = 50_000;
 
     /// <summary>24 rows × 10 scanlines (reference doc §4a).</summary>
     public const int ActiveLines = 240;
@@ -26,7 +32,7 @@ public sealed class VideoFetchUnit : IDevice
 
     public const int Columns = 40;
 
-    private int _frameTState;
+    private int _fieldTState;
     private int _column;
 
     public int Line { get; private set; }
@@ -46,13 +52,13 @@ public sealed class VideoFetchUnit : IDevice
     /// events for that line have already fired by the time this raises.</summary>
     public event Action? LineComplete;
 
-    /// <summary>Raised at the 50 Hz frame boundary (SAA5020 DEW pulse), after that frame's
+    /// <summary>Raised at the 50 Hz field boundary (SAA5020 DEW pulse), after that field's
     /// final <see cref="LineComplete"/>.</summary>
-    public event Action? FrameComplete;
+    public event Action? FieldComplete;
 
     public void Reset()
     {
-        _frameTState = 0;
+        _fieldTState = 0;
         _column = 0;
         Line = 0;
         LineTState = 0;
@@ -69,15 +75,15 @@ public sealed class VideoFetchUnit : IDevice
             _column++;
         }
 
-        _frameTState++;
-        var wrapped = _frameTState == TStatesPerFrame;
+        _fieldTState++;
+        var wrapped = _fieldTState == TStatesPerField;
         if (wrapped)
         {
-            _frameTState = 0;
+            _fieldTState = 0;
         }
 
-        var newLine = _frameTState / TStatesPerLine;
-        var newLineTState = _frameTState % TStatesPerLine;
+        var newLine = _fieldTState / TStatesPerLine;
+        var newLineTState = _fieldTState % TStatesPerLine;
 
         if (newLine != Line || wrapped)
         {
@@ -90,7 +96,7 @@ public sealed class VideoFetchUnit : IDevice
 
         if (wrapped)
         {
-            FrameComplete?.Invoke();
+            FieldComplete?.Invoke();
         }
     }
 
@@ -103,7 +109,7 @@ public sealed class VideoFetchUnit : IDevice
 
     public void SaveState(IStateWriter writer)
     {
-        writer.WriteInt32(_frameTState);
+        writer.WriteInt32(_fieldTState);
         writer.WriteInt32(_column);
         writer.WriteInt32(Line);
         writer.WriteInt32(LineTState);
@@ -111,7 +117,7 @@ public sealed class VideoFetchUnit : IDevice
 
     public void LoadState(IStateReader reader)
     {
-        _frameTState = reader.ReadInt32();
+        _fieldTState = reader.ReadInt32();
         _column = reader.ReadInt32();
         Line = reader.ReadInt32();
         LineTState = reader.ReadInt32();

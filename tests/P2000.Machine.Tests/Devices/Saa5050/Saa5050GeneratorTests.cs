@@ -91,7 +91,7 @@ public class Saa5050GeneratorTests
         Assert.Equal(expected, buffer);
     }
 
-    // ---- Reset / EndLine / BeginFrame ------------------------------------------------------
+    // ---- Reset / EndLine / BeginField ------------------------------------------------------
 
     [Fact]
     public void EndLine_ResetsAttributesToRowDefaults()

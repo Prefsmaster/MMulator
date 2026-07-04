@@ -187,6 +187,18 @@ Independent of the authentic/turbo timing policy: mount/eject, load `.cas` (→ 
 save (`MiniTape.Save`), write-protect, browse the block directory (from the headers), side
 select. Always instant; not gated by the bit-timing.
 
+**Bitstream → `.cas` serializer (MISSING in the current code — must be built):** `MiniTape.Save`
+currently dumps the raw phase-bit array (`data[Side]`), not a `.cas` file. For the UI "Save as
+.cas" round-trip, add the **inverse of `LoadCasImage`**: walk the phase stream, find block
+framing (BOB gaps, the `0xAA` lead/trail marks), recover bytes via the same PLL/phase logic the
+read path uses, strip the framing + verify checksum, and reassemble **1280-byte `.cas` records**
+(header at 0x30, data at 0x100). This is what lets a CSAVE'd tape persist as `.cas`. Keep the raw
+phase-array save too if useful for debugging, but the user-facing save is `.cas`.
+
+**Write round-trip:** `.cas` → bitstream (load) → CSAVE mutates bitstream (realtime WCD/WDA or
+turbo block-trap) → bitstream → `.cas` (save). Blank tape (no load) → CSAVE builds a tape in
+memory → Save as `.cas`.
+
 ---
 
 ## 9. What to KEEP vs improve from the owner's implementation

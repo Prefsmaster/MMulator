@@ -88,9 +88,12 @@ public sealed class MiniTape
     // ---- Host face ---------------------------------------------------------------
 
     /// <summary>Encodes a P2000T <c>.cas</c> image onto the current side, overwriting it.
-    /// Tape is write-protected after loading (MDCR-implementation.md §3). Rewinds to BOT
-    /// when done. Format: 1280 bytes/record; data from record offset 0x100 (1024 bytes per
-    /// block) — see MDCR-implementation.md §6.</summary>
+    /// A <c>.cas</c> file represents one physical side of a cassette; to access the other
+    /// side the tape must be ejected and flipped (call <see cref="SeekTo"/> with side 1 after
+    /// a new load, or load a second .cas via a separate call on side 1). Tape is
+    /// write-protected after loading (MDCR-implementation.md §3). Rewinds to BOT when done.
+    /// Format: 1280 bytes/record; data from record offset 0x100 (1024 bytes per block) —
+    /// see MDCR-implementation.md §6.</summary>
     public void LoadCasImage(byte[] casImage, bool writeProtect = true)
     {
         var blocks = casImage.Length / 1280;

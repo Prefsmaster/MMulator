@@ -256,6 +256,21 @@ Per the reference doc; implement to boot + run:
   See `docs/MDCR-implementation.md` for the full device guide (phase-bitstream model, the
   phase-locked bit recovery, the authoritative `.cas` format + checksum, and the open items:
   WEN active-sense reconcile, toggleable reverse-direction mapping, seeded blank-tape fill).
+- **Cassette WRITE / SAVE path (both timing modes — currently thin in the guide, specify it):**
+  - **CSAVE updates the internal bitstream in BOTH modes.** Realtime/authentic: WCD/WDA writes
+    capture the ROM's bitstream phase-by-phase into the in-memory `MiniTape` (as read is the
+    reverse). Turbo: ROM-trap the save routine, write whole blocks into the tape image directly.
+    Either way the mounted tape's in-memory state is updated live.
+  - **Bitstream → `.cas` serializer (the reverse of `LoadCasImage` — MISSING, must be built):**
+    the MDCR guide documents `.cas` → bitstream only. Add the inverse: decode the phase stream
+    back into 1280-byte `.cas` records (find block framing / `0xAA` markers, recover bytes via
+    the same PLL logic, strip framing + checksum). Needed so a tape written by CSAVE can be
+    persisted.
+  - **UI "Save as .cas":** a host-side action (always available, not gated by timing policy) that
+    runs the serializer and writes the current tape to a `.cas` file — symmetric with load. Also
+    a plain "save tape" that writes back to the loaded file. (Host-side `.cas` API, §7.)
+  - So the round trip is: `.cas` → bitstream (load) → CSAVE mutates bitstream → bitstream →
+    `.cas` (save). Blank-tape CSAVE (no file loaded) → new tape in memory → Save as .cas.
 - **Sound (1-bit beeper):** square-wave from the beeper line; push samples to audio out.
 
 ---

@@ -132,7 +132,7 @@ public class MachineTests
         var machine = new Machine();
         machine.Memory.LoadRom(new byte[]
         {
-            0xDB, 0x05, // IN A, (0x05) - keyboard row port, not wired until milestone 8
+            0xDB, 0x50, // IN A, (0x50) - not a registered port
             0x76,       // HALT
         });
 
@@ -198,5 +198,105 @@ public class MachineTests
         machine.Reset();
 
         Assert.All(machine.Video.Framebuffer, pixel => Assert.Equal(0u, pixel));
+    }
+
+    // ---- Keyboard wiring (milestone 8) --------------------------------------------
+
+    /// <summary>
+    /// A ROM that sets KBIEN=0 and reads port 0 must see 0xFF when no key is pressed.
+    /// </summary>
+    [Fact]
+    public void Tick_KeyboardRead_NoPressedKey_Returns0xFF()
+    {
+        var machine = new Machine();
+        machine.Memory.LoadRom(new byte[]
+        {
+            0xF3,       // DI
+            0x3E, 0x00, // LD A, 0x00  (KBIEN=0)
+            0xD3, 0x10, // OUT (0x10), A
+            0xDB, 0x00, // IN A, (0x00)  — keyboard row 0
+            0x76,       // HALT
+        });
+
+        for (var i = 0; i < 60; i++) machine.Tick();
+
+        Assert.Equal(0xFF, machine.Cpu.Reg.A);
+    }
+
+    /// <summary>
+    /// A pressed key in row 0 col 2 must clear bit 2 of the port-0 read result (active-low).
+    /// </summary>
+    [Fact]
+    public void Tick_KeyboardRead_PressedKey_BitCleared()
+    {
+        var machine = new Machine();
+        machine.Keyboard.SetKey(row: 0, col: 2, pressed: true);
+        machine.Memory.LoadRom(new byte[]
+        {
+            0xF3,       // DI
+            0x3E, 0x00, // LD A, 0x00  (KBIEN=0)
+            0xD3, 0x10, // OUT (0x10), A
+            0xDB, 0x00, // IN A, (0x00)
+            0x76,       // HALT
+        });
+
+        for (var i = 0; i < 60; i++) machine.Tick();
+
+        Assert.Equal(0, machine.Cpu.Reg.A & (1 << 2)); // bit 2 cleared
+        Assert.NotEqual(0xFF, machine.Cpu.Reg.A);
+    }
+
+    /// <summary>
+    /// KBIEN=1 (scan ON): port 0 returns 0xFF when no key is down.
+    /// </summary>
+    [Fact]
+    public void Tick_KeyboardRead_KbienOn_NoKey_Port0Returns0xFF()
+    {
+        var machine = new Machine();
+        machine.Memory.LoadRom(new byte[]
+        {
+            0xF3,       // DI
+            0x3E, 0x40, // LD A, 0x40  (KBIEN=1)
+            0xD3, 0x10, // OUT (0x10), A
+            0xDB, 0x00, // IN A, (0x00)
+            0x76,       // HALT
+        });
+
+        for (var i = 0; i < 60; i++) machine.Tick();
+
+        Assert.Equal(0xFF, machine.Cpu.Reg.A);
+    }
+
+    /// <summary>
+    /// KBIEN=1: port 0 returns non-0xFF when any key is pressed anywhere in the matrix.
+    /// </summary>
+    [Fact]
+    public void Tick_KeyboardRead_KbienOn_AnyKey_Port0NonFF()
+    {
+        var machine = new Machine();
+        machine.Keyboard.SetKey(row: 7, col: 5, pressed: true); // arbitrary key
+        machine.Memory.LoadRom(new byte[]
+        {
+            0xF3,       // DI
+            0x3E, 0x40, // LD A, 0x40  (KBIEN=1)
+            0xD3, 0x10, // OUT (0x10), A
+            0xDB, 0x00, // IN A, (0x00)  — AND of all rows
+            0x76,       // HALT
+        });
+
+        for (var i = 0; i < 60; i++) machine.Tick();
+
+        Assert.NotEqual(0xFF, machine.Cpu.Reg.A);
+    }
+
+    [Fact]
+    public void Reset_ClearsKeyboardMatrix()
+    {
+        var machine = new Machine();
+        machine.Keyboard.SetKey(0, 0, pressed: true);
+
+        machine.Reset();
+
+        Assert.False(machine.Keyboard.IsKeyPressed(0, 0));
     }
 }

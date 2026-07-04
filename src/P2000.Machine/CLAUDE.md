@@ -540,6 +540,25 @@ marked synced. Do NOT edit the reference doc from this project.
   `src/P2000.Machine/Contention/VideoFetchUnit.cs`.
 - **Synced:** no
 
+### 2026-07-04 — Milestone 8: keyboard device
+- **Assumed:** the 10×8 matrix, KBIEN protocol, and port range (0x00–0x09) were all
+  CONFIRMED hardware (reference doc §5f) and implemented as documented.
+- **Found (design decision):** the keyboard reads KBIEN live from `CPoutLatch.Kbien` on
+  every port read (a direct reference, not an event subscription) — simpler and equally
+  correct since KBIEN is sampled only when the CPU does an `IN` instruction, well within
+  the same T-state pass.
+- **Found (ghosting model):** phantom ghosting (three pressed corners → fourth appears
+  pressed) is implemented explicitly in `IsColumnLow` via an O(R×C) search per column,
+  rather than via an electrical circuit simulation. This matches hardware behaviour for
+  the 3-corner case the reference doc specifies and is fast enough at 10×8 matrix size.
+- **Found (open-item, to confirm):** the exact row/column layout for SHIFT, CODE, and the
+  function/cursor keys in the 10×8 matrix is still "to confirm" (reference doc §5f). The
+  device is ready to accept key presses at any crosspoint; the mapping table is a UI
+  concern (milestone UI). The existing test suite uses numeric row/col indices.
+- **Applies to:** reference doc §5f (keyboard scan protocol, KBIEN, matrix, ghosting) /
+  `src/P2000.Machine/Devices/Keyboard.cs`, `src/P2000.Machine/Machine.cs`.
+- **Synced:** no
+
 ### 2026-07-04 — Milestone 7: BOOT — embedded monitor ROM + SLOT1 cartridge
 - **Assumed:** the monitor ROM auto-load and SLOT1 cartridge load were both straightforward
   — no hardware surprises, all confirmed from reference doc §5b boot sequence.

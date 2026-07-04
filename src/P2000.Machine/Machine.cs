@@ -31,6 +31,11 @@ public sealed class Machine
     /// device; project CLAUDE.md §1/§14).</summary>
     public Video Video { get; }
 
+    /// <summary>10×8 keyboard matrix (reference doc §5f, project CLAUDE.md §7). Bus face:
+    /// port reads on 0x00–0x09 through the port dispatch. Host face: <see cref="KeyboardDevice.SetKey"/>
+    /// called at field boundaries (observer rule, root CLAUDE.md).</summary>
+    public KeyboardDevice Keyboard { get; }
+
     /// <summary>Wired-OR INT aggregator (project CLAUDE.md §8). The video 50 Hz VBLANK is
     /// the only registered source for the T-first build; future CTC and IM2 daisy-chain
     /// sources call <see cref="InterruptAggregator.RaiseInt"/> from their own handlers.</summary>
@@ -43,10 +48,19 @@ public sealed class Machine
         Config = config ?? new MachineConfig();
         Memory = new PageTable(Config);
         Video = new Video(Memory);
+        Keyboard = new KeyboardDevice(CpOut);
 
         Ports.RegisterWrite(CPoutLatch.Port, CpOut.Write);
         Ports.RegisterRead(CprinReader.Port, CpIn.Read);
         Ports.RegisterWrite(PageTable.BankSelectPort, Memory.SelectBank);
+
+        // Keyboard: ports 0x00-0x09 (reference doc §5f). Each port needs its own closure
+        // capturing the port index so the keyboard knows which row is being read.
+        for (byte port = 0; port <= 9; port++)
+        {
+            var p = port;
+            Ports.RegisterRead(p, () => Keyboard.ReadPort(p));
+        }
 
         // Wire the 50 Hz video VBLANK → INT (project CLAUDE.md §8: T-first INT source).
         Video.FieldComplete += Interrupts.RaiseInt;
@@ -63,6 +77,7 @@ public sealed class Machine
         CpIn.Reset();
         Video.Reset();
         Interrupts.Reset();
+        Keyboard.Reset();
         _pins = 0;
     }
 

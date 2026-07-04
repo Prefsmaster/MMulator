@@ -109,7 +109,7 @@ public class MachineTests
     }
 
     [Fact]
-    public void Tick_InFrom0x20_ReadsTheCprinReader_BareMachineDefault()
+    public void Tick_InFrom0x20_ReturnsCassetteStatus_BareMachineDefault()
     {
         var machine = new Machine();
         machine.Memory.LoadRom(new byte[]
@@ -123,7 +123,9 @@ public class MachineTests
             machine.Tick();
         }
 
-        Assert.Equal(0x30, machine.Cpu.Reg.A); // CIP+BET asserted: no cassette, "tape ok"
+        // CIP+BET asserted (0x30): no cassette mounted (CIP active-low), tape-OK sense.
+        // MdcrDevice contributes bits 3–7; CprinReader (printer-deferred) contributes 0.
+        Assert.Equal(0x30, machine.Cpu.Reg.A);
     }
 
     [Fact]

@@ -645,3 +645,47 @@ marked synced. Do NOT edit the reference doc from this project.
   `src/P2000.Machine/Devices/Saa5050/Saa5050Generator.cs`,
   `src/P2000.Machine/Contention/VideoFetchUnit.cs`.
 - **Synced:** no
+
+### 2026-07-04 — Milestone 9: MDCR cassette device (authentic phase-bitstream path)
+- **Assumed:** `CprinReader` would keep owning CIP/BET/WEN/RDC/RDA until the cassette device
+  landed (milestone 4 finding noted both options were compatible with the fan-out/combine model).
+- **Found (design decision):** `MdcrDevice` registers its own read source on port 0x20 for
+  bits 3–7, and `CprinReader` was shrunk to printer-only (bits 0–2, currently returning 0x00).
+  The OR-combine produces identical observable behaviour. This keeps each device owning the bits
+  it drives rather than one class acting as a bridge for another.
+- **Found (.cas encoding structure):** per `docs/MDCR-implementation.md §6`, the per-block tape
+  layout is: BOB GAP (6160 phases) → MARK (empty WriteData) → DATA (WriteData of 1024 bytes
+  from .cas record offset 0x100) → EOB GAP (1856 phases). The 32-byte block header at .cas
+  record offset 0x30 is NOT encoded on tape in this implementation — it is .cas-format metadata
+  for host-side file browsing. The ROM reads the 1024-byte data blocks directly. If this is
+  wrong (i.e. the ROM expects the header on tape too), it will show up when the RUN integration
+  test is attempted; update accordingly.
+- **Found (WEN active sense — UNRESOLVED):** implemented as bit SET = write-protected, matching
+  the reference doc §5f `(N)` table and the milestone-4 `CprinReader` convention. The
+  `MDCR-implementation.md §5` notes the owner's code set WEN=1 for WRITABLE (opposite sense).
+  This conflict is still unresolved. The correct sense must be confirmed against the ROM's
+  write-protect check (ROM reads CPRIN bit 3 and decides whether to write). **Until confirmed,
+  do not change either side** — log the outcome here once a CSAVE is observed.
+- **Found (reverse-direction bit mapping — UNVERIFIED):** `MdcrDevice.BitToStatus()` contains
+  the owner's unverified reverse-motor branch: when running in REVERSE, toggles RDA (data)
+  instead of RDC (clock). Implemented behind the `ReverseDataBitMapping` bool flag (default
+  true = current behaviour) as instructed. Confirm once read-while-reversing is observable on
+  the RUN test; then set the flag's default and log outcome here.
+- **Found (bare-machine port 0x20 default):** with no tape, status = CIP(0x10) | BET(0x20) =
+  0x30. WEN is NOT set when no tape is present (treat as don't-care; ROM's write-protect check
+  presumably runs only when CIP is clear). This preserves the pre-milestone-9 observed value
+  (0x30 in `Tick_InFrom0x20_ReturnsCassetteStatus_BareMachineDefault`).
+- **Found (tape at BOT on insert):** after `LoadCasImage` the tape is rewound to position 0
+  (BOT). IsAtEnd is true at BOT → BET bit is CLEAR immediately after insert. The ROM should
+  spin the motor forward briefly before attempting to read; verify against the real ROM's CLOAD
+  startup sequence in the RUN test.
+- **Found (SaveState design decision):** state snapshots save tape position (Position + Side)
+  only, not the full 1 MB phase array. The .cas image must be remounted after LoadState. This
+  matches the precedent from PageTable (embedded ROM not saved in state). If a recorded/blank
+  tape scenario needs full-array save, add an opt-in serialization path later.
+- **Applies to:** reference doc §5b (MDCR, CIP live, auto-load 'P' file), §5f (CPRIN/CPOUT
+  bit maps, WEN active sense) / `docs/MDCR-implementation.md` (full device spec) /
+  `src/P2000.Machine/Devices/Cassette/MiniTape.cs`,
+  `src/P2000.Machine/Devices/Cassette/MdcrDevice.cs`,
+  `src/P2000.Machine/Io/CprinReader.cs`, `src/P2000.Machine/Machine.cs`.
+- **Synced:** no

@@ -1,4 +1,5 @@
 using P2000.Machine.Devices;
+using P2000.Machine.Devices.Cassette;
 using P2000.Machine.Interrupts;
 using P2000.Machine.Io;
 using P2000.Machine.Memory;
@@ -36,6 +37,12 @@ public sealed class Machine
     /// called at field boundaries (observer rule, root CLAUDE.md).</summary>
     public KeyboardDevice Keyboard { get; }
 
+    /// <summary>MDCR (cassette) device (project CLAUDE.md §7, MDCR-implementation.md).
+    /// Bus face: status on port 0x20 (bits 3–7), control from port 0x10 via CPoutLatch.
+    /// Host face: <see cref="MdcrDevice.InsertTape"/>/<see cref="MdcrDevice.EjectTape"/>
+    /// at runtime (CIP is a live transition — machine CLAUDE.md §7).</summary>
+    public MdcrDevice Mdcr { get; }
+
     /// <summary>Wired-OR INT aggregator (project CLAUDE.md §8). The video 50 Hz VBLANK is
     /// the only registered source for the T-first build; future CTC and IM2 daisy-chain
     /// sources call <see cref="InterruptAggregator.RaiseInt"/> from their own handlers.</summary>
@@ -49,9 +56,11 @@ public sealed class Machine
         Memory = new PageTable(Config);
         Video = new Video(Memory);
         Keyboard = new KeyboardDevice(CpOut);
+        Mdcr = new MdcrDevice(CpOut);
 
         Ports.RegisterWrite(CPoutLatch.Port, CpOut.Write);
         Ports.RegisterRead(CprinReader.Port, CpIn.Read);
+        Ports.RegisterRead(CprinReader.Port, Mdcr.ReadStatus);
         Ports.RegisterWrite(PageTable.BankSelectPort, Memory.SelectBank);
 
         // Keyboard: ports 0x00-0x09 (reference doc §5f). Each port needs its own closure
@@ -78,6 +87,7 @@ public sealed class Machine
         Video.Reset();
         Interrupts.Reset();
         Keyboard.Reset();
+        Mdcr.Reset();
         _pins = 0;
     }
 
@@ -131,5 +141,8 @@ public sealed class Machine
                 Ports.Write(port, Pins.GetData(_pins));
             }
         }
+
+        // Advance master-clock devices (cassette bit engine; later CTC — machine CLAUDE.md §3 step 5).
+        Mdcr.Tick(1);
     }
 }

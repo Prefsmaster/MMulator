@@ -547,10 +547,14 @@ marked synced. Do NOT edit the reference doc from this project.
   every port read (a direct reference, not an event subscription) — simpler and equally
   correct since KBIEN is sampled only when the CPU does an `IN` instruction, well within
   the same T-state pass.
-- **Found (ghosting model):** phantom ghosting (three pressed corners → fourth appears
-  pressed) is implemented explicitly in `IsColumnLow` via an O(R×C) search per column,
-  rather than via an electrical circuit simulation. This matches hardware behaviour for
-  the 3-corner case the reference doc specifies and is fast enough at 10×8 matrix size.
+- **Found (ghosting model):** in a diode-less key matrix, pressing three corners of a
+  matrix rectangle causes a phantom fourth keypress. The mechanism: pressing (R,C0),
+  (R2,C0), and (R2,C1) lets current loop R → C0 → R2 → C1, pulling C1 low when scanning
+  row R even though (R,C1) is not physically pressed. The P2000T keyboard has no
+  anti-ghosting diodes, so this phantom behaviour is authentic and some software depends
+  on specific multi-key combinations that only register because of it. Implemented
+  explicitly in `IsColumnLow` via an O(R×C) search per column rather than an electrical
+  circuit simulation — same result for all 3-corner cases, fast enough at 10×8.
 - **Found (open-item, to confirm):** the exact row/column layout for SHIFT, CODE, and the
   function/cursor keys in the 10×8 matrix is still "to confirm" (reference doc §5f). The
   device is ready to accept key presses at any crosspoint; the mapping table is a UI

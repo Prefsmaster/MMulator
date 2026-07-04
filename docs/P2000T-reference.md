@@ -169,7 +169,22 @@ Config changes that alter hardware topology **require a machine reset to take ef
 - **Full register file:** AF/BC/DE/HL + primes, IX/IY, SP, PC, I, R, and **WZ/MEMPTR**
   (implemented in the core — expose it), plus IFF1/2, IM, and the flag bits broken out
   (incl. YF/XF).
-- **Memory view** (hex + char, multiple areas), **disassembly** view (detailed below).
+- **Memory watch windows (MULTIPLE, independent):** each is an observer over the state snapshot
+  with its own address range — freely spawnable (stack, sysvars, a data structure, etc.). Live
+  hex + ASCII, refreshed per frame / per step. **Highlight bytes changed since last refresh**
+  (colour flash) — turns a static dump into a view of what the program is touching. Optional
+  **"follow" a register pair** (follow HL / SP) so a window tracks what the code is working on.
+  Read-only; never touches the live core.
+- **Special VRAM window (the P2000T panning made visible):** shows the **80×24** screen buffer
+  (0x5000–0x577F) laid out **spatially as 80×24** (not linear) — matching the hardware addressing
+  `0x5000 + col + 80*row`. Each cell shows the char byte, toggleable between **rendered glyph**
+  and hex. Overlay a **rectangle marking the visible 40-column viewport**, positioned by the
+  **scroll/pan register**, sliding in real time as the program pans — makes the flicker-reduction
+  panning trick (§5) watchable. **Reuse this grid for the contention debug overlay** (§10 —
+  corrupted-cells highlight): one window then shows what's in screen memory, what's visible, and
+  what contention glitched, together. Read the geometry from the machine **model** (T = 80×24; the
+  M differs, §5) rather than hardcoding, so it adapts to the M later.
+- **Disassembly** view (detailed below).
 - **Live disassembly around PC** — the spine of the debugger:
   - **PC-relative window that follows execution**, PC line highlighted and kept a few lines
     down from the top (shows just-executed + upcoming). Auto-scroll on step; allow scroll-away
@@ -256,6 +271,23 @@ Therefore:
 → whole topology); state serialization is distributed across devices (each serializes its own
 runtime) with the config embedded as header. Two layers, two formats, one dependency
 direction (state → config).
+
+### File extensions (DECIDED)
+- **Monitor ROM / cartridges: standard `.bin` / `.rom` — NO custom extensions.** These are raw
+  binary dumps identical to what MAME/preservation sites distribute; a custom `.p2kr`/`.p2kc`
+  would force users to rename dumps for no gain. **Distinguish by config ROLE, not extension**
+  (the emulator knows "monitor ROM path" vs "SLOT1 cartridge path"). So existing dumps drop in
+  unchanged.
+- **Cassette: `.cas`** (established P2000T format; §5b/§6). Note: the newer M2000 ecosystem also
+  uses **`.p2000t`** for clean tapes with proper 32-byte block headers — support reading it too
+  if convenient, but `.cas` is primary.
+- **Fonts: text format** (`.`/`*`, see SAA5050 doc §8).
+- **Disk image (deferred with the FDC): raw SECTOR image, geometry ASSUMED** — 35-track
+  single-sided (confirmed hardware, §5d), extension **`.dsk`** (or `.img`). NOT flux; an image.
+  **No de-facto P2000 disk-image convention exists in public sources** (unlike `.cas`), so raw
+  sector is the pragmatic default. **CONFIRM what JWSDOS dumps actually use** from the
+  p2000t/documentation repo / RetroForum when the FDC milestone is undertaken — adopt their
+  layout if one is established. (JWSDOS = the P2000 disk OS; CP/M also existed.)
 
 ---
 

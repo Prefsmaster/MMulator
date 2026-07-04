@@ -540,6 +540,28 @@ marked synced. Do NOT edit the reference doc from this project.
   `src/P2000.Machine/Contention/VideoFetchUnit.cs`.
 - **Synced:** no
 
+### 2026-07-04 — Milestone 7: BOOT — embedded monitor ROM + SLOT1 cartridge
+- **Assumed:** the monitor ROM auto-load and SLOT1 cartridge load were both straightforward
+  — no hardware surprises, all confirmed from reference doc §5b boot sequence.
+- **Found (design decision, not a hardware finding):** `PageTable` auto-loads the embedded
+  monitor ROM in its constructor rather than requiring callers to call `LoadRom()` — the
+  existing `LoadRom()` method is kept for test fixtures that inject synthetic ROM code.
+  Existing tests that assumed ROM reads 0x00 before `LoadRom()` were updated to reflect
+  the new "ROM is always populated at construction" contract.
+- **Found (design decision):** SLOT1 is allocated as a fixed 16 KB `byte[]` regardless of
+  the cartridge image's actual size; bytes beyond the image length read as open-bus (0xFF)
+  via zero-fill. This means an 8 KB CARS1-only cartridge naturally leaves CARS2 open-bus,
+  which is correct hardware behaviour for a partial-slot cartridge.
+- **Found (boot outcome confirmed):** both boot outcomes pass with the real ROMs:
+  (a) bare machine reaches the cassette-wait loop (VRAM non-zero, PC stays in ROM) in
+  well under 5M T-states; (b) with BASIC.bin in SLOT1 the CPU jumps into the BASIC
+  cartridge range (PC ≥ 0x1000) in well under 5M T-states. These are now regression-
+  gated integration tests.
+- **Applies to:** reference doc §5 (memory map, SLOT1, monitor ROM embed), §5b (boot
+  sequence) / `src/P2000.Machine/Memory/PageTable.cs`, `src/P2000.Machine/MachineConfig.cs`,
+  `src/P2000.Machine/P2000.Machine.csproj`.
+- **Synced:** no
+
 ### 2026-07-03 — Milestone 6: interrupt aggregator (video 50 Hz → IM1 RST 0x0038)
 - **Assumed:** nothing to confirm on the IM1/RST-38 vector or the wired-OR structure —
   those are CONFIRMED hardware (reference doc §5e/§8) and implemented as documented.

@@ -4,6 +4,15 @@
     <ProjectReference Include="..\Z80.Core\Z80.Core.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- Monitor ROM embedded as a compiled-in resource so a bare machine boots with zero
+         setup (project CLAUDE.md §5: "no assets folder required, no missing-file failure").
+         LogicalName fixes the manifest name regardless of relative path. -->
+    <EmbeddedResource Include="..\..\assets\P2000ROM.rom">
+      <LogicalName>P2000.Machine.MonitorRom</LogicalName>
+    </EmbeddedResource>
+  </ItemGroup>
+
   <PropertyGroup>
     <TargetFramework>net8.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>

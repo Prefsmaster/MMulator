@@ -66,4 +66,17 @@ public sealed class MachineConfig
     public int? BankCount { get; init; }
 
     public int EffectiveBankCount => BankCount ?? (RamVariant == RamVariant.T102 ? 6 : 0);
+
+    /// <summary>Optional path to a custom monitor ROM file (.bin / .rom). <c>null</c> (the
+    /// default) loads the embedded P2000ROM.rom so the machine boots out of the box with
+    /// zero setup (project CLAUDE.md §5). Set this only to run a patched or alternate
+    /// monitor revision — the override reads from disk at machine-assembly time.</summary>
+    public string? MonitorRomPath { get; init; }
+
+    /// <summary>Optional path to a SLOT1 cartridge image (.bin / .rom). <c>null</c> (the
+    /// default) leaves SLOT1 empty (open-bus), which causes the monitor ROM's boot sequence
+    /// to skip to the cassette-wait loop. Set to a BASIC cartridge path to boot into BASIC
+    /// (project CLAUDE.md §5, §7). Reset-to-apply — topology is fixed once the machine
+    /// is running (locked decision §2.3).</summary>
+    public string? Slot1CartridgePath { get; init; }
 }

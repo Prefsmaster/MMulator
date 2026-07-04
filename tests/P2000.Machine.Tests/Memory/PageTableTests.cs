@@ -9,12 +9,14 @@ public class PageTableTests
     // ---- ROM (0x0000-0x0FFF) ---------------------------------------------------------
 
     [Fact]
-    public void Rom_DefaultsToZero_BeforeLoad()
+    public void Rom_AutoLoadsEmbeddedMonitorRom_OnConstruction()
     {
         var pageTable = Create();
 
-        Assert.Equal(0x00, pageTable.Read(0x0000));
-        Assert.Equal(0x00, pageTable.Read(PageTable.RomEnd));
+        // The embedded ROM is non-trivial: the first byte is a real Z80 instruction, not
+        // open-bus (0xFF) or zero. LoadRom() can still overwrite it for test fixtures.
+        Assert.NotEqual(PageTable.OpenBus, pageTable.Read(0x0000));
+        Assert.NotEqual(0x00, pageTable.Read(0x0000));
     }
 
     [Fact]

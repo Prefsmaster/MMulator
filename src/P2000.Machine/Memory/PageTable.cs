@@ -1,3 +1,5 @@
+using System.Reflection;
+
 namespace P2000.Machine.Memory;
 
 /// <summary>
@@ -5,8 +7,13 @@ namespace P2000.Machine.Memory;
 /// machine-assembly time from a <see cref="MachineConfig"/>. Unpopulated regions read
 /// <see cref="OpenBus"/> (0xFF) and discard writes — the presence-probe convention the
 /// monitor ROM's boot-time RAM/cartridge/disk tests rely on, with no special-casing needed
-/// anywhere else. SLOT1 cartridge loading and the video device are later milestones; this
-/// milestone is memory only (ROM, RAM, open-bus, port-0x94 banking).
+/// anywhere else.
+///
+/// The monitor ROM is loaded automatically: from <see cref="MachineConfig.MonitorRomPath"/>
+/// if set, otherwise from the embedded <c>P2000.Machine.MonitorRom</c> resource (so the
+/// machine boots out of the box with zero setup — project CLAUDE.md §5). SLOT1 is loaded
+/// from <see cref="MachineConfig.Slot1CartridgePath"/> when set, otherwise left open-bus
+/// (cassette-wait boot path).
 /// </summary>
 public sealed class PageTable
 {
@@ -16,11 +23,12 @@ public sealed class PageTable
     public const ushort RomEnd = 0x0FFF;
     private const int RomSize = RomEnd - RomStart + 1;
 
-    /// <summary>SLOT1 cartridge region (reference doc §5c). Always open bus in this
-    /// milestone — no cartridge can be loaded yet (bare-by-default, locked decision §2.1;
-    /// SLOT1 loading lands with the BOOT milestone).</summary>
+    /// <summary>SLOT1 cartridge region (reference doc §5c). Open bus when no cartridge
+    /// is configured; loaded from <see cref="MachineConfig.Slot1CartridgePath"/> when set.
+    /// Read-only: cartridge slots have no WR pin (writes are silently discarded).</summary>
     public const ushort CartridgeStart = 0x1000;
     public const ushort CartridgeEnd = 0x4FFF;
+    private const int CartridgeSize = CartridgeEnd - CartridgeStart + 1; // 16 KB
 
     public const ushort VideoRamStart = 0x5000;
     private const int VideoRamSizeT = 0x0800; // 2 KB: 0x5000-0x57FF, + 2 KB open-bus gap
@@ -44,6 +52,7 @@ public sealed class PageTable
     public const byte BankSelectPort = 0x94;
 
     private readonly byte[] _rom = new byte[RomSize];
+    private readonly byte[]? _slot1; // null = open-bus (no cartridge fitted)
 
     private readonly ushort _videoRamEnd;
     private readonly byte[] _videoRam;
@@ -67,6 +76,33 @@ public sealed class PageTable
         {
             _banks[i] = new byte[BankSize];
         }
+
+        // Monitor ROM: embedded default or config override (project CLAUDE.md §5).
+        LoadRom(config.MonitorRomPath is not null
+            ? File.ReadAllBytes(config.MonitorRomPath)
+            : LoadEmbeddedMonitorRom());
+
+        // SLOT1 cartridge: open bus when absent; loaded from path when configured.
+        if (config.Slot1CartridgePath is not null)
+        {
+            var cart = File.ReadAllBytes(config.Slot1CartridgePath);
+            _slot1 = new byte[CartridgeSize];
+            cart.AsSpan(0, Math.Min(cart.Length, CartridgeSize)).CopyTo(_slot1);
+        }
+    }
+
+    /// <summary>Loads the embedded monitor ROM from the assembly manifest resource
+    /// <c>P2000.Machine.MonitorRom</c> (linked from <c>assets/P2000ROM.rom</c>).</summary>
+    private static byte[] LoadEmbeddedMonitorRom()
+    {
+        var asm = typeof(PageTable).Assembly;
+        using var stream = asm.GetManifestResourceStream("P2000.Machine.MonitorRom")
+            ?? throw new InvalidOperationException(
+                "Embedded monitor ROM resource 'P2000.Machine.MonitorRom' not found. " +
+                "Ensure assets/P2000ROM.rom is present and the project was rebuilt.");
+        var bytes = new byte[stream.Length];
+        stream.ReadExactly(bytes);
+        return bytes;
     }
 
     /// <summary>Loads a monitor ROM image into the read-only 0x0000-0x0FFF region.</summary>
@@ -96,7 +132,7 @@ public sealed class PageTable
 
         if (address <= CartridgeEnd)
         {
-            return OpenBus;
+            return _slot1?[address - CartridgeStart] ?? OpenBus;
         }
 
         if (address <= _videoRamEnd)

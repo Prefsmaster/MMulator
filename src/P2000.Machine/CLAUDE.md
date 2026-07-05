@@ -760,3 +760,42 @@ marked synced. Do NOT edit the reference doc from this project.
   `ReadByte`), `src/P2000.Machine/Devices/Cassette/MdcrDevice.cs` (`Policy`, `SaveTape`),
   `src/P2000.Machine/Devices/Cassette/TimingPolicy.cs` (new).
 - **Synced:** no
+
+### 2026-07-05 — Milestone 11: config + state serialization
+- **Assumed:** `MachineConfig` fields are JSON-serializable with `System.Text.Json` in-box;
+  enum values can be serialized as strings by applying `JsonStringEnumConverter`.
+- **Found (enum casing — corrected during implementation):** `JsonStringEnumConverter`
+  accepts an optional naming policy. Passing `JsonNamingPolicy.CamelCase` serializes
+  `RamVariant.T54` → `"t54"` and `MachineModel.P2000T` → `"p2000T"` — unreadable for a
+  human-editable config file. The converter must be constructed WITHOUT a naming policy
+  (`new JsonStringEnumConverter()`) so enum values retain their declared names (`"T54"`,
+  `"P2000T"`). Property NAMES are still camelCase via the top-level `PropertyNamingPolicy`.
+- **Found (ROM not in state — determinism test implication):** ROM bytes are not saved in
+  `.state` files (by design: the ROM is read-only, embedded, config-determined — same as the
+  PageTable findings above). A determinism test that injects a synthetic ROM via `LoadRom`,
+  saves state, and then loads must re-inject the synthetic ROM into the restored machine, or
+  the restored machine runs the real embedded monitor ROM from the saved PC, diverging.
+  Resolution: the determinism test uses the real monitor ROM end-to-end (no synthetic ROM),
+  which is present in both machines by construction. The monitor ROM enters a stable
+  CIP-polling loop after one field; both original and restored machines execute identical
+  code from identical state and produce matching PC/SP/VRAM after one additional field.
+- **Found (HALT + AtInstructionBoundary):** `Z80.Core.AtInstructionBoundary` returns false
+  when the CPU is halted (`!_halted` is part of the expression). Using HALT as a synthetic
+  ROM terminator causes `SaveAndReload`'s `while (!AtInstructionBoundary)` loop to spin
+  forever. Resolution: test synthetic ROMs that need to stop use `JR -2` (0x18 0xFE) for
+  an infinite spin that still returns to an instruction boundary between iterations.
+- **Found (`.state` binary layout):** "P2ST" magic (4 bytes) + version int32 (LE) +
+  config-JSON byte-length int32 (LE) + config JSON UTF-8 + distributed device state stream.
+  `StreamStateWriter`/`StreamStateReader` wrap `BinaryWriter`/`BinaryReader` with UTF-8
+  encoding. Restore = `new Machine(config)` (full reset) then `machine.LoadState(reader)`.
+- **Found (`AtInstructionBoundary` save semantics):** state is saved only at instruction
+  boundaries (the public `AtInstructionBoundary` property on Z80.Core). At those points all
+  of Z80.Core's private fields (`_phase`, `_tstate`, `_prefix`) are at their known reset-
+  compatible defaults (Fetch / 0 / None), so the serialized CPU struct is self-consistent
+  without saving any private fields.
+- **Applies to:** reference doc §3a (config vs state serialization, versioning) /
+  `src/P2000.Machine/State/MachineConfigFile.cs`, `src/P2000.Machine/State/MachineStateFile.cs`,
+  `src/P2000.Machine/State/StreamStateWriter.cs`, `src/P2000.Machine/State/StreamStateReader.cs`,
+  `tests/P2000.Machine.Tests/State/MachineConfigFileTests.cs`,
+  `tests/P2000.Machine.Tests/State/MachineStateFileTests.cs`.
+- **Synced:** no

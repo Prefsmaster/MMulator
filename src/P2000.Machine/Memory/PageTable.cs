@@ -1,4 +1,5 @@
 using System.Reflection;
+using P2000.Machine.State;
 
 namespace P2000.Machine.Memory;
 
@@ -210,5 +211,49 @@ public sealed class PageTable
         {
             _banks[_bankIndex][address - BankedWindowStart] = value;
         }
+    }
+
+    /// <summary>Serializes the runtime RAM contents (project CLAUDE.md §11). The embedded
+    /// monitor ROM and SLOT1 cartridge are NOT saved — they are always reconstructed from
+    /// config at machine-assembly time (the ROM is embedded, the cartridge is loaded from
+    /// its path). Only mutable DRAM is persisted: VRAM, base RAM, expansion RAM (if fitted),
+    /// and each bank of the banked window (if fitted), plus the current bank-select index.
+    /// </summary>
+    public void SaveState(IStateWriter writer)
+    {
+        writer.WriteBytes(_videoRam);
+        writer.WriteBytes(_baseRam);
+        writer.WriteBool(_expansionRam is not null);
+        if (_expansionRam is not null)
+            writer.WriteBytes(_expansionRam);
+        writer.WriteInt32(_banks.Length);
+        foreach (var bank in _banks)
+            writer.WriteBytes(bank);
+        writer.WriteByte(_bankIndex);
+    }
+
+    /// <summary>Restores RAM contents saved by <see cref="SaveState"/>. Called after a
+    /// cold reset (machine reconstructed from config), so ROM and SLOT1 are already in
+    /// place — only the mutable DRAM fields are overwritten here.</summary>
+    public void LoadState(IStateReader reader)
+    {
+        reader.ReadBytes(_videoRam);
+        reader.ReadBytes(_baseRam);
+        var hasExpansion = reader.ReadBool();
+        if (hasExpansion && _expansionRam is not null)
+            reader.ReadBytes(_expansionRam);
+        var bankCount = reader.ReadInt32();
+        for (var i = 0; i < bankCount; i++)
+        {
+            if (i < _banks.Length)
+                reader.ReadBytes(_banks[i]);
+            else
+            {
+                // state has more banks than this machine — skip (version mismatch guard).
+                var buf = new byte[BankSize];
+                reader.ReadBytes(buf);
+            }
+        }
+        _bankIndex = reader.ReadByte();
     }
 }

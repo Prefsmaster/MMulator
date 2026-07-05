@@ -3,6 +3,7 @@ using P2000.Machine.Devices.Cassette;
 using P2000.Machine.Interrupts;
 using P2000.Machine.Io;
 using P2000.Machine.Memory;
+using P2000.Machine.State;
 using Z80.Core;
 
 namespace P2000.Machine;
@@ -151,5 +152,96 @@ public sealed class Machine
 
         // Advance master-clock devices (cassette bit engine; later CTC — machine CLAUDE.md §3 step 5).
         Mdcr.Tick(1);
+    }
+
+    /// <summary>Serializes the machine's complete runtime state (project CLAUDE.md §11).
+    /// <b>Must only be called at an instruction boundary</b>
+    /// (<see cref="Z80.Core.Z80.AtInstructionBoundary"/> is true); the Z80 internal
+    /// mid-instruction state (phase, tstate, latches) is not accessible from this layer
+    /// and is implicitly zero at a boundary. Call from a <see cref="Video.FieldComplete"/>
+    /// handler or after a <see cref="Reset"/> to guarantee a boundary.
+    /// Write order is fixed — any change requires a state-format version bump (§11).</summary>
+    public void SaveState(IStateWriter writer)
+    {
+        WriteCpuRegisters(writer, Cpu.Reg);
+        writer.WriteUInt64(_pins);
+        Memory.SaveState(writer);
+        Video.SaveState(writer);
+        CpOut.SaveState(writer);
+        CpIn.SaveState(writer);
+        Keyboard.SaveState(writer);
+        Mdcr.SaveState(writer);
+        Interrupts.SaveState(writer);
+    }
+
+    /// <summary>Restores runtime state saved by <see cref="SaveState"/>. Intended to be
+    /// called on a freshly constructed machine (rebuilt from the embedded config in the
+    /// state file header by <see cref="MachineStateFile"/>), so topology is already correct
+    /// and this method only overwrites mutable runtime fields.</summary>
+    public void LoadState(IStateReader reader)
+    {
+        Cpu.Reg = ReadCpuRegisters(reader);
+        _pins = reader.ReadUInt64();
+        Memory.LoadState(reader);
+        Video.LoadState(reader);
+        CpOut.LoadState(reader);
+        CpIn.LoadState(reader);
+        Keyboard.LoadState(reader);
+        Mdcr.LoadState(reader);
+        Interrupts.LoadState(reader);
+    }
+
+    // ---- CPU register serialization (Z80.Core has no IStateWriter dependency) -------------
+
+    private static void WriteCpuRegisters(IStateWriter w, Registers r)
+    {
+        w.WriteByte(r.A); w.WriteByte(r.F);
+        w.WriteByte(r.B); w.WriteByte(r.C);
+        w.WriteByte(r.D); w.WriteByte(r.E);
+        w.WriteByte(r.H); w.WriteByte(r.L);
+        w.WriteByte(r.A_); w.WriteByte(r.F_);
+        w.WriteByte(r.B_); w.WriteByte(r.C_);
+        w.WriteByte(r.D_); w.WriteByte(r.E_);
+        w.WriteByte(r.H_); w.WriteByte(r.L_);
+        w.WriteByte(r.IXH); w.WriteByte(r.IXL);
+        w.WriteByte(r.IYH); w.WriteByte(r.IYL);
+        w.WriteUInt16(r.SP);
+        w.WriteUInt16(r.PC);
+        w.WriteByte(r.I);
+        w.WriteByte(r.R);
+        w.WriteUInt16(r.WZ);
+        w.WriteBool(r.IFF1);
+        w.WriteBool(r.IFF2);
+        w.WriteByte(r.IM);
+        w.WriteByte(r.Q);
+        w.WriteBool(r.EiPending);
+        w.WriteBool(r.LastWasLdAIR);
+    }
+
+    private static Registers ReadCpuRegisters(IStateReader r)
+    {
+        var reg = new Registers();
+        reg.A = r.ReadByte(); reg.F = r.ReadByte();
+        reg.B = r.ReadByte(); reg.C = r.ReadByte();
+        reg.D = r.ReadByte(); reg.E = r.ReadByte();
+        reg.H = r.ReadByte(); reg.L = r.ReadByte();
+        reg.A_ = r.ReadByte(); reg.F_ = r.ReadByte();
+        reg.B_ = r.ReadByte(); reg.C_ = r.ReadByte();
+        reg.D_ = r.ReadByte(); reg.E_ = r.ReadByte();
+        reg.H_ = r.ReadByte(); reg.L_ = r.ReadByte();
+        reg.IXH = r.ReadByte(); reg.IXL = r.ReadByte();
+        reg.IYH = r.ReadByte(); reg.IYL = r.ReadByte();
+        reg.SP = r.ReadUInt16();
+        reg.PC = r.ReadUInt16();
+        reg.I = r.ReadByte();
+        reg.R = r.ReadByte();
+        reg.WZ = r.ReadUInt16();
+        reg.IFF1 = r.ReadBool();
+        reg.IFF2 = r.ReadBool();
+        reg.IM = r.ReadByte();
+        reg.Q = r.ReadByte();
+        reg.EiPending = r.ReadBool();
+        reg.LastWasLdAIR = r.ReadBool();
+        return reg;
     }
 }

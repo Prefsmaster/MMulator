@@ -462,7 +462,7 @@ marked synced. Do NOT edit the reference doc from this project.
 - **Assumed:** …
 - **Found:** …
 - **Applies to:** reference doc §… / <file/port>
-- **Synced:** no
+- **Synced:** yes (2026-07-05, into P2000T-reference.md + device guides)
 -->
 
 ### 2026-07-02 — Milestone 2: page table
@@ -482,7 +482,7 @@ marked synced. Do NOT edit the reference doc from this project.
   once floppy support is undertaken and the addressing scheme is confirmed.
 - **Applies to:** reference doc §5 (memory map, RAM variants, bank switching, open items
   #2 and #4) / `src/P2000.Machine/Memory/PageTable.cs`, `src/P2000.Machine/MachineConfig.cs`.
-- **Synced:** no
+- **Synced:** yes (2026-07-05, into P2000T-reference.md + device guides)
 
 ### 2026-07-03 — Milestone 4: port dispatch, CPoutLatch, CprinReader
 - **Assumed:** the CPOUT/CPRIN bit maps and shared-port fan-out/combine model (reference doc
@@ -509,7 +509,7 @@ marked synced. Do NOT edit the reference doc from this project.
 - **Applies to:** reference doc §5f (CPOUT/CPRIN bit maps, shared-port fan-out/combine) /
   `src/P2000.Machine/Io/PortDispatch.cs`, `src/P2000.Machine/Io/CPoutLatch.cs`,
   `src/P2000.Machine/Io/CprinReader.cs`, `src/P2000.Machine/Machine.cs`.
-- **Synced:** no
+- **Synced:** yes (2026-07-05, into P2000T-reference.md + device guides)
 
 ### 2026-07-03 — Milestone 5: video device (SAA5050 + fetch timing)
 - **Assumed:** the framebuffer would be 480×480 (12 px/char-column) per this file's §3 as
@@ -553,7 +553,7 @@ marked synced. Do NOT edit the reference doc from this project.
   timing) / `docs/SAA5050-implementation.md` (whole device guide) /
   `src/P2000.Machine/Devices/Video.cs`, `src/P2000.Machine/Devices/Saa5050/*.cs`,
   `src/P2000.Machine/Contention/VideoFetchUnit.cs`.
-- **Synced:** no
+- **Synced:** yes (2026-07-05, into P2000T-reference.md + device guides)
 
 ### 2026-07-04 — Milestone 8: keyboard device
 - **Assumed:** the 10×8 matrix, KBIEN protocol, and port range (0x00–0x09) were all
@@ -576,7 +576,7 @@ marked synced. Do NOT edit the reference doc from this project.
   concern (milestone UI). The existing test suite uses numeric row/col indices.
 - **Applies to:** reference doc §5f (keyboard scan protocol, KBIEN, matrix, ghosting) /
   `src/P2000.Machine/Devices/Keyboard.cs`, `src/P2000.Machine/Machine.cs`.
-- **Synced:** no
+- **Synced:** yes (2026-07-05, into P2000T-reference.md + device guides)
 
 ### 2026-07-04 — Milestone 7: BOOT — embedded monitor ROM + SLOT1 cartridge
 - **Assumed:** the monitor ROM auto-load and SLOT1 cartridge load were both straightforward
@@ -598,7 +598,7 @@ marked synced. Do NOT edit the reference doc from this project.
 - **Applies to:** reference doc §5 (memory map, SLOT1, monitor ROM embed), §5b (boot
   sequence) / `src/P2000.Machine/Memory/PageTable.cs`, `src/P2000.Machine/MachineConfig.cs`,
   `src/P2000.Machine/P2000.Machine.csproj`.
-- **Synced:** no
+- **Synced:** yes (2026-07-05, into P2000T-reference.md + device guides)
 
 ### 2026-07-03 — Milestone 6: interrupt aggregator (video 50 Hz → IM1 RST 0x0038)
 - **Assumed:** nothing to confirm on the IM1/RST-38 vector or the wired-OR structure —
@@ -621,7 +621,7 @@ marked synced. Do NOT edit the reference doc from this project.
 - **Applies to:** reference doc §5e (interrupt sources, wired-OR INT), §8 (video 50 Hz →
   IM1 RST 0x0038) / `src/P2000.Machine/Interrupts/InterruptAggregator.cs`,
   `src/P2000.Machine/Machine.cs`.
-- **Synced:** no
+- **Synced:** yes (2026-07-05, into P2000T-reference.md + device guides)
 
 ### 2026-07-03 — Milestone 5 (rework): fields vs frames, single persistent buffer
 - **Assumed:** the machine's 50 Hz video cycle was a progressive FRAME - the original
@@ -659,7 +659,7 @@ marked synced. Do NOT edit the reference doc from this project.
   (fields/frames/CRS) / `src/P2000.Machine/Devices/Video.cs`,
   `src/P2000.Machine/Devices/Saa5050/Saa5050Generator.cs`,
   `src/P2000.Machine/Contention/VideoFetchUnit.cs`.
-- **Synced:** no
+- **Synced:** yes (2026-07-05, into P2000T-reference.md + device guides)
 
 ### 2026-07-04 — Milestone 9: MDCR cassette device (authentic phase-bitstream path)
 - **Assumed:** `CprinReader` would keep owning CIP/BET/WEN/RDC/RDA until the cassette device
@@ -668,19 +668,19 @@ marked synced. Do NOT edit the reference doc from this project.
   bits 3–7, and `CprinReader` was shrunk to printer-only (bits 0–2, currently returning 0x00).
   The OR-combine produces identical observable behaviour. This keeps each device owning the bits
   it drives rather than one class acting as a bridge for another.
-- **Found (.cas encoding structure):** per `docs/MDCR-implementation.md §6`, the per-block tape
-  layout is: BOB GAP (6160 phases) → MARK (empty WriteData) → DATA (WriteData of 1024 bytes
-  from .cas record offset 0x100) → EOB GAP (1856 phases). The 32-byte block header at .cas
-  record offset 0x30 is NOT encoded on tape in this implementation — it is .cas-format metadata
-  for host-side file browsing. The ROM reads the 1024-byte data blocks directly. If this is
-  wrong (i.e. the ROM expects the header on tape too), it will show up when the RUN integration
-  test is attempted; update accordingly.
-- **Found (WEN active sense — UNRESOLVED):** implemented as bit SET = write-protected, matching
-  the reference doc §5f `(N)` table and the milestone-4 `CprinReader` convention. The
-  `MDCR-implementation.md §5` notes the owner's code set WEN=1 for WRITABLE (opposite sense).
-  This conflict is still unresolved. The correct sense must be confirmed against the ROM's
-  write-protect check (ROM reads CPRIN bit 3 and decides whether to write). **Until confirmed,
-  do not change either side** — log the outcome here once a CSAVE is observed.
+- **Found (.cas encoding structure — CORRECTED):** per `docs/MDCR-implementation.md §6`, the
+  per-block tape layout is: BOB GAP (6160 phases) → MARK (empty WriteData) → HEADER (32 bytes
+  from .cas record offset 0x30) → DATA (WriteData of 1024 bytes from .cas record offset 0x100)
+  → EOB GAP (1856 phases). The 32-byte block header IS encoded on tape — the ROM's ZOEK
+  directory scan reads headers from the bitstream, and CLOAD-by-name matches against them. An
+  earlier pass skipped the header (treated it as host-side metadata only); that was wrong and
+  has been corrected in `LoadCasImage` (header WriteData added between MARK and DATA).
+- **Found (WEN active sense — RESOLVED):** implemented as bit SET = write-protected, which is
+  correct. Confirmed from the owner's monitor-ROM disassembly (`Symbols.asm`: `WEN equ 0x08`;
+  `Cassette.asm:47`: "bit 3 = WEN (1=protected, 0=can write)"; `cas_status` decodes CIP|WEN as
+  00=loaded+writable / 01=loaded+protected / 11=no-cassette). Our code (`if (_tape.IsProtected)
+  _status |= WenBit`) is correct. The old owner code had set WEN=1 for writable (inverted) — our
+  implementation fixed that.
 - **Found (reverse-direction bit mapping — UNVERIFIED):** `MdcrDevice.BitToStatus()` contains
   the owner's unverified reverse-motor branch: when running in REVERSE, toggles RDA (data)
   instead of RDC (clock). Implemented behind the `ReverseDataBitMapping` bool flag (default
@@ -703,4 +703,4 @@ marked synced. Do NOT edit the reference doc from this project.
   `src/P2000.Machine/Devices/Cassette/MiniTape.cs`,
   `src/P2000.Machine/Devices/Cassette/MdcrDevice.cs`,
   `src/P2000.Machine/Io/CprinReader.cs`, `src/P2000.Machine/Machine.cs`.
-- **Synced:** no
+- **Synced:** yes (2026-07-05, into P2000T-reference.md + device guides)

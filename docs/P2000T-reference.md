@@ -417,7 +417,11 @@ the structure fully derivable.
 
 Keyed off the PAL line period and the 2.5 MHz clock:
 - **Line:** 64 µs → 64 × 2.5 = **160 Z80 T-states per scanline**
-- **Frame:** 50 Hz → **50,000 T-states**; 160 × 312.5 = 50,000 → **~312–313 lines/frame**
+- **FIELD:** 50 Hz → **50,000 T-states**; 160 × 312.5 = 50,000 → **~312–313 lines/field**.
+  NB: the 50 Hz cycle is a **FIELD, not a frame** — the P2000T is interlaced, so a complete
+  **frame = two fields = 25 Hz** (even + odd). The 50,000-T-state / 240-active-line cycle is one
+  field. Interrupt + CTC ch3 fire per field (50 Hz); the display composes a frame from two
+  (§3a display modes). (Terminology corrected per milestone-5 implementation finding.)
 
 **Vertical structure:**
 - 24 rows × 10 scanlines = **240 active display lines**
@@ -464,9 +468,13 @@ against RAM /CAS|/RAS during active display.
 - **Video RAM:** 2 KB area on the T-version (mask should be `0x7FF`). Includes
   teletext control characters and cursor info.
 - **Screen buffer:** 2 screens in size, 80 chars × 24 rows, address range
-  **`0x5000`–`0x577F`**. Pan the viewport by setting the upper-left X coordinate
-  between 0 and 40 — used to reduce flicker, since the Z80 can't refresh the whole
-  screen each PAL cycle.
+  **`0x5000`–`0x577F`**. Pan the viewport via the **scroll register at I/O port `0x30`**
+  (CONFIRMED): write **0–40**, 0 = no offset (base screen), 40 = max (shows the 2nd screen to
+  the right of the base). Used to reduce flicker, since the Z80 can't refresh the whole screen
+  each field. The video device reads port 0x30 when computing fetch addresses.
+  - **Values > 40 are UNDEFINED** (owner: to investigate later). For now implement the defined
+    0–40 range correctly; clamp or wrap >40 as a placeholder (owner will pin down real behaviour
+    later). Don't block on it.
 - Monitor ROM: 4 KB, BIOS-style routines only (memory test, cassette + serial
   printer drivers). No UI, no debug monitor. Machine is non-operational without a
   cartridge.
@@ -607,13 +615,19 @@ The machine object builds a **page table** over the 64 KB space when assembled (
 ### Open items to confirm (from disassembly / schematic)
 1. **Bank/64 KB arithmetic:** does "+64 KB over base" = the six 0x94 banks (48 KB) PLUS the
    16 KB expansion? (Assumed yes.)
-2. **Reset default at 0xE000–0xFFFF** before any write to 0x94 (bank 0? which bank is the
-   "normal" top-of-RAM that non-banking software sees and executes in?).
+2. **Reset default at 0xE000–0xFFFF** before any write to 0x94 — implemented as **bank 0** by
+   default (milestone-2 finding; least-surprising, harmless since firmware writes 0-5 before
+   relying on banking). Confirm against disassembly/schematic if it matters.
 3. **Out-of-range 0x94 writes** — RESOLVED: no hardware restriction. Bank count is
    configurable (6 for T/102, up to 256 for a modern module); index ≥ populated count reads
    open bus. See bank-switching note above.
 4. **PTC-96K addressing:** how 16 KB + 64 KB combine — is the 64 KB also behind 0x94
    (more/wider banks) or mapped differently? Scheme unclear from the base description.
+5. **Panning/scroll register — RESOLVED: port `0x30`** (owner-confirmed from notes). Write
+   **0–40**: 0 = no offset (base screen), 40 = max offset (shows the '2nd screen' to the right
+   of the base screen). This pans the 40-wide visible viewport across the 80-wide buffer. The
+   video device reads this port value when computing fetch addresses (write-only bank-style
+   register in the I/O dispatch). Replaces the interim `Video.PanX` property.
 
 ### SAA5050 behaviour (must-implement quirks)
 - 40×24 teletext display, 8 colours, semigraphics. **No high-resolution mode** on
@@ -1168,10 +1182,18 @@ confirmation it was the right call):
   events you deliver (e.g. a cascaded output or an external signal). Per channel hold:
   control, time constant, counter, prescaler phase, int pending, int in-service.
 
+### Partial data from the monitor disassembly (`Symbols.asm`)
+CTC-related RAM variables name the channel PURPOSES (not the I/O ports, but confirms usage):
+`CTC_timer_disk` (0x6020), `CTC_disk_not_ready` / `CTC_communication` (0x6022), `CTC_keyboard`
+(0x6026) — so CTC channels serve disk timing, a comms/disk-ready function, and a keyboard-related
+timer. **Disk (FDC) I/O ports CONFIRMED:** `DSKIO1` = 0x8C (FDC status IN), `DSKSTAT` = 0x8D
+(IN/OUT), `DSKCTRL` = 0x90 — real port data for the deferred FDC work (§5d). Also `type_T_M`
+(0x6013) = the T-vs-M model flag the ROM keeps.
+
 ### Still to source from you / the schematic / the disassembly
 1. **Scope:** M is a target (after the T). T-first; CTC deferred to M phase.
-2. **Channel assignments** in the P2000M and on the floppy board (baud clock? system
-   tick? FDC timing — index/step/data-separator?).
+2. **Channel assignments** — partially confirmed above (disk/comms/keyboard); exact channel
+   numbers + baud/system-tick mapping still to pin down.
 3. **CTC I/O port base** (4 channel addresses) + **IM2 vector base** the firmware programs.
 4. **Clock source per channel** (system clock prescaled vs external crystal on CLK/TRG).
 5. **Daisy-chain order/priority** (CTC vs FDC vs SIO/PIO).
@@ -1291,7 +1313,10 @@ RDA. Emulator generates RDC edges at the bit rate; ROM clocks off them.
 - **BET (5):** `1` = tape OK, `0` = at a physical end. Asserted (0) when the emulated tape
   position hits either extremity — the mechanical boundary the transport model (§5b) needs
   for rewind/search limits.
-- **WEN (3):** `0` = writable, `1` = protected. Driven by the host-side `.cas`
+- **WEN (3):** `0` = writable, `1` = protected. **CONFIRMED from monitor disassembly**
+  (`Symbols.asm` WEN equ 0x08; `Cassette.asm` "bit 3 = WEN (1=protected, 0=can write)"; the
+  cas_status decode reads CIP|WEN: 00=loaded+writable, 01=loaded+protected, 11=no cassette,
+  10=invalid). Driven by the host-side `.cas`
   write-protect toggle.
 - **Encode each bit's polarity EXPLICITLY in the device** — the `(N)` bits are asserted-low;
   mixing one up yields a tape that reads as perpetually-ending or never-present.
@@ -1306,7 +1331,7 @@ read(0x20):                        # CPRIN
     byte v = 0
     if !cassettePresent: v |= 0x10     # CIP=1 when no cassette
     if !tapeAtEnd:       v |= 0x20     # BET=1 when tape OK (0 at end)
-    if !writeProtected:  v |= 0x08     # WEN=0 writable -> so set when NOT protected? encode explicitly
+    if writeProtected:   v |= 0x08     # WEN bit set = PROTECTED (confirmed: 1=protected, 0=writable)
     if RDC_level:        v |= 0x40
     if RDA_bit:          v |= 0x80
     # PRI/READY/STRAP from printer device
@@ -1332,6 +1357,11 @@ write(0x10, value):                # CPOUT shared latch
 `AndOfAllRows()` and `RowColumns()` are BOTH computed from the **real intersection matrix**
 (model rows×columns as actual crosspoints, NOT a flat pressed-set) so **ghosting/rollover
 emerges naturally** — some software depends on matrix quirks; hard to add later.
+- **Ghosting mechanism (CONFIRMED, milestone-8):** the P2000T keyboard is **diode-less**, so
+  pressing 3 corners of a matrix rectangle — (R,C0), (R2,C0), (R2,C1) — lets current loop
+  R→C0→R2→C1 and pulls C1 low when scanning row R, registering a **phantom 4th key** at (R,C1)
+  that isn't pressed. Authentic; some software depends on it. Implementable as an O(R×C)
+  3-corner search per column (no circuit sim needed) — same result at 10×8.
 - `0xFF` chosen for the non-meaningful ports 1–9 while scanning (consistent "no key",
   active-low). Confirm against hardware if they float differently.
 

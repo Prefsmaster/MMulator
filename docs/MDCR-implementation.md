@@ -117,15 +117,17 @@ hypothesis, not confirmed hardware.
 - When WCD set (writing) and motor runs, `tape.Write(WDA)` stores the current data phase level
   at `Position`. So CSAVE's bitstream is captured phase-by-phase into the tape — symmetric with
   read.
-- **WEN active sense — RECONCILE with reference doc §5f:** the reference doc's §5f table says
-  bit 3 (WEN) `(N)`: **0 = writable, 1 = protected**. This implementation's `Reset()` **sets**
-  the WEN bit when the tape is writable (not protected). These are opposite senses — the doc
-  table says WEN=1 means protected; the code sets WEN=1 when writable. **CONFIRM which is
-  correct against the ROM's write-protect check** (the ROM reads CPRIN bit 3 and decides). This
-  is exactly the kind of `(N)` active-low bit the doc warned about (§5f). Flag in findings and
-  make the implementation match whatever the ROM actually tests. (The milestone-4 CprinReader
-  finding already implemented the DOC's sense — bit set = protected — so these two components
-  must agree; resolve before wiring them together.)
+- **Monitor-ROM reference routines (from the owner's disassembly `Cassette.asm`):** the write
+  path is `cas_Write` → `write_block` → `cas_block_write`; the bit-level output is `out (CPOUT),a`
+  ("Bit to tape") with authentic phase timing documented inline (e.g. the 354T-total / 175T
+  comments). Use these as the authoritative reference for BOTH the turbo trap points (trap
+  `cas_Write`/`write_block`) AND the realtime write timing.
+- **WEN active sense — RESOLVED (monitor disassembly):** bit 3 WEN = **1 means protected, 0
+  means writable** (`Symbols.asm`: `WEN equ 0x08`; `Cassette.asm:47` "bit 3 = WEN (1=protected,
+  0=can write)"; the `cas_status` routine decodes CIP|WEN as 00=loaded+writable /
+  01=loaded+protected / 11=no-cassette / 10=invalid). **The reference doc / CprinReader sense was
+  correct; the old `MdcrDevice.cs` (set WEN=1 for writable) was INVERTED — fix it to set WEN=1
+  when protected.** Reconcile so device + CprinReader agree on this sense.
 
 ---
 
@@ -153,10 +155,18 @@ BOT GAP       5800 phases   (skipped at start)
 per block (×N):
   BOB GAP     6160 phases
   MARK        (empty marker via WriteData)
+  HEADER      32 bytes    ← ON TAPE (see correction below)
   1024 data   + framing
   EOB GAP     1856 phases
 EOT GAP       (remainder, zero-filled)
 ```
+- **CORRECTION (owner-confirmed) — the 32-byte block HEADER is encoded ON THE TAPE, not just
+  `.cas` file metadata.** Each on-tape block = **header (32 bytes) + 1024 data bytes**. The ROM's
+  directory scan (ZOEK) reads these headers *from the tape*, and CLOAD-by-name matches against
+  them. So the tape encoder must write the header (from `.cas` record offset 0x30) ahead of the
+  data block — do NOT skip it. (An earlier implementation pass assumed the header was host-side
+  only and encoded data blocks alone; that is wrong and would break ZOEK/CLOAD-by-name. The RUN
+  integration test would surface it.)
 - Each `WriteData(bytes)` frames as: `0xAA` lead, the bytes (each via `WriteByte` as 2-phase
   transitions), a **16-bit checksum**, `0xAA` trail.
 - **Checksum:** `UpdateCheckSum` — per bit: XOR into checksum, if low bit set XOR with `0x4002`,
@@ -184,8 +194,21 @@ Implement `IDevice` (machine §4):
 ## 8. Host-side `.cas` API (separate, always-fast — machine §7)
 
 Independent of the authentic/turbo timing policy: mount/eject, load `.cas` (→ `LoadCasImage`),
-save (`MiniTape.Save`), write-protect, browse the block directory (from the headers), side
-select. Always instant; not gated by the bit-timing.
+save (`MiniTape.Save`), write-protect, browse the block directory, side select. Always instant;
+not gated by the bit-timing.
+
+**Directory = scan ALL blocks, collect each header (NOT a top-of-tape index).** There is no
+single directory block. Each of the ~40 blocks carries its own **32-byte header** (at 0x30 in
+the file record / framed in the bitstream). The tape "directory" (the ROM's ZOEK command) is
+built by **scanning the whole tape and reading every block's header** — which is why ZOEK
+physically spools the tape on real hardware. Implementation: walk every 1280-byte record (file)
+or every framed block (bitstream), pull the 32-byte header, build the list.
+- **Multi-block programs:** a program spanning several 1024-byte data blocks repeats its header
+  across its blocks (with sequence/count fields), so **group blocks into one directory entry per
+  program** rather than one-entry-per-block. CONFIRM which header fields carry name / total
+  length / block index+count (from the disassembly / M2000) to de-duplicate correctly.
+- Host-side directory (UI browse) scans instantly; the **emulated ZOEK in realtime mode takes
+  authentic spool time** (timing policy, not format).
 
 **Bitstream → `.cas` serializer (MISSING in the current code — must be built):** `MiniTape.Save`
 currently dumps the raw phase-bit array (`data[Side]`), not a `.cas` file. For the UI "Save as

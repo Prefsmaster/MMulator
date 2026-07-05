@@ -177,13 +177,17 @@ These references are all BBC/generic teletext. The P2000T diverges:
 
 ### 7a. The 160–255 inverted-colour trick (MUST implement — Ghosthunt needs it)
 Bytes with **bit 7 set (160–255)** display the character for `value − 128` (normal 32–127) but
-with **fg/bg swapped**. Generic teletext ignores bit 7. Note:
-- **MAME does implement the inversion** in `screen_update`: `if (BIT(code,7)) color ^= 0x07;`
-  and it masks `code & 0x7f` before generating. That XOR-swap is the model.
-- The C# `PERender` variant also does it (`invert` flag swapping the palette shifts). The plain
-  `Render` does NOT — so if you start from `Render`, ADD the bit-7 inversion (swap the fg/bg
-  fields of the palette index, per `PERender`'s `invert ? 2:5 / 5:2`).
-- Reference doc §5 (memory map) + §4 confirm this is what makes P2000T games colourful.
+with **fg/bg SWAPPED**. Generic teletext ignores bit 7. **The correct model is a SWAP, not an
+XOR** (CONFIRMED, milestone-5 finding):
+- **Swap the fg and bg palette fields** — per the C# `PERender` variant (`invert ? 2:5 / 5:2`,
+  swapping the palette shift positions). Reference doc §5 says "inverted (**swapped** fg/bg)
+  colours" explicitly.
+- **NOT MAME's `color ^= 0x07`** — MAME does a per-channel *complement*, which is
+  **mathematically different** from a swap unless fg/bg happen to be exact complements. Use the
+  swap. (MAME is the weaker reference here anyway — its own header flags its rounding disagrees
+  with jsbeeb.)
+- The plain `Render` path does NOT invert; if starting from it, ADD the bit-7 fg/bg swap.
+- Mask `code & 0x7f` before glyph generation; apply the swap to the colour, not the glyph.
 
 ### 7b. VRAM layout, panning, buffer size
 - P2000T VRAM is **0x5000–0x577F**, a **2-screens-wide (80×24)** buffer; the visible 40×24

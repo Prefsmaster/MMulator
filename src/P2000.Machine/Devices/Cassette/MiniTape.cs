@@ -92,8 +92,9 @@ public sealed class MiniTape
     /// side the tape must be ejected and flipped (call <see cref="SeekTo"/> with side 1 after
     /// a new load, or load a second .cas via a separate call on side 1). Tape is
     /// write-protected after loading (MDCR-implementation.md §3). Rewinds to BOT when done.
-    /// Format: 1280 bytes/record; data from record offset 0x100 (1024 bytes per block) —
-    /// see MDCR-implementation.md §6.</summary>
+    /// Format: 1280 bytes/record; header (32 bytes) from record offset 0x30, data (1024 bytes)
+    /// from offset 0x100. Both are encoded on tape — the ROM's ZOEK reads headers from the
+    /// bitstream. See MDCR-implementation.md §6.</summary>
     public void LoadCasImage(byte[] casImage, bool writeProtect = true)
     {
         var blocks = casImage.Length / 1280;
@@ -108,6 +109,8 @@ public sealed class MiniTape
         {
             WriteGap(BobGap);
             WriteData(Array.Empty<byte>()); // MARK — empty sync block
+            var header = casImage.AsSpan(b * 1280 + 0x30, 32).ToArray();
+            WriteData(header); // 32-byte block header (ZOEK reads this from the tape bitstream)
             var data = casImage.AsSpan(b * 1280 + 0x100, 1024).ToArray();
             WriteData(data);
             WriteGap(EobGap);

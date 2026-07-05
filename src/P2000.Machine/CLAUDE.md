@@ -410,6 +410,13 @@ This file is the working scratchpad; the reference doc is the clean source of tr
 9. Cassette (MDCR): authentic bit engine + turbo ROM-trap `TimingPolicy`; host-side `.cas` API;
    CIP/BET/WEN. **See `docs/MDCR-implementation.md`.** **RUN milestone:** load + run a real
    `.cas`. → commit.
+9a. **Cassette WRITE / CSAVE path** (distinct from read — do NOT consider milestone 9 done
+    without it): (a) realtime write — WCD/WDA capture the ROM's bitstream into the in-memory
+    tape; (b) turbo — ROM-trap the write routine (`cas_Write`/`write_block`, MDCR guide §5) for
+    instant block save; (c) **bitstream → `.cas` serializer** (the inverse of `LoadCasImage`,
+    currently MISSING — recover blocks + headers + checksum from the phase stream); (d) UI "Save
+    as .cas" + write-back. **Tests:** CSAVE a known program → read it back via the authentic path
+    → bytes + checksum match; blank-tape CSAVE → Save as `.cas` → reload → identical. → commit.
 10. Contention model: video fetch as bus participant, Z80-priority single-cell corruption,
     debug overlay hook. Stress test (speckle vs clean). → commit.
 11. Config + state serialization: `.cfg` load/save, `.state` with embedded config header,
@@ -704,3 +711,23 @@ marked synced. Do NOT edit the reference doc from this project.
   `src/P2000.Machine/Devices/Cassette/MdcrDevice.cs`,
   `src/P2000.Machine/Io/CprinReader.cs`, `src/P2000.Machine/Machine.cs`.
 - **Synced:** yes (2026-07-05, into P2000T-reference.md + device guides)
+
+### 2026-07-05 — Milestone 9a: MDCR cassette WRITE / CSAVE path
+- **Assumed (earlier):** the bitstream → .cas serializer was missing; realtime write path was
+  already present in `ProcessPhase()`.
+- **Found (realtime write already complete):** `MdcrDevice.ProcessPhase()` captures `WDA` phases
+  to tape when `WCD=1` — identical format to `LoadCasImage`'s `WriteByte` encoding (bit=1 →
+  (T,F), bit=0 → (F,T)), so the ROM's CSAVE output round-trips correctly through `Save()`.
+- **Found (bitstream → .cas decoder — direct phase-pair approach):** `MiniTape.Save()` uses
+  direct phase-pair reading (first phase of each 2-phase pair = the bit value; second = !bit),
+  no PLL simulation needed. Gap alignment: the 0xAA frame lead byte starts with bit0=0 → phase0=F,
+  which blends into the all-false gap. After skipping the gap, step back by 1 to re-align to
+  phase0 of bit0 of 0xAA. This is reliable for both `LoadCasImage`-encoded and CSAVE-written tapes.
+- **Found (TimingPolicy — infrastructure added):** `TimingPolicy` enum (Authentic/Turbo) added.
+  Authentic gates the 209-cycle phase engine; Turbo bypasses it. Actual turbo ROM trap addresses
+  (`cas_Write`/`write_block`) are still deferred — needs confirmed addresses from the ROM
+  disassembly (`Cassette.asm`). Log the addresses here once sourced.
+- **Applies to:** `src/P2000.Machine/Devices/Cassette/MiniTape.cs` (`Save`, `TryDecodeFrame`,
+  `ReadByte`), `src/P2000.Machine/Devices/Cassette/MdcrDevice.cs` (`Policy`, `SaveTape`),
+  `src/P2000.Machine/Devices/Cassette/TimingPolicy.cs` (new).
+- **Synced:** no

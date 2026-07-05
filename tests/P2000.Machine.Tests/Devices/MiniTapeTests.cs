@@ -184,6 +184,97 @@ public class MiniTapeTests
         tape.LoadCasImage(Array.Empty<byte>());
     }
 
+    // ---- Save (bitstream → .cas) ------------------------------------------------
+
+    [Fact]
+    public void Save_BlankTape_ReturnsNull()
+    {
+        // Random noise has no valid framed blocks
+        var tape = new MiniTape(seed: 42);
+        Assert.Null(tape.Save());
+    }
+
+    [Fact]
+    public void Save_EmptyImage_ReturnsNull()
+    {
+        var tape = new MiniTape();
+        tape.LoadCasImage(Array.Empty<byte>()); // no blocks → no frames on tape
+        Assert.Null(tape.Save());
+    }
+
+    [Fact]
+    public void Save_ZeroedSingleBlock_RoundTrips()
+    {
+        var original = new byte[1280]; // header at +0x30 and data at +0x100 are all zeros
+        var tape = new MiniTape();
+        tape.LoadCasImage(original, writeProtect: false);
+
+        var saved = tape.Save();
+
+        Assert.NotNull(saved);
+        Assert.Equal(1280, saved!.Length);
+        Assert.Equal(original[0x30..0x50], saved[0x30..0x50]);   // 32-byte header
+        Assert.Equal(original[0x100..0x500], saved[0x100..0x500]); // 1024-byte data
+    }
+
+    [Fact]
+    public void Save_KnownDataSingleBlock_RoundTrips()
+    {
+        var original = new byte[1280];
+        for (var i = 0; i < 32; i++) original[0x30 + i] = (byte)(i + 1);
+        for (var i = 0; i < 1024; i++) original[0x100 + i] = (byte)(i & 0xFF);
+
+        var tape = new MiniTape();
+        tape.LoadCasImage(original, writeProtect: false);
+
+        var saved = tape.Save();
+
+        Assert.NotNull(saved);
+        Assert.Equal(original[0x30..0x50], saved![0x30..0x50]);
+        Assert.Equal(original[0x100..0x500], saved[0x100..0x500]);
+    }
+
+    [Fact]
+    public void Save_MultipleBlocks_RoundTrips()
+    {
+        const int blockCount = 3;
+        var original = new byte[blockCount * 1280];
+        for (var b = 0; b < blockCount; b++)
+        {
+            for (var i = 0; i < 32; i++) original[b * 1280 + 0x30 + i] = (byte)(b * 10 + i);
+            for (var i = 0; i < 1024; i++) original[b * 1280 + 0x100 + i] = (byte)(b + i);
+        }
+
+        var tape = new MiniTape();
+        tape.LoadCasImage(original, writeProtect: false);
+
+        var saved = tape.Save();
+
+        Assert.NotNull(saved);
+        Assert.Equal(blockCount * 1280, saved!.Length);
+        for (var b = 0; b < blockCount; b++)
+        {
+            Assert.Equal(
+                original[(b * 1280 + 0x30)..(b * 1280 + 0x50)],
+                saved[(b * 1280 + 0x30)..(b * 1280 + 0x50)]);
+            Assert.Equal(
+                original[(b * 1280 + 0x100)..(b * 1280 + 0x500)],
+                saved[(b * 1280 + 0x100)..(b * 1280 + 0x500)]);
+        }
+    }
+
+    [Fact]
+    public void Save_DoesNotMoveHead()
+    {
+        var original = new byte[1280];
+        var tape = new MiniTape();
+        tape.LoadCasImage(original, writeProtect: false); // rewinds to 0
+
+        tape.Save();
+
+        Assert.Equal(0, tape.Position); // head position unchanged
+    }
+
     // ---- Checksum ---------------------------------------------------------------
 
     [Fact]

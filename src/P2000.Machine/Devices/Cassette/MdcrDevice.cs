@@ -17,9 +17,8 @@ namespace P2000.Machine.Devices.Cassette;
 /// because the owner flagged it unverified (MDCR-implementation.md §4). Default = current
 /// behaviour (RDA flipped instead of RDC when reversing); set to false to flip only RDC.
 ///
-/// <b>WEN active sense:</b> bit set = write-protected (matches the reference doc §5f (N) table
-/// and the existing <c>CprinReader</c> convention). The MDCR-implementation.md §5 notes this
-/// may disagree with the ROM — confirm once a CSAVE is observed and update the findings log.
+/// <b>WEN active sense:</b> bit set = write-protected — CONFIRMED correct from monitor-ROM
+/// disassembly (<c>Symbols.asm</c> / <c>Cassette.asm:47</c>; findings log milestone 9).
 ///
 /// CIP is a LIVE transition (machine CLAUDE.md §7): inserting/ejecting a tape at runtime flips
 /// the bit immediately so the ROM's busy-wait loop sees it without a reset.
@@ -50,6 +49,11 @@ public sealed class MdcrDevice : IDevice
     private int _phaseCount;
     private bool _phaseOld;
 
+    /// <summary>Selects authentic phase-bitstream or turbo ROM-trap mode
+    /// (MDCR-implementation.md §0). Default: <see cref="TimingPolicy.Authentic"/>. Turbo
+    /// bypass wiring is present; actual trap addresses are deferred (see CLAUDE.md §17).</summary>
+    public TimingPolicy Policy { get; set; } = TimingPolicy.Authentic;
+
     /// <summary>When true (default, owner-unverified) and the motor runs in REVERSE: toggles
     /// RDA instead of RDC per recovered bit (MDCR-implementation.md §4 reverse-direction
     /// branch). Set false once hardware confirms the correct mapping.</summary>
@@ -64,6 +68,12 @@ public sealed class MdcrDevice : IDevice
     // ---- Host face ---------------------------------------------------------------
 
     public bool HasTape => _tape != null;
+
+    /// <summary>Decodes the mounted tape's phase bitstream back into a P2000T <c>.cas</c>
+    /// image. Always instant regardless of <see cref="Policy"/> (host-side API —
+    /// MDCR-implementation.md §8). Returns null if no tape is inserted or no valid blocks
+    /// are found.</summary>
+    public byte[]? SaveTape() => _tape?.Save();
 
     /// <summary>Insert a loaded <c>.cas</c> image at runtime (CIP flips live — the ROM's
     /// busy-wait loop sees the cassette appear without a machine reset).</summary>
@@ -97,6 +107,7 @@ public sealed class MdcrDevice : IDevice
     {
         if (_tape == null) return;
         if (!_cpOut.Forward && !_cpOut.Reverse) return; // motor stopped
+        if (Policy == TimingPolicy.Turbo) return;       // bitstream bypassed; traps handle I/O
 
         _tickCount += cycles;
         while (_tickCount >= CyclesPerPhase)

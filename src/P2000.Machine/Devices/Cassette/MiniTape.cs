@@ -121,6 +121,96 @@ public sealed class MiniTape
         _position = 0; // rewind
     }
 
+    // ---- Host face (save / serializer) ------------------------------------------
+
+    /// <summary>Decodes the phase bitstream of the current side back into a P2000T
+    /// <c>.cas</c> image. Each decoded block becomes a 1280-byte record with the 32-byte
+    /// header at offset 0x30 and the 1024-byte data at offset 0x100 (MDCR-implementation.md §6).
+    /// Returns null if no valid block triplets (MARK + HEADER + DATA) are found. Does NOT
+    /// move the tape head — safe to call at any time.</summary>
+    public byte[]? Save()
+    {
+        var cursor = 0;
+        var records = new List<(byte[] header, byte[] data)>();
+
+        // Skip the combined BOT + BOB gap (all false phases). The 0xAA lead byte of the first
+        // MARK frame starts with bit0 = 0 → phase0 = F, so one extra false phase blends in;
+        // stepping back by 1 after the skip re-aligns to phase0 of bit0 of 0xAA.
+        while (cursor < PhasesPerSide && !_phases[_side][cursor])
+            cursor++;
+        if (cursor == 0 || cursor >= PhasesPerSide) return null;
+        cursor--; // re-align: cursor now = phase0 of bit0 of first 0xAA lead byte
+
+        while (cursor < PhasesPerSide)
+        {
+            if (!TryDecodeFrame(ref cursor, 0, out _)) break;           // MARK
+            if (!TryDecodeFrame(ref cursor, 32, out var header)) break;  // HEADER
+            if (!TryDecodeFrame(ref cursor, 1024, out var data)) break;  // DATA
+
+            records.Add((header!, data!));
+
+            // Skip EOB + BOB gap, then re-align to next MARK's 0xAA
+            while (cursor < PhasesPerSide && !_phases[_side][cursor])
+                cursor++;
+            if (cursor >= PhasesPerSide) break;
+            cursor--; // re-align
+        }
+
+        if (records.Count == 0) return null;
+
+        var casImage = new byte[records.Count * 1280];
+        for (var i = 0; i < records.Count; i++)
+        {
+            Array.Copy(records[i].header, 0, casImage, i * 1280 + 0x30, 32);
+            Array.Copy(records[i].data, 0, casImage, i * 1280 + 0x100, 1024);
+        }
+        return casImage;
+    }
+
+    /// <summary>Attempts to decode one framed block: lead 0xAA | dataLength bytes | CRC-lo |
+    /// CRC-hi | trail 0xAA. Verifies the CRC-16 and both framing bytes. Advances
+    /// <paramref name="cursor"/> only on success; restores it on failure.</summary>
+    private bool TryDecodeFrame(ref int cursor, int dataLength, out byte[]? payload)
+    {
+        payload = null;
+        var phasesNeeded = (1 + dataLength + 2 + 1) * 16;
+        if (cursor + phasesNeeded > PhasesPerSide) return false;
+
+        var saved = cursor;
+
+        if (ReadByte(ref cursor) != 0xAA) { cursor = saved; return false; }
+
+        var data = new byte[dataLength];
+        ushort checksum = 0;
+        for (var i = 0; i < dataLength; i++)
+        {
+            data[i] = ReadByte(ref cursor);
+            checksum = UpdateChecksum(checksum, data[i]);
+        }
+
+        var crcLo = ReadByte(ref cursor);
+        var crcHi = ReadByte(ref cursor);
+        if ((ushort)(crcLo | (crcHi << 8)) != checksum) { cursor = saved; return false; }
+
+        if (ReadByte(ref cursor) != 0xAA) { cursor = saved; return false; }
+
+        payload = data;
+        return true;
+    }
+
+    /// <summary>Reads one byte from the phase stream at <paramref name="cursor"/> by sampling
+    /// the first phase of each 2-phase bit pair (LSB first). Advances cursor by 16.</summary>
+    private byte ReadByte(ref int cursor)
+    {
+        byte b = 0;
+        for (var i = 0; i < 8; i++)
+        {
+            if (_phases[_side][cursor]) b |= (byte)(1 << i);
+            cursor += 2; // skip both phases of this bit
+        }
+        return b;
+    }
+
     // ---- Private encoding helpers ------------------------------------------------
 
     private void WriteGap(int phases)

@@ -234,6 +234,84 @@ public class MdcrDeviceTests
         Assert.Equal(statusBefore, mdcr2.ReadStatus());
     }
 
+    // ---- TimingPolicy -----------------------------------------------------------
+
+    [Fact]
+    public void Policy_Default_IsAuthentic()
+    {
+        var (mdcr, _) = Create();
+        Assert.Equal(TimingPolicy.Authentic, mdcr.Policy);
+    }
+
+    [Fact]
+    public void Policy_Turbo_PhaseEngineBypassedDuringTick()
+    {
+        // In turbo mode the tick loop must not advance the PLL or toggle RDC.
+        var (mdcr, cpOut) = Create();
+        mdcr.InsertTape(OneCasRecord());
+        mdcr.Policy = TimingPolicy.Turbo;
+        cpOut.Write(0x08); // FWD=1
+
+        var rdcBefore = mdcr.ReadStatus() & 0x40;
+        for (var i = 0; i < 30_000 * 209; i += 209) mdcr.Tick(209);
+
+        Assert.Equal(rdcBefore, mdcr.ReadStatus() & 0x40); // RDC unchanged — engine bypassed
+    }
+
+    // ---- Write path (realtime WCD/WDA capture) ----------------------------------
+
+    [Fact]
+    public void Tick_WriteMode_WcdSet_DoesNotToggleRdc()
+    {
+        // When WCD=1 the write path is active; the PLL read path is suppressed.
+        var (mdcr, cpOut) = Create();
+        mdcr.InsertTape(OneCasRecord(), writeProtect: false);
+
+        cpOut.Write(0x08); // FWD=1, WCD=0 — advance off BOT first
+        for (var i = 0; i < 209 * 3; i++) mdcr.Tick(1);
+
+        cpOut.Write(0x0A); // FWD=1, WCD=1 — switch to write mode
+        var rdcBefore = mdcr.ReadStatus() & 0x40;
+        for (var i = 0; i < 209 * 20; i++) mdcr.Tick(1);
+
+        Assert.Equal(rdcBefore, mdcr.ReadStatus() & 0x40); // RDC never toggled in write mode
+    }
+
+    // ---- SaveTape (host-side .cas serialization) --------------------------------
+
+    [Fact]
+    public void SaveTape_NoTape_ReturnsNull()
+    {
+        var (mdcr, _) = Create();
+        Assert.Null(mdcr.SaveTape());
+    }
+
+    [Fact]
+    public void SaveTape_InsertedTape_RoundTrips()
+    {
+        var original = new byte[1280];
+        for (var i = 0; i < 32; i++) original[0x30 + i] = (byte)(i + 0x20);
+        for (var i = 0; i < 1024; i++) original[0x100 + i] = (byte)(i & 0xFF);
+
+        var (mdcr, _) = Create();
+        mdcr.InsertTape(original);
+
+        var saved = mdcr.SaveTape();
+
+        Assert.NotNull(saved);
+        Assert.Equal(original[0x30..0x50], saved![0x30..0x50]);
+        Assert.Equal(original[0x100..0x500], saved[0x100..0x500]);
+    }
+
+    [Fact]
+    public void SaveTape_AfterEject_ReturnsNull()
+    {
+        var (mdcr, _) = Create();
+        mdcr.InsertTape(OneCasRecord());
+        mdcr.EjectTape();
+        Assert.Null(mdcr.SaveTape());
+    }
+
     // ---- Machine integration: port 0x20 OR-combines with CprinReader -----------
 
     [Fact]

@@ -712,6 +712,35 @@ marked synced. Do NOT edit the reference doc from this project.
   `src/P2000.Machine/Io/CprinReader.cs`, `src/P2000.Machine/Machine.cs`.
 - **Synced:** yes (2026-07-05, into P2000T-reference.md + device guides)
 
+### 2026-07-05 — Milestone 10: contention model
+- **Assumed:** contention scope is "any CPU DRAM access" — ROM (0x0000–0x0FFF) and SLOT1
+  (0x1000–0x4FFF) are separate ROM/EPROM chips that do NOT share the DRAM address bus, so
+  Z80 MREQ to those addresses cannot collide with a SAA5020 display fetch. DRAM starts at
+  VRAM (0x5000).
+- **Found (design decision):** `IsDramAddress(addr)` is `addr >= 0x5000` — a simple threshold
+  covering VRAM, base RAM, expansion RAM, and the banked window. Open-bus gaps inside the
+  DRAM range (e.g. 0x5800–0x5FFF on the T model) are included; in hardware no DRAM RAS/CAS
+  activates there, but in practice the Z80 won't access those addresses so the over-inclusion
+  is harmless.
+- **Found (corruption timing):** `CorruptLastFetch()` overwrites the 16 already-rendered
+  framebuffer pixels for the fetched cell (step 4 of the tick loop, after bus service). The
+  fetch fires BEFORE the CPU step (step 1 via `VideoFetchUnit.Tick()`), rendering happens
+  inline in `OnColumnFetch()`, then step 4 blanks the pixels if the CPU contested the slot.
+  `LastFetchLine` is captured before `VideoFetchUnit.Tick()` updates `Line`, avoiding an
+  off-by-one if the line changes in the same tick (it can't in practice: last fetch slot is
+  LineTState 97, line boundary at 159 — they never coincide).
+- **Found (default corruption mode):** blank/black cell (16 pixels zeroed). Mode is
+  swappable once a logic-analyzer/RGBS capture distinguishes bleed vs suppression vs
+  contention-to-garbage (reference doc §4 open item).
+- **Found (debug overlay):** a flat 40×24 bool array on `Video` (index = charRow × 40 + col)
+  is set when a cell is corrupted; cleared AFTER `FieldComplete` fires so consumers can
+  inspect it from the FieldComplete handler. Cleared by `Reset()` too.
+- **Applies to:** reference doc §4 (bus contention model, Z80 priority, corruption scope,
+  default mode) / `src/P2000.Machine/Contention/VideoFetchUnit.cs`,
+  `src/P2000.Machine/Devices/Video.cs`, `src/P2000.Machine/Memory/PageTable.cs`,
+  `src/P2000.Machine/Machine.cs`, `tests/P2000.Machine.Tests/Contention/ContentionTests.cs`.
+- **Synced:** no
+
 ### 2026-07-05 — Milestone 9a: MDCR cassette WRITE / CSAVE path
 - **Assumed (earlier):** the bitstream → .cas serializer was missing; realtime write path was
   already present in `ProcessPhase()`.

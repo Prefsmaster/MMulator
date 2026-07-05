@@ -30,6 +30,9 @@ public sealed class Video : IDevice
     public const int Width = 640;
     public const int Height = 480;
 
+    /// <summary>40 columns × 24 rows = 960 character cells per field.</summary>
+    public const int CharRows = Height / 20; // 480 / (10 scanlines × 2 output rows)
+
     /// <summary>Screen buffer is 2 screens wide × 24 rows (reference doc §5): 80 columns per
     /// row, panned by <see cref="PanX"/> to select which 40-wide slice is visible.</summary>
     private const int BufferColumns = 80;
@@ -39,6 +42,7 @@ public sealed class Video : IDevice
     private readonly Saa5050Generator _generator = new();
 
     private readonly uint[] _framebuffer = new uint[Width * Height];
+    private readonly bool[] _corruptionOverlay = new bool[VideoFetchUnit.Columns * CharRows];
     private bool _oddField;
 
     public Video(PageTable memory)
@@ -63,6 +67,14 @@ public sealed class Video : IDevice
     /// snapshot.</summary>
     public uint[] Framebuffer => _framebuffer;
 
+    /// <summary>Debug overlay for the contention model (project CLAUDE.md §10, reference doc §4).
+    /// A flat 40×24 array (index = charRow * 40 + column) where each entry is <c>true</c>
+    /// when the CPU's DRAM access collided with the video fetch for that cell during the
+    /// current field. Populated by <see cref="CorruptLastFetch"/> and cleared AFTER
+    /// <see cref="FieldComplete"/> fires, so consumers can inspect it from the FieldComplete
+    /// handler.</summary>
+    public bool[] CorruptionOverlay => _corruptionOverlay;
+
     /// <summary>True while the CURRENTLY RUNNING field is the odd (CRS=true, smoothed) one.</summary>
     public bool IsOddField => _oddField;
 
@@ -83,6 +95,24 @@ public sealed class Video : IDevice
         _generator.Reset();
         _oddField = false;
         Array.Clear(_framebuffer);
+        Array.Clear(_corruptionOverlay);
+    }
+
+    /// <summary>Called by <see cref="Machine"/> when a CPU DRAM access (MREQ to an address
+    /// ≥ 0x5000) overlaps the video fetch slot that just fired (project CLAUDE.md §3 step 4,
+    /// §10, reference doc §4): Z80 always wins — the video cell is blanked (default corruption
+    /// mode: black/suppression, swappable once a hardware capture confirms the exact mode).
+    /// No-op when no fetch occurred this tick (<see cref="VideoFetchUnit.IsFetchTick"/> false)
+    /// or when the fetch was outside the active display window.</summary>
+    public void CorruptLastFetch()
+    {
+        if (!_fetchUnit.IsFetchTick) return;
+        var col = _fetchUnit.LastFetchColumn;
+        var line = _fetchUnit.LastFetchLine;
+        var charRow = line / 10;
+        var row = line * 2 + (_oddField ? 1 : 0);
+        _framebuffer.AsSpan(row * Width + col * 16, 16).Clear();
+        _corruptionOverlay[charRow * VideoFetchUnit.Columns + col] = true;
     }
 
     /// <summary>Advances the video device by one master-clock T-state (project CLAUDE.md §3
@@ -113,6 +143,8 @@ public sealed class Video : IDevice
         _generator.BeginField();
         _oddField = !_oddField;
         FieldComplete?.Invoke();
+        // Clear AFTER firing so FieldComplete consumers can still read the current field's overlay.
+        Array.Clear(_corruptionOverlay);
         if (completedFieldWasOdd)
         {
             FrameComplete?.Invoke();

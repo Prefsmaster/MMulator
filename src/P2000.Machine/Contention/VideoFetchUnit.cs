@@ -41,6 +41,20 @@ public sealed class VideoFetchUnit : IDevice
 
     public bool IsActiveLine => Line < ActiveLines;
 
+    /// <summary>True for the T-state immediately after a <see cref="ColumnFetch"/> fired -
+    /// i.e., this tick a VRAM display fetch was issued. <see cref="Machine"/> reads this
+    /// after the CPU step to detect bus contention (milestone 10, project CLAUDE.md §3 step 4,
+    /// reference doc §4).</summary>
+    public bool IsFetchTick { get; private set; }
+
+    /// <summary>Column index (0-39) of the fetch that fired during the current tick.
+    /// Only valid when <see cref="IsFetchTick"/> is true.</summary>
+    public int LastFetchColumn { get; private set; }
+
+    /// <summary>Scanline (0-239) on which the current tick's fetch was issued.
+    /// Only valid when <see cref="IsFetchTick"/> is true.</summary>
+    public int LastFetchLine { get; private set; }
+
     /// <summary>Raised once per column, at that column's fetch slot, with the column index
     /// (0-39). The listener reads VRAM and feeds the generator - kept a real per-T-state
     /// event so milestone 10 can intercept it for contention without restructuring the
@@ -65,12 +79,17 @@ public sealed class VideoFetchUnit : IDevice
     }
 
     /// <summary>Advances the fetch-timing unit by exactly one T-state (project CLAUDE.md §3
-    /// step 1: this runs before the CPU steps, ahead of a future contention check for "was a
-    /// fetch requested this slot").</summary>
+    /// step 1: this runs before the CPU steps, ahead of the contention check for "was a
+    /// fetch requested this slot"). Sets <see cref="IsFetchTick"/> so <see cref="Machine"/>
+    /// can resolve contention after the CPU step (reference doc §4).</summary>
     public void Tick()
     {
+        IsFetchTick = false;
         if (IsActiveLine && _column < Columns && LineTState == FetchSlot(_column))
         {
+            IsFetchTick = true;
+            LastFetchColumn = _column;
+            LastFetchLine = Line; // capture before Line is updated at the end of this tick
             ColumnFetch?.Invoke(_column);
             _column++;
         }

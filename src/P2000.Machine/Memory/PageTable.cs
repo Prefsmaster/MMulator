@@ -123,6 +123,13 @@ public sealed class PageTable
     /// registers this as the port dispatch's write listener for <see cref="BankSelectPort"/>.</summary>
     public void SelectBank(byte index) => _bankIndex = index;
 
+    /// <summary>True when <paramref name="addr"/> is backed by the DRAM array (VRAM,
+    /// base RAM, expansion RAM, or the banked window). ROM (0x0000-0x0FFF) and SLOT1
+    /// (0x1000-0x4FFF) are separate chips and do NOT share the DRAM bus, so Z80 accesses
+    /// to those addresses cannot collide with a SAA5020 display fetch (reference doc §4).
+    /// Used by the contention model (milestone 10) to filter MREQ cycles.</summary>
+    public static bool IsDramAddress(ushort addr) => addr >= VideoRamStart;
+
     public byte Read(ushort address)
     {
         if (address <= RomEnd)

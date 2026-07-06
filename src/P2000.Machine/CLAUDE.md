@@ -942,3 +942,31 @@ marked synced. Do NOT edit the reference doc from this project.
   `src/P2000.Machine/Machine.cs` (`TakeSnapshot()`),
   `tests/P2000.Machine.Tests/Debug/MachineSnapshotTests.cs` (new).
 - **Synced:** no
+
+### 2026-07-06 — Milestone 14: machine-owned breakpoint store
+- **Assumed:** the store would need a complex per-tick lookup structure (HashSet etc.) for
+  performance.
+- **Found (list scan is sufficient):** debugger breakpoints are few (typically 0–5); a linear
+  scan of a `List<Entry>` in the hot path is negligible at 2.5 MHz. The only real performance
+  contract is the `AnyArmed` fast path: when the list is empty the entire breakpoint block is
+  skipped with a single `Count == 0` check.
+- **Found (IsPaused + Resume() design):** the machine needs an explicit `IsPaused` flag so
+  repeated `Tick()` calls while paused are no-ops rather than re-firing the event on every
+  call. `Resume()` also clears `_breakPending` so a deferred mid-instruction hit doesn't
+  re-trigger after resuming.
+- **Found (exec bp fires before instruction — no advance):** exec bps return early from
+  `Tick()` before `Video.Tick()` and `Cpu.Step()` — the instruction at the bp address has NOT
+  executed yet; PC is correct for a "about to execute" debugger display.
+- **Found (mid-instruction bps deferred to next boundary):** mem/IO bps that fire mid-
+  instruction set `_breakPending`; the full tick completes, and the break is raised at the
+  START of the next instruction boundary tick before anything else advances.
+- **Found (int-ack excluded from IO bps):** M1+IORQ int-ack is NOT a user I/O access — IO bp
+  checks live only in the plain IORQ+RD/WR branches, not the M1+IORQ branch.
+- **Applies to:** project CLAUDE.md §3b.2 /
+  `src/P2000.Machine/Debug/BreakpointKind.cs` (new),
+  `src/P2000.Machine/Debug/BreakEvent.cs` (new),
+  `src/P2000.Machine/Debug/BreakpointStore.cs` (new),
+  `src/P2000.Machine/Machine.cs` (`Breakpoints`, `BreakHit`, `IsPaused`, `Resume()`, `Tick()`,
+  `Reset()`),
+  `tests/P2000.Machine.Tests/Debug/BreakpointStoreTests.cs` (new).
+- **Synced:** no

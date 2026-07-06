@@ -62,6 +62,26 @@ public sealed class Machine
     /// The <see cref="IIoSlot"/> seam is ready for future expansion.</summary>
     public IIoSlot? Slot2 => null;
 
+    /// <summary>Machine-owned breakpoint store (project CLAUDE.md §3b.2). Evaluated inside
+    /// <see cref="Tick"/> behind a zero-cost <see cref="BreakpointStore.AnyArmed"/> fast path;
+    /// a hit raises <see cref="BreakHit"/> at the next instruction boundary and sets
+    /// <see cref="IsPaused"/>.</summary>
+    public BreakpointStore Breakpoints { get; } = new();
+
+    /// <summary>Raised at an instruction boundary when a breakpoint fires. The handler runs
+    /// synchronously inside <see cref="Tick"/>; the machine is already paused
+    /// (<see cref="IsPaused"/> set) before the event fires. Call <see cref="Resume"/> to
+    /// continue execution.</summary>
+    public event Action<BreakEvent>? BreakHit;
+
+    /// <summary>True when the machine is paused at a breakpoint hit. While paused,
+    /// <see cref="Tick"/> returns immediately without advancing anything. Call
+    /// <see cref="Resume"/> to re-enable ticking.</summary>
+    public bool IsPaused { get; private set; }
+
+    private bool _breakPending;
+    private BreakEvent _pendingBreak;
+
     private ulong _pins;
 
     public Machine(MachineConfig? config = null)
@@ -134,14 +154,58 @@ public sealed class Machine
         Mdcr.Reset();
         Slot1?.Reset();
         _pins = 0;
+        _breakPending = false;
+        IsPaused = false;
+    }
+
+    /// <summary>Clears the <see cref="IsPaused"/> flag set by a breakpoint hit so
+    /// <see cref="Tick"/> resumes advancing the machine. Does NOT clear the breakpoint
+    /// store — the same breakpoints remain armed and will fire again on the next match.
+    /// Call <see cref="Breakpoints"/>.<see cref="BreakpointStore.Remove"/> or
+    /// <see cref="BreakpointStore.Clear"/> first if you want to remove them.</summary>
+    public void Resume()
+    {
+        IsPaused = false;
+        _breakPending = false;
     }
 
     /// <summary>Advances the whole machine by exactly one T-state (project CLAUDE.md §3):
     /// tick the video fetch unit, assert the INT pin if pending, step the CPU, then service
     /// whatever bus request it made this tick against the page table (MREQ) or the port
-    /// dispatch (IORQ); detect the int-ack cycle (M1+IORQ) and acknowledge the aggregator.</summary>
+    /// dispatch (IORQ); detect the int-ack cycle (M1+IORQ) and acknowledge the aggregator.
+    ///
+    /// Returns immediately without advancing anything when <see cref="IsPaused"/> is true.
+    /// A breakpoint hit sets <see cref="IsPaused"/> and raises <see cref="BreakHit"/> before
+    /// returning (project CLAUDE.md §3b.2).</summary>
     public void Tick()
     {
+        if (IsPaused) return;
+
+        // Breakpoint check at instruction boundary (project CLAUDE.md §3b.2 fast path):
+        // only enter when at least one bp is armed; exits (IsPaused+BreakHit) without
+        // advancing the video or CPU if a hit is found.
+        if (Breakpoints.AnyArmed && Cpu.AtInstructionBoundary)
+        {
+            // Flush any mid-instruction hit that was deferred from a previous tick.
+            if (_breakPending)
+            {
+                var ev = _pendingBreak;
+                _breakPending = false;
+                IsPaused = true;
+                BreakHit?.Invoke(ev);
+                return;
+            }
+
+            // Exec breakpoint: fire before the instruction at this PC executes.
+            var execHit = Breakpoints.CheckExec(Cpu.Reg.PC);
+            if (execHit.HasValue)
+            {
+                IsPaused = true;
+                BreakHit?.Invoke(execHit.Value);
+                return;
+            }
+        }
+
         Video.Tick();
 
         // Drive the INT pin level into the pin word before the CPU samples it at the
@@ -170,11 +234,23 @@ public sealed class Machine
         {
             if ((_pins & Pins.RD) != 0)
             {
-                _pins = Pins.SetData(_pins, Memory.Read(Pins.GetAddress(_pins)));
+                var addr = Pins.GetAddress(_pins);
+                _pins = Pins.SetData(_pins, Memory.Read(addr));
+                if (Breakpoints.AnyArmed && !_breakPending)
+                {
+                    var hit = Breakpoints.CheckMemRead(addr);
+                    if (hit.HasValue) { _pendingBreak = hit.Value; _breakPending = true; }
+                }
             }
             else if ((_pins & Pins.WR) != 0)
             {
-                Memory.Write(Pins.GetAddress(_pins), Pins.GetData(_pins));
+                var addr = Pins.GetAddress(_pins);
+                Memory.Write(addr, Pins.GetData(_pins));
+                if (Breakpoints.AnyArmed && !_breakPending)
+                {
+                    var hit = Breakpoints.CheckMemWrite(addr);
+                    if (hit.HasValue) { _pendingBreak = hit.Value; _breakPending = true; }
+                }
             }
         }
         else if ((_pins & Pins.IORQ) != 0)
@@ -188,15 +264,26 @@ public sealed class Machine
                 // The aggregator clears its pending latch and returns the vector byte; for IM1
                 // the CPU ignores the byte (uses the fixed 0x0038 vector) but we drive it anyway
                 // so the bus looks correct and a future IM2 source can supply a real vector.
+                // Int-ack is not a user I/O access — no IO breakpoint check here.
                 _pins = Pins.SetData(_pins, Interrupts.Acknowledge());
             }
             else if ((_pins & Pins.RD) != 0)
             {
                 _pins = Pins.SetData(_pins, Ports.Read(port));
+                if (Breakpoints.AnyArmed && !_breakPending)
+                {
+                    var hit = Breakpoints.CheckIoRead(port);
+                    if (hit.HasValue) { _pendingBreak = hit.Value; _breakPending = true; }
+                }
             }
             else if ((_pins & Pins.WR) != 0)
             {
                 Ports.Write(port, Pins.GetData(_pins));
+                if (Breakpoints.AnyArmed && !_breakPending)
+                {
+                    var hit = Breakpoints.CheckIoWrite(port);
+                    if (hit.HasValue) { _pendingBreak = hit.Value; _breakPending = true; }
+                }
             }
         }
 

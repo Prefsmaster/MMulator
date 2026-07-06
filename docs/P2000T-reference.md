@@ -272,6 +272,16 @@ Therefore:
 runtime) with the config embedded as header. Two layers, two formats, one dependency
 direction (state → config).
 
+**IMPLEMENTED format (milestone-11):** `.state` = `"P2ST"` magic (4 B) + version int32 LE +
+config-JSON length int32 LE + config JSON (UTF-8) + distributed device-state stream. Restore =
+`new Machine(config)` (full reset from the embedded config) then `LoadState`. Config JSON uses
+camelCase property names but **enum values keep their declared casing** (`"T54"`, `"P2000T"`) —
+construct `JsonStringEnumConverter` WITHOUT a naming policy (camelCase would give unreadable
+`"t54"`). **ROM bytes are NOT saved** in `.state` (read-only, embedded, config-determined —
+restored from config). State is saved only at Z80 **instruction boundaries** (`AtInstructionBoundary`),
+where the CPU's private phase/tstate/prefix are at reset-compatible defaults, so the CPU struct
+serializes self-consistently without private fields.
+
 ### File extensions (DECIDED)
 - **Monitor ROM / cartridges: standard `.bin` / `.rom` — NO custom extensions.** These are raw
   binary dumps identical to what MAME/preservation sites distribute; a custom `.p2kr`/`.p2kc`
@@ -396,15 +406,28 @@ correlates the electrical event to the visible cell.
 **Build-against-now default:** collided slot → blank/black cell, no persistence. Swap
 in the precise mode once captured.
 
-### Also needs confirmation: scope of contention + display offset
-- **Scope:** VRAM-only, or the whole dynamic-RAM bus? Video RAM lives in the same
-  dynamic RAM array (8× 16K×1) as main memory, so the collision may happen on **any**
-  CPU RAM access during a fetch slot, not only accesses to `0x5000–0x577F`. If true,
-  the contention condition widens considerably. The schematic answers this: which RAM
-  bank the 5020 addresses, and whether the CPU's RAS/CAS is gated during display.
+### Scope of contention — VRAM-ONLY (owner-corrected)
+- **Scope = VRAM only: `addr >= 0x5000 && addr < 0x5800`** (0x5000–0x577F is the buffer;
+  0x5800–0x5FFF is unused on the T). The video contends only when the CPU touches the **VRAM
+  chips the SAA5020 is actually reading** — NOT the whole DRAM range.
+- **Why (owner + this doc's own hardware notes):** the video memory is a **separate 2K×8 area**,
+  distinct from the 8× 16K×1 chips forming system RAM (§ Memory/video). Since VRAM is its own
+  silicon, CPU access to main RAM (0x6000+) uses different chips and cannot collide with a
+  display fetch. Behaviourally this matches reality: the glitch is tied to **writing the screen**
+  during active scan — ordinary data/stack access to main RAM does NOT glitch the display, which
+  a `>= 0x5000` (whole-DRAM) scope would wrongly cause.
+- **Implementation note (milestone-10 was `addr >= 0x5000` — TOO WIDE, FIX to add `< 0x5800`).**
+  Claude Code's milestone-10 finding assumed a shared DRAM bus (any DRAM access contends); the
+  separate-chip VRAM makes that over-inclusive. Correct `IsDramAddress`/the contention check to
+  `>= 0x5000 && < 0x5800`.
+- **Only-if exception:** if the schematic ever shows a SINGLE DRAM controller multiplexing CPU +
+  video across the ENTIRE array (shared RAS/CAS over all chips), the wider scope would hold —
+  but the separate-2K×8 note argues against it. Confirm from schematic only if the VRAM-only
+  behaviour ever looks wrong.
 - **Display-start offset:** where in the ~312 lines the 240 active lines begin fixes
   **when VBLANK fires relative to the display window** — which the panning tricks
-  depend on. Readable from the 5020 vertical-timing section.
+  depend on. (Contention timing itself is implemented; last-fetch slot LineTState 97, line
+  boundary 159 — see machine md milestone-10 finding.)
 
 ---
 

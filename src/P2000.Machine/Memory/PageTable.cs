@@ -1,4 +1,5 @@
 using System.Reflection;
+using P2000.Machine.Slots;
 using P2000.Machine.State;
 
 namespace P2000.Machine.Memory;
@@ -24,12 +25,11 @@ public sealed class PageTable
     public const ushort RomEnd = 0x0FFF;
     private const int RomSize = RomEnd - RomStart + 1;
 
-    /// <summary>SLOT1 cartridge region (reference doc §5c). Open bus when no cartridge
-    /// is configured; loaded from <see cref="MachineConfig.Slot1CartridgePath"/> when set.
-    /// Read-only: cartridge slots have no WR pin (writes are silently discarded).</summary>
+    /// <summary>SLOT1 cartridge address range (reference doc §5c). Open bus when
+    /// <see cref="_cartridge"/> is null; delegated to the fitted <see cref="IMemorySlot"/>
+    /// otherwise. Read-only: SLOT1 has no WR pin (writes are silently discarded).</summary>
     public const ushort CartridgeStart = 0x1000;
     public const ushort CartridgeEnd = 0x4FFF;
-    private const int CartridgeSize = CartridgeEnd - CartridgeStart + 1; // 16 KB
 
     public const ushort VideoRamStart = 0x5000;
     private const int VideoRamSizeT = 0x0800; // 2 KB: 0x5000-0x57FF, + 2 KB open-bus gap
@@ -53,7 +53,7 @@ public sealed class PageTable
     public const byte BankSelectPort = 0x94;
 
     private readonly byte[] _rom = new byte[RomSize];
-    private readonly byte[]? _slot1; // null = open-bus (no cartridge fitted)
+    private readonly IMemorySlot? _cartridge; // null = open-bus (no cartridge fitted)
 
     private readonly ushort _videoRamEnd;
     private readonly byte[] _videoRam;
@@ -64,8 +64,14 @@ public sealed class PageTable
     private readonly byte[][] _banks;
     private byte _bankIndex;
 
-    public PageTable(MachineConfig config)
+    /// <param name="config">Machine topology — RAM variant, model, ROM override.</param>
+    /// <param name="cartridge">SLOT1 cartridge to map at 0x1000–0x4FFF, or <c>null</c>
+    /// for open-bus (bare machine / cassette-wait boot). Constructed by
+    /// <see cref="Machine"/> from <see cref="MachineConfig.Slot1CartridgePath"/>.</param>
+    public PageTable(MachineConfig config, IMemorySlot? cartridge = null)
     {
+        _cartridge = cartridge;
+
         var videoRamSize = config.Model == MachineModel.P2000M ? VideoRamSizeM : VideoRamSizeT;
         _videoRamEnd = (ushort)(VideoRamStart + videoRamSize - 1);
         _videoRam = new byte[videoRamSize];
@@ -82,14 +88,6 @@ public sealed class PageTable
         LoadRom(config.MonitorRomPath is not null
             ? File.ReadAllBytes(config.MonitorRomPath)
             : LoadEmbeddedMonitorRom());
-
-        // SLOT1 cartridge: open bus when absent; loaded from path when configured.
-        if (config.Slot1CartridgePath is not null)
-        {
-            var cart = File.ReadAllBytes(config.Slot1CartridgePath);
-            _slot1 = new byte[CartridgeSize];
-            cart.AsSpan(0, Math.Min(cart.Length, CartridgeSize)).CopyTo(_slot1);
-        }
     }
 
     /// <summary>Loads the embedded monitor ROM from the assembly manifest resource
@@ -140,7 +138,7 @@ public sealed class PageTable
 
         if (address <= CartridgeEnd)
         {
-            return _slot1?[address - CartridgeStart] ?? OpenBus;
+            return _cartridge?.Read(address) ?? OpenBus;
         }
 
         if (address <= _videoRamEnd)
@@ -170,7 +168,8 @@ public sealed class PageTable
 
         if (address <= CartridgeEnd)
         {
-            return; // SLOT1 has no RD/WR pins (reference doc §5c) - always read-only/absent
+            _cartridge?.Write(address, value); // SLOT1 has no WR pin — Slot1Cartridge discards
+            return;
         }
 
         if (address <= _videoRamEnd)
@@ -214,10 +213,10 @@ public sealed class PageTable
     }
 
     /// <summary>Serializes the runtime RAM contents (project CLAUDE.md §11). The embedded
-    /// monitor ROM and SLOT1 cartridge are NOT saved — they are always reconstructed from
-    /// config at machine-assembly time (the ROM is embedded, the cartridge is loaded from
-    /// its path). Only mutable DRAM is persisted: VRAM, base RAM, expansion RAM (if fitted),
-    /// and each bank of the banked window (if fitted), plus the current bank-select index.
+    /// monitor ROM and any fitted SLOT1 cartridge are NOT saved — both are static and
+    /// reconstructed from config at machine-assembly time. Only mutable DRAM is persisted:
+    /// VRAM, base RAM, expansion RAM (if fitted), each bank of the banked window (if fitted),
+    /// and the current bank-select index.
     /// </summary>
     public void SaveState(IStateWriter writer)
     {
@@ -233,8 +232,8 @@ public sealed class PageTable
     }
 
     /// <summary>Restores RAM contents saved by <see cref="SaveState"/>. Called after a
-    /// cold reset (machine reconstructed from config), so ROM and SLOT1 are already in
-    /// place — only the mutable DRAM fields are overwritten here.</summary>
+    /// cold reset (machine reconstructed from config), so the monitor ROM and any fitted
+    /// SLOT1 cartridge are already in place — only the mutable DRAM fields are overwritten.</summary>
     public void LoadState(IStateReader reader)
     {
         reader.ReadBytes(_videoRam);

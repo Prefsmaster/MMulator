@@ -815,3 +815,36 @@ marked synced. Do NOT edit the reference doc from this project.
   `tests/P2000.Machine.Tests/State/MachineConfigFileTests.cs`,
   `tests/P2000.Machine.Tests/State/MachineStateFileTests.cs`.
 - **Synced:** yes (2026-07-05)
+
+### 2026-07-06 — Milestone 12: slot model formalized
+- **Assumed:** SLOT1 loading would stay inside PageTable (raw `byte[]? _slot1`) and the typed
+  slot interfaces could wrap around it without changing the constructor.
+- **Found (design decision):** moved SLOT1 ROM loading OUT of PageTable entirely into Machine.
+  PageTable now accepts `IMemorySlot? cartridge` as a constructor parameter (default null).
+  Machine constructs `Slot1Cartridge` from `config.Slot1CartridgePath` and passes it in.
+  This makes SLOT1 a first-class typed object (`machine.Slot1`) rather than a hidden raw array,
+  which is the whole point of formalizing the slot model.
+- **Found (open-bus fix for short images):** the old PageTable code zero-filled the 16 KB
+  `_slot1` array, meaning bytes beyond the image length read as 0x00 rather than 0xFF
+  (open-bus). `Slot1Cartridge` fixes this: it only allocates `_imageLength` bytes and returns
+  `PageTable.OpenBus` (0xFF) for addresses beyond the image. Correct behavior: an unprogrammed
+  EPROM reads 0xFF; the old code was wrong but harmless in practice since BASIC.bin is exactly
+  16 KB.
+- **Found (IIoSlot has no unregister):** Reset-to-apply (locked decision §2.3) means a slot
+  card's port listeners are registered once at machine-assembly time and live for the machine's
+  lifetime; there is no runtime slot-swap. `IIoSlot.RegisterPorts` is the only seam needed —
+  no `UnregisterPorts` method required or added.
+- **Found (NMI aggregator seam — binary format change):** `InterruptAggregator.SaveState` now
+  writes two booleans (`_intPending`, `_nmiPending`) instead of one. This is a `.state` format
+  change — the version field in `MachineStateFile` must be bumped before releasing any
+  persisted state files. Bumping deferred to when the UI/file-save path lands (no external
+  `.state` files exist yet in the T-first build).
+- **Found (NMI test note — SP at reset):** the NMI vector test uses the default T38 machine
+  (SP=0x0000). NMI pushes the return address to 0xFFFF/0xFFFE (banked window, no banks →
+  writes discarded). The CPU still completes the NMI sequence and jumps to 0x0066 correctly
+  — the corrupt stack only matters on RETN, which the test avoids by using a `JR -2` spin.
+- **Applies to:** reference doc §5c (slot types, bus connections), §5e (NMI sources) /
+  `src/P2000.Machine/Slots/ISlotCard.cs`, `IMemorySlot.cs`, `IIoSlot.cs`, `INmiSource.cs`,
+  `Slot1Cartridge.cs`; `src/P2000.Machine/Memory/PageTable.cs`,
+  `src/P2000.Machine/Interrupts/InterruptAggregator.cs`, `src/P2000.Machine/Machine.cs`.
+- **Synced:** no

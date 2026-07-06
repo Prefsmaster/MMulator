@@ -91,6 +91,142 @@ public class InterruptAggregatorTests
         Assert.False(agg2.IntPending);
     }
 
+    // ---- NMI: unit tests ----------------------------------------------------------
+
+    [Fact]
+    public void InitialState_NmiNotPending()
+    {
+        var agg = new InterruptAggregator();
+        Assert.False(agg.NmiPending);
+    }
+
+    [Fact]
+    public void RaiseNmi_SetsPending()
+    {
+        var agg = new InterruptAggregator();
+        agg.RaiseNmi();
+        Assert.True(agg.NmiPending);
+    }
+
+    [Fact]
+    public void ClearNmi_ClearsLatch()
+    {
+        var agg = new InterruptAggregator();
+        agg.RaiseNmi();
+        agg.ClearNmi();
+        Assert.False(agg.NmiPending);
+    }
+
+    [Fact]
+    public void Reset_ClearsNmiPending()
+    {
+        var agg = new InterruptAggregator();
+        agg.RaiseNmi();
+        agg.Reset();
+        Assert.False(agg.NmiPending);
+    }
+
+    [Fact]
+    public void SaveLoad_RoundTrip_NmiPendingTrue()
+    {
+        var agg = new InterruptAggregator();
+        agg.RaiseNmi();
+
+        var state = new InMemoryState();
+        agg.SaveState(state);
+
+        var agg2 = new InterruptAggregator();
+        agg2.LoadState(state.BeginRead());
+
+        Assert.True(agg2.NmiPending);
+    }
+
+    [Fact]
+    public void SaveLoad_RoundTrip_NmiPendingFalse()
+    {
+        var agg = new InterruptAggregator();
+
+        var state = new InMemoryState();
+        agg.SaveState(state);
+
+        var agg2 = new InterruptAggregator();
+        agg2.RaiseNmi(); // pre-pollute
+        agg2.LoadState(state.BeginRead());
+
+        Assert.False(agg2.NmiPending);
+    }
+
+    [Fact]
+    public void SaveLoad_BothIntAndNmi_RoundTrip()
+    {
+        var agg = new InterruptAggregator();
+        agg.RaiseInt();
+        agg.RaiseNmi();
+
+        var state = new InMemoryState();
+        agg.SaveState(state);
+
+        var agg2 = new InterruptAggregator();
+        agg2.LoadState(state.BeginRead());
+
+        Assert.True(agg2.IntPending);
+        Assert.True(agg2.NmiPending);
+    }
+
+    // ---- NMI: machine-level wiring ------------------------------------------------
+
+    /// <summary>
+    /// RaiseNmi causes the NMI pin to be asserted for exactly one tick (edge-triggered).
+    /// After that one tick, ClearNmi has been called and NmiPending is false again.
+    /// </summary>
+    [Fact]
+    public void RaiseNmi_ConsumedAfterOneTick()
+    {
+        var machine = new Machine();
+        machine.Memory.LoadRom(new byte[] { 0x00 }); // NOP loop
+
+        machine.Interrupts.RaiseNmi();
+        Assert.True(machine.Interrupts.NmiPending);
+
+        machine.Tick(); // drives NMI=1 then calls ClearNmi inside the tick
+
+        Assert.False(machine.Interrupts.NmiPending);
+    }
+
+    /// <summary>
+    /// With the CPU halted, a raised NMI must vector it to 0x0066 (the fixed NMI vector).
+    /// The NMI handler is a tight JR -2 spin so we can confirm the CPU is spinning there
+    /// without needing a valid stack: the push goes to 0xFFFF/0xFFFE (banked window, no banks
+    /// in T38 → writes discarded) but the jump to 0x0066 still fires and the spin runs.
+    /// </summary>
+    [Fact]
+    public void RaiseNmi_VectorsToNmiHandler_At0x0066()
+    {
+        var machine = new Machine();
+
+        // ROM layout:
+        //   0x0000: FB        EI
+        //   0x0001: 76        HALT      ← CPU parks here
+        //   0x0066: 18 FE     JR -2     ← NMI handler: infinite spin at 0x0066
+        var rom = new byte[0x1000];
+        rom[0x0000] = 0xFB; // EI
+        rom[0x0001] = 0x76; // HALT
+        rom[0x0066] = 0x18; // JR e
+        rom[0x0067] = 0xFE; // e = -2  → loops back to 0x0066 forever
+        machine.Memory.LoadRom(rom);
+
+        // Run past EI+HALT (≈ 8-12 T-states), then raise NMI and tick enough for the
+        // NMI sequence (11 T-states) plus a JR iteration (12 T-states) — well within 30.
+        for (var i = 0; i < 20; i++) machine.Tick();
+
+        machine.Interrupts.RaiseNmi();
+
+        for (var i = 0; i < 30; i++) machine.Tick();
+
+        // CPU must be inside the NMI handler: spinning at 0x0066 or mid-JR (fetched 0x0067/0x0068).
+        Assert.InRange(machine.Cpu.Reg.PC, (ushort)0x0066, (ushort)0x0068);
+    }
+
     // ---- Integration: machine-level wiring ----------------------------------------
 
     /// <summary>

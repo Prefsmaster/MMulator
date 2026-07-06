@@ -3,20 +3,28 @@ using P2000.Machine.State;
 namespace P2000.Machine.Interrupts;
 
 /// <summary>
-/// Wired-OR INT aggregator (project CLAUDE.md §8). In the T-first build the only source is
-/// the video 50 Hz VBLANK (<see cref="Video.FieldComplete"/>); future sources (CTC
-/// channel-3 when a CTC is present, IM2 daisy-chain peripherals) register by calling
-/// <see cref="RaiseInt"/> from their own <c>FieldComplete</c>-equivalent handlers.
+/// Wired-OR INT and NMI aggregator (project CLAUDE.md §8). In the T-first build the only
+/// INT source is the video 50 Hz VBLANK (<see cref="Video.FieldComplete"/>); future sources
+/// (CTC channel-3, IM2 daisy-chain peripherals) register by calling <see cref="RaiseInt"/>.
 ///
-/// The INT line is kept asserted in the machine's pin word (<see cref="IntPending"/> = true)
+/// INT: the line is kept asserted in the machine's pin word (<see cref="IntPending"/> = true)
 /// until the CPU acknowledges it via the int-ack M-cycle (M1+IORQ, detected by
-/// <see cref="Machine.Tick"/>). For IM1 the CPU ignores the bus byte entirely; the aggregator
-/// returns 0xFF (passive pull-up) from <see cref="Acknowledge"/> anyway so that a future IM2
-/// source can replace it with a real vector byte without changing the machine's ack path.
+/// <see cref="Machine.Tick"/>). For IM1 the CPU ignores the bus byte; the aggregator returns
+/// 0xFF (passive pull-up) from <see cref="Acknowledge"/> so that a future IM2 source can
+/// supply a real vector without changing the ack path.
+///
+/// NMI: edge-triggered. <see cref="RaiseNmi"/> sets the latch; <see cref="Machine.Tick"/>
+/// asserts <see cref="Z80.Core.Pins.NMI"/> for exactly one T-state then calls
+/// <see cref="ClearNmi"/> so the Z80 core sees a single 0→1 rising edge per request.
+/// Current NMI sources for the P2000T: front-panel soft-reset button and SLOT1 pin 1A
+/// (reference doc §5c/§5e). Neither fires in the T-first build; the seam is ready.
 /// </summary>
 public sealed class InterruptAggregator : IDevice
 {
     private bool _intPending;
+    private bool _nmiPending;
+
+    // ---- INT (maskable) -----------------------------------------------------------
 
     /// <summary>True when at least one INT source is pending. The machine asserts
     /// <see cref="Z80.Core.Pins.INT"/> into its pin word while this is true.</summary>
@@ -38,9 +46,39 @@ public sealed class InterruptAggregator : IDevice
         return 0xFF;
     }
 
-    public void Reset() => _intPending = false;
+    // ---- NMI (non-maskable) -------------------------------------------------------
 
-    public void SaveState(IStateWriter writer) => writer.WriteBool(_intPending);
+    /// <summary>True when an NMI request is waiting to be driven onto the pin.
+    /// <see cref="Machine.Tick"/> asserts <see cref="Z80.Core.Pins.NMI"/> for one T-state
+    /// then calls <see cref="ClearNmi"/> (edge-triggered — one rising edge per request).
+    /// </summary>
+    public bool NmiPending => _nmiPending;
 
-    public void LoadState(IStateReader reader) => _intPending = reader.ReadBool();
+    /// <summary>Requests a non-maskable interrupt. Callers: front-panel soft-reset button,
+    /// SLOT1 pin 1A (reference doc §5c/§5e). No NMI source fires in the T-first build.</summary>
+    public void RaiseNmi() => _nmiPending = true;
+
+    /// <summary>Called by the machine immediately after asserting the NMI pin high for one
+    /// T-state, so the latch is consumed and subsequent ticks return the pin to low.</summary>
+    public void ClearNmi() => _nmiPending = false;
+
+    // ---- IDevice ------------------------------------------------------------------
+
+    public void Reset()
+    {
+        _intPending = false;
+        _nmiPending = false;
+    }
+
+    public void SaveState(IStateWriter writer)
+    {
+        writer.WriteBool(_intPending);
+        writer.WriteBool(_nmiPending);
+    }
+
+    public void LoadState(IStateReader reader)
+    {
+        _intPending = reader.ReadBool();
+        _nmiPending = reader.ReadBool();
+    }
 }

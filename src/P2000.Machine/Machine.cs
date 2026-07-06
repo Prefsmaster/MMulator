@@ -3,6 +3,7 @@ using P2000.Machine.Devices.Cassette;
 using P2000.Machine.Interrupts;
 using P2000.Machine.Io;
 using P2000.Machine.Memory;
+using P2000.Machine.Slots;
 using P2000.Machine.State;
 using Z80.Core;
 
@@ -44,17 +45,34 @@ public sealed class Machine
     /// at runtime (CIP is a live transition — machine CLAUDE.md §7).</summary>
     public MdcrDevice Mdcr { get; }
 
-    /// <summary>Wired-OR INT aggregator (project CLAUDE.md §8). The video 50 Hz VBLANK is
-    /// the only registered source for the T-first build; future CTC and IM2 daisy-chain
-    /// sources call <see cref="InterruptAggregator.RaiseInt"/> from their own handlers.</summary>
+    /// <summary>Wired-OR INT/NMI aggregator (project CLAUDE.md §8). The video 50 Hz VBLANK
+    /// is the only registered INT source for the T-first build. NMI seam is present but no
+    /// source fires yet (front-panel soft-reset and SLOT1 pin 1A are wired later).</summary>
     public InterruptAggregator Interrupts { get; } = new();
+
+    /// <summary>SLOT1 cartridge (0x1000–0x4FFF, reference doc §5c), or <c>null</c> when the
+    /// machine is bare (cassette-wait boot). Constructed from
+    /// <see cref="MachineConfig.Slot1CartridgePath"/>; null when that path is not set.</summary>
+    public IMemorySlot? Slot1 { get; }
+
+    /// <summary>SLOT2 expansion card slot (I/O-mapped, reference doc §5c). Always
+    /// <c>null</c> in the T-first build — SLOT2 cards are deferred (project CLAUDE.md §14).
+    /// The <see cref="IIoSlot"/> seam is ready for future expansion.</summary>
+    public IIoSlot? Slot2 => null;
 
     private ulong _pins;
 
     public Machine(MachineConfig? config = null)
     {
         Config = config ?? new MachineConfig();
-        Memory = new PageTable(Config);
+
+        // Construct SLOT1 cartridge (if configured) before building PageTable so it
+        // can route 0x1000–0x4FFF reads through the typed IMemorySlot interface.
+        Slot1 = Config.Slot1CartridgePath is not null
+            ? new Slot1Cartridge(Config.Slot1CartridgePath)
+            : null;
+
+        Memory = new PageTable(Config, Slot1);
         Video = new Video(Memory);
         Keyboard = new KeyboardDevice(CpOut);
         Mdcr = new MdcrDevice(CpOut);
@@ -89,6 +107,7 @@ public sealed class Machine
         Interrupts.Reset();
         Keyboard.Reset();
         Mdcr.Reset();
+        Slot1?.Reset();
         _pins = 0;
     }
 
@@ -106,6 +125,19 @@ public sealed class Machine
             _pins |= Pins.INT;
         else
             _pins &= ~Pins.INT;
+
+        // NMI: edge-triggered — assert for exactly one T-state so the Z80 core latches
+        // a single 0→1 rising edge per request (Z80.Core Interrupts.cs _prevNmi tracking).
+        // No NMI source fires in the T-first build; the seam is ready (project CLAUDE.md §8).
+        if (Interrupts.NmiPending)
+        {
+            _pins |= Pins.NMI;
+            Interrupts.ClearNmi(); // consumed — next tick returns pin to low
+        }
+        else
+        {
+            _pins &= ~Pins.NMI;
+        }
 
         _pins = Cpu.Step(_pins);
 

@@ -125,11 +125,11 @@ public sealed class PageTable
     public void SelectBank(byte index) => _bankIndex = index;
 
     /// <summary>True when <paramref name="addr"/> is backed by the DRAM array (VRAM,
-    /// base RAM, expansion RAM, or the banked window). ROM (0x0000-0x0FFF) and SLOT1
-    /// (0x1000-0x4FFF) are separate chips and do NOT share the DRAM bus, so Z80 accesses
-    /// to those addresses cannot collide with a SAA5020 display fetch (reference doc §4).
+    /// the SAA5020 fetch unit exclusively addresses this VRAM chip. Base RAM, expansion RAM,
+    /// and the banked window are separate chips not accessed by the SAA5020 — a Z80 write to
+    /// those addresses cannot collide with a display fetch (reference doc §4).
     /// Used by the contention model (milestone 10) to filter MREQ cycles.</summary>
-    public static bool IsDramAddress(ushort addr) => addr >= VideoRamStart;
+    public bool IsVideoRamAddress(ushort addr) => addr >= VideoRamStart && addr <= _videoRamEnd;
 
     public byte Read(ushort address)
     {

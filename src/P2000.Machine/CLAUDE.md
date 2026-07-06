@@ -717,11 +717,9 @@ marked synced. Do NOT edit the reference doc from this project.
   (0x1000–0x4FFF) are separate ROM/EPROM chips that do NOT share the DRAM address bus, so
   Z80 MREQ to those addresses cannot collide with a SAA5020 display fetch. DRAM starts at
   VRAM (0x5000).
-- **Found (design decision):** `IsDramAddress(addr)` is `addr >= 0x5000` — a simple threshold
-  covering VRAM, base RAM, expansion RAM, and the banked window. Open-bus gaps inside the
-  DRAM range (e.g. 0x5800–0x5FFF on the T model) are included; in hardware no DRAM RAS/CAS
-  activates there, but in practice the Z80 won't access those addresses so the over-inclusion
-  is harmless.
+- **Found (design decision, later corrected):** `IsDramAddress(addr)` was initially `addr >= 0x5000`,
+  covering VRAM + all RAM. Corrected 2026-07-06: only VRAM is shared with the SAA5020 — see
+  correction entry below.
 - **Found (corruption timing):** `CorruptLastFetch()` overwrites the 16 already-rendered
   framebuffer pixels for the fetched cell (step 4 of the tick loop, after bus service). The
   fetch fires BEFORE the CPU step (step 1 via `VideoFetchUnit.Tick()`), rendering happens
@@ -738,6 +736,24 @@ marked synced. Do NOT edit the reference doc from this project.
 - **Applies to:** reference doc §4 (bus contention model, Z80 priority, corruption scope,
   default mode) / `src/P2000.Machine/Contention/VideoFetchUnit.cs`,
   `src/P2000.Machine/Devices/Video.cs`, `src/P2000.Machine/Memory/PageTable.cs`,
+  `src/P2000.Machine/Machine.cs`, `tests/P2000.Machine.Tests/Contention/ContentionTests.cs`.
+- **Synced:** no (correction needed in reference doc §4 — contention address window)
+
+### 2026-07-06 — Milestone 10 correction: contention address window
+- **Assumed (wrong):** `IsDramAddress` used `addr >= 0x5000` — any CPU MREQ to VRAM or RAM
+  could cause contention.
+- **Corrected (per updated reference doc §4):** only the VRAM chip is shared with the SAA5020.
+  Base RAM (0x6000+), expansion RAM, and the banked window are separate DRAM chips that the
+  SAA5020 never addresses. The contention window is strictly:
+  - P2000T: 0x5000–0x57FF (2 KB VRAM chip)
+  - P2000M: 0x5000–0x5FFF (4 KB VRAM chip)
+- **Change:** `IsDramAddress` (static, wrong) → `IsVideoRamAddress(addr)` (instance method,
+  uses `_videoRamEnd` set per model in the PageTable constructor). Machine.cs updated to call
+  `Memory.IsVideoRamAddress(...)`. Contention tests updated: hammering loops point to 0x5000
+  instead of 0x6000; `IsDramAddress_*` tests replaced with `IsVideoRamAddress_*` tests
+  including T-model boundary (0x57FF → true, 0x5800 → false) and P2000M window (0x5FFF → true,
+  0x6000 → false).
+- **Applies to:** reference doc §4 (contention window) / `src/P2000.Machine/Memory/PageTable.cs`,
   `src/P2000.Machine/Machine.cs`, `tests/P2000.Machine.Tests/Contention/ContentionTests.cs`.
 - **Synced:** no
 
@@ -759,7 +775,7 @@ marked synced. Do NOT edit the reference doc from this project.
 - **Applies to:** `src/P2000.Machine/Devices/Cassette/MiniTape.cs` (`Save`, `TryDecodeFrame`,
   `ReadByte`), `src/P2000.Machine/Devices/Cassette/MdcrDevice.cs` (`Policy`, `SaveTape`),
   `src/P2000.Machine/Devices/Cassette/TimingPolicy.cs` (new).
-- **Synced:** no
+- **Synced:** yes (2026-07-05)
 
 ### 2026-07-05 — Milestone 11: config + state serialization
 - **Assumed:** `MachineConfig` fields are JSON-serializable with `System.Text.Json` in-box;
@@ -798,4 +814,4 @@ marked synced. Do NOT edit the reference doc from this project.
   `src/P2000.Machine/State/StreamStateWriter.cs`, `src/P2000.Machine/State/StreamStateReader.cs`,
   `tests/P2000.Machine.Tests/State/MachineConfigFileTests.cs`,
   `tests/P2000.Machine.Tests/State/MachineStateFileTests.cs`.
-- **Synced:** no
+- **Synced:** yes (2026-07-05)

@@ -144,10 +144,10 @@ public sealed class Machine
         }
 
         // Step 4: contention — Z80 always wins (reference doc §4, project CLAUDE.md §10).
-        // If the CPU drove any DRAM access (MREQ to address ≥ 0x5000) in the same T-state
-        // as a video display fetch, the fetched cell is corrupted → blanked. The CPU
-        // proceeds unaffected. Default mode: blank/black (swappable once hardware-captured).
-        if ((_pins & Pins.MREQ) != 0 && PageTable.IsDramAddress(Pins.GetAddress(_pins)))
+        // Only VRAM (0x5000–0x57FF T / 0x5000–0x5FFF M) is shared with the SAA5020 fetch
+        // unit. Base RAM, expansion RAM, and the banked window are separate chips — MREQ to
+        // those addresses cannot collide with a display fetch. Default corruption: blanked.
+        if ((_pins & Pins.MREQ) != 0 && Memory.IsVideoRamAddress(Pins.GetAddress(_pins)))
             Video.CorruptLastFetch();
 
         // Advance master-clock devices (cassette bit engine; later CTC — machine CLAUDE.md §3 step 5).

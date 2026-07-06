@@ -15,21 +15,22 @@ public class ContentionTests
     // ---- Speckle: CPU hammering DRAM during active display ---------------------------------
 
     /// <summary>
-    /// A tight loop that writes to base RAM (0x6000) runs throughout the field, hitting
-    /// both active display lines and vblank. The collision with video fetch slots must
-    /// produce at least one corrupted cell, flagged in the overlay.
+    /// A tight loop that writes to VRAM (0x5000) runs throughout the field, hitting both
+    /// active display lines and vblank. The collision with video fetch slots must produce
+    /// at least one corrupted cell, flagged in the overlay.
     /// </summary>
     [Fact]
     public void ContentionDuringActiveDisplay_ProducesCorruptedCells()
     {
         var machine = new Machine();
 
-        // Tight DRAM-write loop: LD HL,0x6000 / LD (HL),H / JR -3
-        // LD (HL),H drives MREQ with address 0x6000 (IsDramAddress = true) during the write phase.
+        // Tight VRAM-write loop: LD HL,0x5000 / LD (HL),H / JR -3
+        // LD (HL),H drives MREQ with address 0x5000 (IsVideoRamAddress = true).
+        // Base RAM (0x6000+) would NOT cause contention — only VRAM is shared with the SAA5020.
         machine.Memory.LoadRom(new byte[]
         {
-            0x21, 0x00, 0x60, // LD HL, 0x6000
-            0x74,             // LD (HL), H   — DRAM write each pass
+            0x21, 0x00, 0x50, // LD HL, 0x5000
+            0x74,             // LD (HL), H   — VRAM write each pass
             0x18, 0xFD,       // JR -3        — loop back to LD (HL),H
         });
 
@@ -56,8 +57,8 @@ public class ContentionTests
     {
         var machine = new Machine();
 
-        // HALT: the CPU repeatedly fetches 0x76 from PC=0x0000 (ROM — not DRAM).
-        // IsDramAddress(0x0000) == false → no contention triggered.
+        // HALT: the CPU repeatedly fetches 0x76 from PC=0x0000 (ROM — not VRAM).
+        // IsVideoRamAddress(0x0000) == false → no contention triggered.
         machine.Memory.LoadRom(new byte[] { 0x76 }); // HALT at 0x0000
 
         bool[] overlaySnapshot = Array.Empty<bool>();
@@ -82,10 +83,10 @@ public class ContentionTests
     {
         var machine = new Machine();
 
-        // Same hammering loop as the speckle test.
+        // Same VRAM hammering loop as the speckle test.
         machine.Memory.LoadRom(new byte[]
         {
-            0x21, 0x00, 0x60, // LD HL, 0x6000
+            0x21, 0x00, 0x50, // LD HL, 0x5000
             0x74,             // LD (HL), H
             0x18, 0xFD,       // JR -3
         });
@@ -112,7 +113,7 @@ public class ContentionTests
         var machine = new Machine();
         machine.Memory.LoadRom(new byte[]
         {
-            0x21, 0x00, 0x60, // LD HL, 0x6000
+            0x21, 0x00, 0x50, // LD HL, 0x5000
             0x74,             // LD (HL), H
             0x18, 0xFD,       // JR -3
         });
@@ -126,24 +127,40 @@ public class ContentionTests
         Assert.All(machine.Video.CorruptionOverlay, c => Assert.False(c));
     }
 
-    // ---- IsDramAddress filter --------------------------------------------------------------
+    // ---- IsVideoRamAddress filter ----------------------------------------------------------
+    // Only the VRAM chip (shared with the SAA5020) causes contention. Base RAM, expansion
+    // RAM, and the banked window are separate chips — reference doc §4 correction.
 
     [Fact]
-    public void IsDramAddress_ReturnsFalse_ForRomAndSlot1()
+    public void IsVideoRamAddress_ReturnsFalse_ForRomSlot1AndRam()
     {
-        Assert.False(PageTable.IsDramAddress(PageTable.RomStart));
-        Assert.False(PageTable.IsDramAddress(PageTable.RomEnd));
-        Assert.False(PageTable.IsDramAddress(PageTable.CartridgeStart));
-        Assert.False(PageTable.IsDramAddress(PageTable.CartridgeEnd));
+        var pt = new PageTable(new MachineConfig()); // default = P2000T
+        Assert.False(pt.IsVideoRamAddress(PageTable.RomStart));
+        Assert.False(pt.IsVideoRamAddress(PageTable.RomEnd));
+        Assert.False(pt.IsVideoRamAddress(PageTable.CartridgeStart));
+        Assert.False(pt.IsVideoRamAddress(PageTable.CartridgeEnd));
+        Assert.False(pt.IsVideoRamAddress(PageTable.BaseRamStart)); // separate chip
+        Assert.False(pt.IsVideoRamAddress(PageTable.BaseRamEnd));
+        Assert.False(pt.IsVideoRamAddress(PageTable.ExpansionRamStart));
+        Assert.False(pt.IsVideoRamAddress(PageTable.BankedWindowStart));
     }
 
     [Fact]
-    public void IsDramAddress_ReturnsTrue_ForVramAndRam()
+    public void IsVideoRamAddress_ReturnsTrue_ForVramWindow()
     {
-        Assert.True(PageTable.IsDramAddress(PageTable.VideoRamStart));
-        Assert.True(PageTable.IsDramAddress(PageTable.BaseRamStart));
-        Assert.True(PageTable.IsDramAddress(PageTable.BaseRamEnd));
-        Assert.True(PageTable.IsDramAddress(PageTable.ExpansionRamStart));
-        Assert.True(PageTable.IsDramAddress(PageTable.BankedWindowStart));
+        var pt = new PageTable(new MachineConfig()); // default = P2000T, VRAM 0x5000-0x57FF
+        Assert.True(pt.IsVideoRamAddress(PageTable.VideoRamStart));       // 0x5000
+        Assert.True(pt.IsVideoRamAddress(0x57FF));                         // T-model end
+        Assert.False(pt.IsVideoRamAddress(0x5800));                        // open-bus gap
+        Assert.False(pt.IsVideoRamAddress(0x5FFF));
+    }
+
+    [Fact]
+    public void IsVideoRamAddress_P2000M_FullVramWindow()
+    {
+        var pt = new PageTable(new MachineConfig { Model = MachineModel.P2000M });
+        Assert.True(pt.IsVideoRamAddress(PageTable.VideoRamStart));        // 0x5000
+        Assert.True(pt.IsVideoRamAddress(0x5FFF));                         // M-model end
+        Assert.False(pt.IsVideoRamAddress(PageTable.BaseRamStart));        // 0x6000 — separate chip
     }
 }

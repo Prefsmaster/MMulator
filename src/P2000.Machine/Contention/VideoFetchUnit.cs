@@ -35,6 +35,11 @@ public sealed class VideoFetchUnit : IDevice
     private int _fieldTState;
     private int _column;
 
+    /// <summary>T-state offset within the current 50 Hz field (0 –
+    /// <see cref="TStatesPerField"/>-1). Together with <see cref="Line"/> and
+    /// <see cref="LineTState"/> this gives the debugger's in-frame cycle position.</summary>
+    public int FieldTState => _fieldTState;
+
     public int Line { get; private set; }
 
     public int LineTState { get; private set; }

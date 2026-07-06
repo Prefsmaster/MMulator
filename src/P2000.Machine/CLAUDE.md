@@ -150,6 +150,48 @@ and any consumer (Avalonia display, a test, a screenshot writer) reads. Define i
 
 ---
 
+## 3b. The observer + control seam (machine → debugger / UI / IDE)
+
+§3's framebuffer is the machine's **output** seam. This is its **observe-and-command** seam: how
+the debugger, `P2000.UI` (its §3.2), and the future external IDE hook (deferred, §14) read
+machine state and drive it. Same discipline as everywhere else — one owner, snapshots at safe
+points, mutation ONLY via queued commands drained at instruction boundaries. **It lives here, in
+the machine, so every client shares ONE contract** (the UI is the first client, the IDE the
+second); do NOT let it migrate into `P2000.UI`.
+
+Three surfaces (milestones 13–15):
+
+1. **Read-only state snapshot.** A cheap, allocation-light view an observer reads at a break /
+   per step: full register file incl. **WZ/MEMPTR**, IFF1/2, IM, flags broken out (incl. YF/XF),
+   plus memory reads and the **in-frame T-state/cycle position**. Derived from the deterministic
+   core; never mutates it. Register/flag reads are consistent at `AtInstructionBoundary` — reuse
+   the same safe-point discipline `SaveState` already relies on (§11). The core already exposes
+   WZ and `AtInstructionBoundary`; expose the rest read-only.
+2. **Breakpoint store (machine-owned).** Execute + memory **R/W/X** watchpoints + **I/O-port**
+   breakpoints, held in the machine's debug state and evaluated **inside the tick loop** (the
+   loop that already resolves contention, §3 step 4). A hit pauses at the next instruction
+   boundary and raises a **break event** observers see. Clients EDIT this store (via commands);
+   they never keep their own — this is what lets the UI debugger and the IDE set the SAME
+   breakpoints. Guard the hot loop with an "any breakpoint armed?" fast path so an unbroken
+   machine pays nothing.
+3. **Command queue (drained at `AtInstructionBoundary`).** Every mutation from a client is a
+   **queued command applied at a safe boundary** — symmetric with host input, which already
+   applies at a frame boundary (§7 keyboard). Commands: run / pause, warm reset, cold reset,
+   single-step, step-over, step-out, run-to-scanline, run-to-cycle, set-PC, memory write,
+   **load-image-to-address** ("send code," for the IDE later), breakpoint CRUD. **Determinism
+   caveat:** a mid-run memory write / load-to-RAM breaks cycle-exact replay for that session —
+   same category as turbo cassette; allowed, documented per-command, NOT forbidden.
+
+**OPEN (owner deciding — §16): the run-loop host / scheduler.** Something must pace the
+deterministic tick loop to wall-clock 50 Hz (or uncapped for turbo), handle run/pause/turbo,
+drain the command queue, and apply queued input at boundaries. Locked decision §2.2 forbids
+wall-clock/threads inside the emulation core, so this host sits OUTSIDE it — most likely a
+machine-layer *runner* both the UI and the IDE drive, keeping `Machine` pure. Placement is an
+open decision; the three surfaces above are **runner-agnostic** and are milestoned first. Add a
+runner milestone once the shape is settled.
+
+---
+
 ## 4. The common device interface
 
 ```csharp
@@ -424,6 +466,27 @@ This file is the working scratchpad; the reference doc is the clean source of tr
 12. Slot model formalized (SLOT1/SLOT2/internal typed interfaces, even if only SLOT1 populated
     now) so expansion drops in later. Tag `P2000.Machine` T-baseline. → commit.
 
+**Post-T-baseline — the observer + control contract (§3b) the debugger + external IDE consume
+(`P2000.UI` §3.2). Runner-agnostic; the run-loop host stays OPEN (§3b / §16) and is milestoned
+separately once its placement is settled.**
+
+13. **Observer state-snapshot surface** (§3b.1). Read-only snapshot: full register file (incl.
+    WZ/MEMPTR, IFF1/2, IM, flags incl. YF/XF), a memory-read view, in-frame T-state/cycle
+    position; taken at a safe point, never mutating the core. **Tests:** snapshot registers/flags
+    match the core at a known break; re-reading without stepping is identical; stepping advances
+    PC + cycle position as expected. → commit.
+14. **Machine-owned breakpoint store** (§3b.2). Exec + mem R/W/X + I/O-port breakpoints evaluated
+    in the tick loop behind an "armed?" fast path; a hit pauses at the next instruction boundary
+    and raises a break event. **Tests:** each type fires on the correct access and only then; a
+    machine with nothing armed is behaviour- AND performance-unchanged; the break lands on an
+    instruction boundary. → commit.
+15. **Command queue** (§3b.3). Queue drained at `AtInstructionBoundary`: run/pause, warm/cold
+    reset, single-step, step-over, step-out, run-to-scanline, run-to-cycle, set-PC, memory write,
+    load-image-to-address, breakpoint CRUD — symmetric with frame-boundary input. **Tests:** each
+    command applies at a boundary with the expected transition; step-over/step-out land correctly
+    across CALL/RET; run-to-cycle N stops exactly at N; a mid-run poke is flagged non-replayable.
+    → commit.
+
 ---
 
 ## 14. Deferred (build the seams now, implement later)
@@ -452,7 +515,10 @@ Ask before: changing a locked decision in §2; implementing any deferred item in
 being asked; deviating from the confirmed hardware in the reference doc; or relaxing a
 validation gate in §12. For the hardware details still marked "to confirm" in the reference
 doc (exact contention corruption mode, WCD/WDA clock, SHIFT/CODE matrix positions), ask rather
-than guess. Ordinary in-project choices: proceed and keep CI green.
+than guess. The **run-loop host / scheduler placement** (§3b) is an OPEN owner decision — do NOT
+build the wall-clock pacing / run-pause-turbo thread until it is settled; milestones 13–15
+(snapshot, breakpoint store, command queue) are runner-agnostic and proceed first. Ordinary
+in-project choices: proceed and keep CI green.
 
 ---
 
@@ -847,4 +913,32 @@ marked synced. Do NOT edit the reference doc from this project.
   `src/P2000.Machine/Slots/ISlotCard.cs`, `IMemorySlot.cs`, `IIoSlot.cs`, `INmiSource.cs`,
   `Slot1Cartridge.cs`; `src/P2000.Machine/Memory/PageTable.cs`,
   `src/P2000.Machine/Interrupts/InterruptAggregator.cs`, `src/P2000.Machine/Machine.cs`.
+- **Synced:** no
+
+### 2026-07-06 — Milestone 13: observer state-snapshot surface
+- **Assumed:** the snapshot needed a new FieldTState exposure — `VideoFetchUnit` and `Video`
+  had no public `FieldTState` property yet.
+- **Found (trivial additive change):** `VideoFetchUnit._fieldTState` was already the master
+  counter; adding `public int FieldTState => _fieldTState;` on `VideoFetchUnit` and a
+  forwarding property on `Video` was the entire change to existing code.
+- **Found (delegate for ReadMemory — one allocation):** `MachineSnapshot.ReadMemory` holds a
+  `Func<ushort, byte>` bound to `PageTable.Read`. Allocated once at `TakeSnapshot()` time;
+  every subsequent `ReadMemory(addr)` call is a direct delegate invoke with no extra
+  allocation. Accepted trade-off: trivial cost for a live, side-effect-free memory view that
+  needs no array copy.
+- **Found (RunToNextBoundary test helper — post-reset pitfall):** after `new Machine()`, the
+  CPU is at `AtInstructionBoundary=true` immediately (reset leaves the core in Fetch/T0/None).
+  A naïve "tick until boundary" helper that always ticks at least once skips past the first
+  instruction boundary. The helper must check `if (AtInstructionBoundary) return;` before
+  ticking.
+- **Found (short test ROM pitfall):** a test ROM shorter than the NOP's read window (e.g.
+  `new byte[] { 0x00 }`) leaves bytes at index 1+ as monitor-ROM content, causing unexpected
+  PC advance after one NOP. Tests that advance exactly one instruction use a full 4 KB ROM
+  with a `JR -2` loop at 0x0001 to keep PC in a known range.
+- **Applies to:** project CLAUDE.md §3b.1 /
+  `src/P2000.Machine/Contention/VideoFetchUnit.cs` (`FieldTState` property),
+  `src/P2000.Machine/Devices/Video.cs` (`FieldTState` property),
+  `src/P2000.Machine/Debug/MachineSnapshot.cs` (new),
+  `src/P2000.Machine/Machine.cs` (`TakeSnapshot()`),
+  `tests/P2000.Machine.Tests/Debug/MachineSnapshotTests.cs` (new).
 - **Synced:** no

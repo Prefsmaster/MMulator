@@ -1,3 +1,5 @@
+using P2000.Machine.Contention;
+using P2000.Machine.Debug;
 using P2000.Machine.Devices;
 using P2000.Machine.Devices.Cassette;
 using P2000.Machine.Interrupts;
@@ -94,6 +96,29 @@ public sealed class Machine
         Video.FieldComplete += Interrupts.RaiseInt;
 
         Cpu.Reset();
+    }
+
+    /// <summary>
+    /// Returns a read-only snapshot of the machine's current state (project CLAUDE.md §3b.1,
+    /// milestone 13). The snapshot captures the full register file, all flag bits broken out,
+    /// the in-frame T-state/cycle position, and a live memory-read delegate.
+    ///
+    /// <b>Must only be called at an instruction boundary</b>
+    /// (<see cref="Z80.Core.Z80.AtInstructionBoundary"/> is true): the same safe point
+    /// <see cref="SaveState"/> relies on. Throws <see cref="InvalidOperationException"/>
+    /// if called mid-instruction, to prevent silently inconsistent snapshots.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">Thrown if the CPU is not at an
+    /// instruction boundary (mid-instruction or halted).</exception>
+    public MachineSnapshot TakeSnapshot()
+    {
+        if (!Cpu.AtInstructionBoundary)
+            throw new InvalidOperationException(
+                "TakeSnapshot must be called at an instruction boundary " +
+                "(Z80.AtInstructionBoundary must be true). " +
+                "Drive Tick() until AtInstructionBoundary before calling.");
+
+        return new MachineSnapshot(Cpu.Reg, Video.FieldTState, Memory.Read);
     }
 
     /// <summary>Rebuilds the machine to its cold-reset state (locked decision §2.3:

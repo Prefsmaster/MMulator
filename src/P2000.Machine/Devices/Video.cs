@@ -78,6 +78,11 @@ public sealed class Video : IDevice
     /// <summary>True while the CURRENTLY RUNNING field is the odd (CRS=true, smoothed) one.</summary>
     public bool IsOddField => _oddField;
 
+    /// <summary>T-state offset within the current 50 Hz field (0 –
+    /// <see cref="VideoFetchUnit.TStatesPerField"/>-1). Exposed for the observer
+    /// state-snapshot surface (project CLAUDE.md §3b.1, milestone 13).</summary>
+    public int FieldTState => _fetchUnit.FieldTState;
+
     /// <summary>Raised at each 50 Hz field boundary (SAA5020 DEW pulse) - the video VBLANK
     /// interrupt source (project CLAUDE.md §8) fires once per field, not once per frame.</summary>
     public event Action? FieldComplete;

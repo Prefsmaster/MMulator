@@ -39,7 +39,18 @@ public sealed partial class DisplayWindowVm : ObservableObject, IDisposable
     [ObservableProperty] private bool _isTurbo;
 
     // ── Video prefs (project CLAUDE.md §8) ───────────────────────────────────
-    [ObservableProperty] private DisplayMode _displayMode = DisplayMode.Interlaced;
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(
+        nameof(IsModeInterlaced), nameof(IsModeProgressive),
+        nameof(IsModeEvenOnly),   nameof(IsModeOddOnly))]
+    private DisplayMode _displayMode = DisplayMode.Interlaced;
+
+    // Computed bools for menu IsChecked bindings (ConverterParameter+x:Static is unreliable in AXAML).
+    public bool IsModeInterlaced  => DisplayMode == DisplayMode.Interlaced;
+    public bool IsModeProgressive => DisplayMode == DisplayMode.Progressive;
+    public bool IsModeEvenOnly    => DisplayMode == DisplayMode.EvenOnly;
+    public bool IsModeOddOnly     => DisplayMode == DisplayMode.OddOnly;
+
     [ObservableProperty] private bool _integerScale;
     [ObservableProperty] private bool _palAspect = true;
     [ObservableProperty] private bool _showScanlines;

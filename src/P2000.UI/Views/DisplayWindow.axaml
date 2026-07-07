@@ -1,0 +1,13 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:rendering="using:P2000.UI.Rendering"
+        x:Class="P2000.UI.Views.DisplayWindow"
+        Title="MMulator — P2000T"
+        Width="640" Height="480"
+        MinWidth="320" MinHeight="240"
+        Background="Black">
+
+    <!-- DisplayControl fills the window, scaled nearest-neighbour (§8). -->
+    <rendering:DisplayControl x:Name="Display" HorizontalAlignment="Stretch" VerticalAlignment="Stretch" />
+
+</Window>

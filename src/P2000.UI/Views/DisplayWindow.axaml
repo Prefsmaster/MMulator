@@ -1,13 +1,107 @@
 <Window xmlns="https://github.com/avaloniaui"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:rendering="using:P2000.UI.Rendering"
+        xmlns:local="using:P2000.UI.Views"
+        xmlns:vm="using:P2000.UI.ViewModels"
+        x:DataType="vm:DisplayWindowVm"
         x:Class="P2000.UI.Views.DisplayWindow"
         Title="MMulator — P2000T"
-        Width="640" Height="480"
-        MinWidth="320" MinHeight="240"
+        Width="640" Height="530"
+        MinWidth="320" MinHeight="280"
         Background="Black">
 
-    <!-- DisplayControl fills the window, scaled nearest-neighbour (§8). -->
-    <rendering:DisplayControl x:Name="Display" HorizontalAlignment="Stretch" VerticalAlignment="Stretch" />
+    <!-- Global keyboard shortcuts (F-keys used by the emulator control surface, §6). -->
+    <Window.KeyBindings>
+        <KeyBinding Gesture="F5"       Command="{Binding ToggleRunPauseCommand}" />
+        <KeyBinding Gesture="F6"       Command="{Binding ToggleTurboCommand}" />
+        <KeyBinding Gesture="F8"       Command="{Binding StepCommand}" />
+        <KeyBinding Gesture="F11"      Command="{Binding WarmResetCommand}" />
+        <KeyBinding Gesture="Shift+F11" Command="{Binding ColdResetCommand}" />
+        <KeyBinding Gesture="F12"      Command="{Binding ScreenshotCommand}" />
+    </Window.KeyBindings>
 
+    <DockPanel>
+
+        <!-- ── Menu bar ──────────────────────────────────────────────────────── -->
+        <Menu DockPanel.Dock="Top">
+            <MenuItem Header="_Machine">
+                <MenuItem Header="Run / _Pause"     HotKey="F5"        Command="{Binding ToggleRunPauseCommand}" />
+                <Separator />
+                <MenuItem Header="Reset (_Warm)"    HotKey="F11"       Command="{Binding WarmResetCommand}" />
+                <MenuItem Header="Reset (_Cold)"    HotKey="Shift+F11" Command="{Binding ColdResetCommand}" />
+                <Separator />
+                <MenuItem Header="_Step"            HotKey="F8"        Command="{Binding StepCommand}" />
+                <Separator />
+                <MenuItem Header="_Turbo speed"     HotKey="F6"        Command="{Binding ToggleTurboCommand}"
+                          IsChecked="{Binding IsTurbo}" />
+                <Separator />
+                <MenuItem Header="Screens_hot"      HotKey="F12"       Command="{Binding ScreenshotCommand}" />
+            </MenuItem>
+        </Menu>
+
+        <!-- ── Toolbar ────────────────────────────────────────────────────────── -->
+        <Border DockPanel.Dock="Top"
+                Background="#2d2d2d"
+                BorderBrush="#444" BorderThickness="0,0,0,1"
+                Padding="4,2">
+            <StackPanel Orientation="Horizontal" Spacing="4">
+                <Button Command="{Binding ToggleRunPauseCommand}"
+                        Content="{Binding RunPauseHeader}"
+                        MinWidth="56" ToolTip.Tip="Run / Pause (F5)" />
+                <Button Command="{Binding WarmResetCommand}"
+                        Content="↺ Warm" MinWidth="60"
+                        ToolTip.Tip="Warm Reset — preserves RAM (F11)" />
+                <Button Command="{Binding ColdResetCommand}"
+                        Content="↺ Cold" MinWidth="60"
+                        ToolTip.Tip="Cold Reset — clears RAM (Shift+F11)" />
+                <Button Command="{Binding StepCommand}"
+                        Content="Step" MinWidth="46"
+                        ToolTip.Tip="Single-step (F8, only when paused)" />
+                <Separator />
+                <Button Command="{Binding ToggleTurboCommand}"
+                        MinWidth="56" ToolTip.Tip="Toggle turbo speed (F6)">
+                    <Button.Content>
+                        <TextBlock>
+                            <Run Text="⚡" />
+                            <Run Text="{Binding IsTurbo, StringFormat={}Turbo: {0}}" />
+                        </TextBlock>
+                    </Button.Content>
+                </Button>
+                <Separator />
+                <Button Command="{Binding ScreenshotCommand}"
+                        Content="📷" MinWidth="36"
+                        ToolTip.Tip="Save screenshot to Pictures (F12)" />
+            </StackPanel>
+        </Border>
+
+        <!-- ── Status bar ─────────────────────────────────────────────────────── -->
+        <Border DockPanel.Dock="Bottom"
+                Background="#1e1e1e"
+                BorderBrush="#444" BorderThickness="0,1,0,0"
+                Padding="6,2">
+            <StackPanel Orientation="Horizontal" Spacing="16">
+                <!-- Emulation state -->
+                <TextBlock Text="{Binding StateText}"
+                           Foreground="{Binding StateText, Converter={x:Static local:StateTextToColorConverter.Instance}}"
+                           FontSize="11" VerticalAlignment="Center" />
+                <!-- Speed -->
+                <TextBlock Text="{Binding SpeedText}"
+                           Foreground="#aaa" FontSize="11" VerticalAlignment="Center" />
+                <!-- Cassette LED -->
+                <StackPanel Orientation="Horizontal" Spacing="4" VerticalAlignment="Center">
+                    <Ellipse Width="8" Height="8"
+                             Fill="{Binding CassetteActive, Converter={x:Static local:BoolToLedBrushConverter.Instance}}" />
+                    <TextBlock Text="CAS" Foreground="#888" FontSize="11" VerticalAlignment="Center" />
+                </StackPanel>
+                <!-- Model -->
+                <TextBlock Text="{Binding ModelText}"
+                           Foreground="#888" FontSize="11" VerticalAlignment="Center" />
+            </StackPanel>
+        </Border>
+
+        <!-- ── Display ────────────────────────────────────────────────────────── -->
+        <rendering:DisplayControl x:Name="Display"
+                                  HorizontalAlignment="Stretch"
+                                  VerticalAlignment="Stretch" />
+    </DockPanel>
 </Window>

@@ -970,3 +970,37 @@ marked synced. Do NOT edit the reference doc from this project.
   `Reset()`),
   `tests/P2000.Machine.Tests/Debug/BreakpointStoreTests.cs` (new).
 - **Synced:** no
+
+### 2026-07-07 — Milestone 15: command queue (§3b.3)
+- **Assumed:** drain could run first at each boundary, then check `_pauseAtNextBoundary`
+  immediately in the same tick.
+- **Found (ordering bug — corrected):** placing `DrainCommandQueue()` BEFORE the boundary
+  checks means `SingleStepCommand` sets `_pauseAtNextBoundary` and the check fires in the
+  SAME tick — the instruction never executes. Fix: checks A–D (including `_pauseAtNextBoundary`,
+  run-to-cycle, breakpoints) run BEFORE the drain. The drain sets state that is consumed on
+  the NEXT boundary. The drain must run even while paused (so `RunCommand` can un-pause), but
+  the un-pause takes effect on the following tick.
+- **Found (`PauseCommand` must `break`, not `return`):** using `return` in the drain switch
+  stopped processing subsequent commands in the same drain pass (e.g. a `SetPcCommand` queued
+  after `PauseCommand` was silently dropped). Changed to `break`; drain always exhausts the
+  queue.
+- **Found (T38 default machine — banked window is open-bus):** `RamVariant.T38` gives
+  `EffectiveBankCount = 0`. The banked window 0xE000–0xFFFF has no banks: writes are silently
+  discarded, reads return 0xFF. Reset leaves SP=0x0000; CALL wraps to 0xFFFF/0xFFFE (banked
+  window) — stack writes discarded, stack reads 0xFF → `RET` sets PC=0xFFFF. Step-over/step-out
+  tests must set `m.Cpu.Reg.SP = 0x8000` to use base RAM for the stack.
+- **Found (Z80 M1 fetch increments PC at T0):** after `Reset()` (PC=0) + one `Cpu.Step()`,
+  PC is already 1 — the fetch consumed the opcode byte and advanced PC before the instruction
+  is fully executed. Warm/cold reset tests assert `PC <= 1` rather than `PC == 0`.
+- **Found (WarmReset/ColdReset clear the queue):** after a reset the queue is cleared
+  (`_commandQueue.Clear()`) and drain returns immediately — subsequent commands in the same
+  flush (e.g. a stale `SetPcCommand` from before the reset) are dropped. This is intentional:
+  a reset is a full state wipe.
+- **Applies to:** project CLAUDE.md §3b.3 /
+  `src/P2000.Machine/Debug/MachineCommand.cs` (new — 19 command types),
+  `src/P2000.Machine/Memory/PageTable.cs` (`ClearRam()` added),
+  `src/P2000.Machine/Machine.cs` (`Enqueue`, `NonReplayableAction`, `DrainCommandQueue`,
+  `ApplyStepOver`, `ApplyStepOut`, `GetCallLikeLength`, `GetEdCallLikeLength`, updated
+  `Tick()` + `Reset()`),
+  `tests/P2000.Machine.Tests/Debug/CommandQueueTests.cs` (new — 26 tests).
+- **Synced:** no

@@ -212,6 +212,18 @@ public sealed class PageTable
         }
     }
 
+    /// <summary>Zeroes all mutable DRAM (VRAM, base RAM, expansion RAM, banked window) without
+    /// touching the ROM or cartridge. Used by <see cref="Machine"/> for a cold reset
+    /// (project CLAUDE.md §3b.3 <c>ColdResetCommand</c>).</summary>
+    public void ClearRam()
+    {
+        Array.Clear(_videoRam);
+        Array.Clear(_baseRam);
+        if (_expansionRam is not null) Array.Clear(_expansionRam);
+        foreach (var bank in _banks) Array.Clear(bank);
+        _bankIndex = 0;
+    }
+
     /// <summary>Serializes the runtime RAM contents (project CLAUDE.md §11). The embedded
     /// monitor ROM and any fitted SLOT1 cartridge are NOT saved — both are static and
     /// reconstructed from config at machine-assembly time. Only mutable DRAM is persisted:

@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using P2000.Machine.Contention;
 using P2000.Machine.Debug;
 using P2000.Machine.Devices;
@@ -82,6 +83,22 @@ public sealed class Machine
     private bool _breakPending;
     private BreakEvent _pendingBreak;
 
+    // ── Command queue (project CLAUDE.md §3b.3, milestone 15) ──────────────────────────
+
+    /// <summary>Raised when a <see cref="MemoryWriteCommand"/> or
+    /// <see cref="LoadImageCommand"/> is applied. A mid-run memory mutation breaks
+    /// cycle-exact replay for this session (project CLAUDE.md §3b.3).</summary>
+    public event Action? NonReplayableAction;
+
+    private readonly ConcurrentQueue<MachineCommand> _commandQueue = new();
+
+    // Transient stepping / run-to state (set by drain; evaluated at next boundary).
+    private bool _pauseAtNextBoundary;
+    private int _runToFieldTState = -1;
+
+    // ID of the temporary exec breakpoint planted by StepOver/StepOut; -1 = none.
+    private int _tempBpId = -1;
+
     private ulong _pins;
 
     public Machine(MachineConfig? config = null)
@@ -117,6 +134,13 @@ public sealed class Machine
 
         Cpu.Reset();
     }
+
+    /// <summary>
+    /// Queues a command to be applied at the next instruction boundary
+    /// (project CLAUDE.md §3b.3, milestone 15). Thread-safe: may be called from any
+    /// thread; the command is applied on the emulation thread inside <see cref="Tick"/>.
+    /// </summary>
+    public void Enqueue(MachineCommand command) => _commandQueue.Enqueue(command);
 
     /// <summary>
     /// Returns a read-only snapshot of the machine's current state (project CLAUDE.md §3b.1,
@@ -155,6 +179,14 @@ public sealed class Machine
         Slot1?.Reset();
         _pins = 0;
         _breakPending = false;
+        _pauseAtNextBoundary = false;
+        _runToFieldTState = -1;
+        // If a step-over/step-out temp bp is in the store, remove it.
+        if (_tempBpId != -1)
+        {
+            Breakpoints.Remove(_tempBpId);
+            _tempBpId = -1;
+        }
         IsPaused = false;
     }
 
@@ -179,32 +211,68 @@ public sealed class Machine
     /// returning (project CLAUDE.md §3b.2).</summary>
     public void Tick()
     {
-        if (IsPaused) return;
-
-        // Breakpoint check at instruction boundary (project CLAUDE.md §3b.2 fast path):
-        // only enter when at least one bp is armed; exits (IsPaused+BreakHit) without
-        // advancing the video or CPU if a hit is found.
-        if (Breakpoints.AnyArmed && Cpu.AtInstructionBoundary)
+        if (Cpu.AtInstructionBoundary)
         {
-            // Flush any mid-instruction hit that was deferred from a previous tick.
-            if (_breakPending)
+            // A–D: Check conditions set by PREVIOUS drains. Skipped while paused so we
+            // never double-fire; the drain (step E) still runs so RunCommand can unset IsPaused.
+            if (!IsPaused)
             {
-                var ev = _pendingBreak;
-                _breakPending = false;
-                IsPaused = true;
-                BreakHit?.Invoke(ev);
-                return;
+                // A. Pause-at-next-boundary: set by a prior SingleStep/StepOver-non-call drain.
+                //    Checked here (before the current drain) so the command that set it lands
+                //    on the NEXT boundary, not the same one where the drain ran.
+                if (_pauseAtNextBoundary)
+                {
+                    _pauseAtNextBoundary = false;
+                    IsPaused = true;
+                    return;
+                }
+
+                // B. Run-to-cycle / run-to-scanline (project CLAUDE.md §3b.3).
+                if (_runToFieldTState >= 0 && Video.FieldTState >= _runToFieldTState)
+                {
+                    _runToFieldTState = -1;
+                    IsPaused = true;
+                    return;
+                }
+
+                // C. Deferred mid-instruction breakpoint (project CLAUDE.md §3b.2).
+                if (Breakpoints.AnyArmed && _breakPending)
+                {
+                    var ev = _pendingBreak;
+                    _breakPending = false;
+                    IsPaused = true;
+                    BreakHit?.Invoke(ev);
+                    return;
+                }
+
+                // D. Exec breakpoint — includes temporary bps planted by StepOver/StepOut.
+                if (Breakpoints.AnyArmed)
+                {
+                    var execHit = Breakpoints.CheckExec(Cpu.Reg.PC);
+                    if (execHit.HasValue)
+                    {
+                        // Temp bp fired: remove it so it cannot re-fire on the next hit.
+                        if (_tempBpId != -1 && execHit.Value.BreakpointId == _tempBpId)
+                        {
+                            Breakpoints.Remove(_tempBpId);
+                            _tempBpId = -1;
+                        }
+                        IsPaused = true;
+                        BreakHit?.Invoke(execHit.Value);
+                        return;
+                    }
+                }
             }
 
-            // Exec breakpoint: fire before the instruction at this PC executes.
-            var execHit = Breakpoints.CheckExec(Cpu.Reg.PC);
-            if (execHit.HasValue)
-            {
-                IsPaused = true;
-                BreakHit?.Invoke(execHit.Value);
-                return;
-            }
+            // E. Drain the command queue (project CLAUDE.md §3b.3, milestone 15).
+            //    Runs even while paused so RunCommand / WarmReset etc. take effect when
+            //    the runner calls Tick on a paused machine. Conditions set HERE
+            //    (_pauseAtNextBoundary, _runToFieldTState) are evaluated on the NEXT
+            //    boundary (checks A–D above are already past for this tick).
+            DrainCommandQueue();
         }
+
+        if (IsPaused) return;
 
         Video.Tick();
 
@@ -296,6 +364,165 @@ public sealed class Machine
 
         // Advance master-clock devices (cassette bit engine; later CTC — machine CLAUDE.md §3 step 5).
         Mdcr.Tick(1);
+    }
+
+    // ── Command queue drain (project CLAUDE.md §3b.3, milestone 15) ──────────────────────
+
+    /// <summary>Drains all currently-queued commands, applying each in FIFO order.
+    /// Called from <see cref="Tick"/> at every instruction boundary.
+    /// Returns as soon as IsPaused is set (Pause/Reset consumed), so the caller can
+    /// exit the tick immediately.</summary>
+    private void DrainCommandQueue()
+    {
+        while (_commandQueue.TryDequeue(out var cmd))
+        {
+            switch (cmd)
+            {
+                case RunCommand:
+                    // Symmetric with direct Resume() — both clear the paused state.
+                    IsPaused = false;
+                    _breakPending = false;
+                    break;
+
+                case PauseCommand:
+                    IsPaused = true;
+                    break; // continue draining; subsequent commands still apply
+
+                case WarmResetCommand:
+                    Reset(); // CPU + devices; RAM preserved
+                    _commandQueue.Clear(); // drop pre-reset commands
+                    return;
+
+                case ColdResetCommand:
+                    Reset();
+                    Memory.ClearRam();
+                    _commandQueue.Clear();
+                    return;
+
+                case SingleStepCommand:
+                    // Pause after the instruction that is about to execute (at the next
+                    // boundary).  Setting the flag here means the CURRENT boundary is
+                    // skipped (we execute one instruction) and the NEXT boundary pauses.
+                    _pauseAtNextBoundary = true;
+                    break;
+
+                case StepOverCommand:
+                    ApplyStepOver();
+                    break;
+
+                case StepOutCommand:
+                    ApplyStepOut();
+                    break;
+
+                case RunToCycleCommand runTo:
+                    _runToFieldTState = runTo.FieldTState;
+                    break;
+
+                case RunToScanlineCommand runToLine:
+                    _runToFieldTState = runToLine.Line * VideoFetchUnit.TStatesPerLine;
+                    break;
+
+                case SetPcCommand setPc:
+                    Cpu.Reg.PC = setPc.Address;
+                    break;
+
+                case MemoryWriteCommand memWrite:
+                    Memory.Write(memWrite.Address, memWrite.Value);
+                    NonReplayableAction?.Invoke();
+                    break;
+
+                case LoadImageCommand load:
+                    for (var i = 0; i < load.Data.Length; i++)
+                        Memory.Write((ushort)(load.StartAddress + i), load.Data[i]);
+                    NonReplayableAction?.Invoke();
+                    break;
+
+                case AddExecBreakpointCommand addExec:
+                    Breakpoints.AddExec(addExec.Address);
+                    break;
+                case AddMemReadBreakpointCommand addMr:
+                    Breakpoints.AddMemRead(addMr.Address);
+                    break;
+                case AddMemWriteBreakpointCommand addMw:
+                    Breakpoints.AddMemWrite(addMw.Address);
+                    break;
+                case AddMemAccessBreakpointCommand addMa:
+                    Breakpoints.AddMemAccess(addMa.Address);
+                    break;
+                case AddIoReadBreakpointCommand addIr:
+                    Breakpoints.AddIoRead(addIr.Port);
+                    break;
+                case AddIoWriteBreakpointCommand addIw:
+                    Breakpoints.AddIoWrite(addIw.Port);
+                    break;
+                case RemoveBreakpointCommand removeBp:
+                    Breakpoints.Remove(removeBp.Id);
+                    break;
+                case ClearBreakpointsCommand:
+                    Breakpoints.Clear();
+                    break;
+            }
+        }
+    }
+
+    /// <summary>Implements <see cref="StepOverCommand"/>: if the instruction at PC is
+    /// a CALL/RST/DJNZ/block instruction, plants a temporary exec breakpoint at the
+    /// return site (PC + instruction length) and lets the machine run; otherwise
+    /// falls back to single-step.</summary>
+    private void ApplyStepOver()
+    {
+        var pc = Cpu.Reg.PC;
+        var len = GetCallLikeLength(pc);
+        if (len > 0)
+        {
+            _tempBpId = Breakpoints.AddExec((ushort)(pc + len));
+        }
+        else
+        {
+            _pauseAtNextBoundary = true;
+        }
+    }
+
+    /// <summary>Implements <see cref="StepOutCommand"/>: reads the return address from
+    /// [SP]|[SP+1]&lt;&lt;8 and plants a temporary exec breakpoint there.</summary>
+    private void ApplyStepOut()
+    {
+        var sp = Cpu.Reg.SP;
+        var lo = Memory.Read(sp);
+        var hi = Memory.Read((ushort)(sp + 1));
+        _tempBpId = Breakpoints.AddExec((ushort)(lo | (hi << 8)));
+    }
+
+    /// <summary>Returns the byte length of the instruction at <paramref name="pc"/> if it
+    /// is a call-like opcode that step-over should skip (CALL, RST, DJNZ, block instructions);
+    /// otherwise returns -1 (caller falls back to single-step).</summary>
+    private int GetCallLikeLength(ushort pc)
+    {
+        var opcode = Memory.Read(pc);
+        return opcode switch
+        {
+            0xCD => 3,   // CALL nn
+            // CALL cc,nn (all eight conditional forms)
+            0xC4 or 0xCC or 0xD4 or 0xDC or 0xE4 or 0xEC or 0xF4 or 0xFC => 3,
+            // RST p (eight restart vectors: 00/08/10/18/20/28/30/38)
+            0xC7 or 0xCF or 0xD7 or 0xDF or 0xE7 or 0xEF or 0xF7 or 0xFF => 1,
+            0x10 => 2,   // DJNZ e
+            0xED => GetEdCallLikeLength(pc),
+            _ => -1
+        };
+    }
+
+    /// <summary>Checks whether the ED-prefixed instruction at <paramref name="pc"/> is
+    /// a block instruction (LDIR/LDDR/CPIR/CPDR/INIR/OTIR/IND/OUTD); returns 2 if so,
+    /// -1 otherwise.</summary>
+    private int GetEdCallLikeLength(ushort pc)
+    {
+        var op2 = Memory.Read((ushort)(pc + 1));
+        // Block instructions (ED Bx): LDIR B0, CPIR B1, INIR B2, OTIR B3,
+        //                              LDDR B8, CPDR B9, IND BA, OUTD BB
+        return op2 is 0xB0 or 0xB1 or 0xB2 or 0xB3 or 0xB8 or 0xB9 or 0xBA or 0xBB
+            ? 2
+            : -1;
     }
 
     /// <summary>Serializes the machine's complete runtime state (project CLAUDE.md §11).

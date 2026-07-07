@@ -1,5 +1,7 @@
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using Avalonia.Threading;
+using P2000.Machine;
 using P2000.Machine.Devices;
 using MachineCore = P2000.Machine.Machine;
 
@@ -34,6 +36,9 @@ public sealed class EmulationRunner : IDisposable
     private readonly Thread _thread;
     private volatile bool _running;
 
+    // Key events queued from the UI thread, drained on the emulation thread at each field boundary.
+    private readonly ConcurrentQueue<(int Row, int Col, bool Pressed)> _inputQueue = new();
+
     // Double-buffered presentation frames.
     private readonly uint[][] _frameBufs =
     {
@@ -50,9 +55,27 @@ public sealed class EmulationRunner : IDisposable
 
     public EmulationRunner()
     {
-        Machine = new MachineCore();
+        Machine = new MachineCore(MakeConfig());
         Machine.Video.FieldComplete += OnFieldComplete;
         _thread = new Thread(Run) { IsBackground = true, Name = "Emulation" };
+    }
+
+    // Locate BASIC.bin relative to the executable (assets/ in the repo root).
+    private static MachineConfig MakeConfig()
+    {
+        // Trim trailing separator so GetDirectoryName reliably walks up one level per call.
+        var dir = AppContext.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        for (int i = 0; i < 8; i++)
+        {
+            var candidate = Path.Combine(dir, "assets", "BASIC.bin");
+            if (File.Exists(candidate))
+                return new MachineConfig { Slot1CartridgePath = candidate };
+            var parent = Path.GetDirectoryName(dir);
+            if (parent is null || parent == dir) break;
+            dir = parent;
+        }
+        // No BASIC found → bare machine (cassette-wait screen).
+        return new MachineConfig();
     }
 
     public void Start()
@@ -68,6 +91,11 @@ public sealed class EmulationRunner : IDisposable
         _thread.Join(2000);
         Machine.Video.FieldComplete -= OnFieldComplete;
     }
+
+    /// <summary>Enqueues a key press or release from the UI thread. Applied to the machine's
+    /// keyboard matrix at the next field boundary on the emulation thread.</summary>
+    public void EnqueueKey(int row, int col, bool pressed)
+        => _inputQueue.Enqueue((row, col, pressed));
 
     /// <summary>Returns a snapshot copy of the most recent rendered frame (BGRA 640×480).
     /// Allocates a new array; safe to call from any thread.</summary>
@@ -89,6 +117,10 @@ public sealed class EmulationRunner : IDisposable
     // Called on the emulation thread (synchronously inside Machine.Tick()).
     private void OnFieldComplete()
     {
+        // ── Apply queued key events (field boundary — safe point per machine CLAUDE.md §7) ──
+        while (_inputQueue.TryDequeue(out var ev))
+            Machine.Keyboard.SetKey(ev.Row, ev.Col, ev.Pressed);
+
         // ── Copy framebuffer ──────────────────────────────────────────────────
         var buf = _frameBufs[_writeBufIdx];
         Array.Copy(Machine.Video.Framebuffer, buf, buf.Length);

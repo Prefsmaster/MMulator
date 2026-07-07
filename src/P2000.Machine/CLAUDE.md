@@ -853,6 +853,44 @@ marked synced. Do NOT edit the reference doc from this project.
   `src/P2000.Machine/Devices/Cassette/TimingPolicy.cs` (new).
 - **Synced:** yes (2026-07-05)
 
+### 2026-07-07 — Milestone 4 (P2000.UI): MDCR tape block structure + byte order (CLOAD fix)
+Two bugs were masking CLOAD success; both confirmed by tracing `Cassette.asm` line by line.
+
+- **Assumed (wrong — prior session):** byte encoding was MSB-first, based on misreading `rla`
+  in the CRC path as the byte assembler. `rla` is used ONLY for one-bit-at-a-time CRC/parity
+  processing (`xor a; rlc l; rla` extracts one RDA bit into A for the CRC loop).
+- **Confirmed (byte order is LSB-first):** the actual byte assembler is `rr d` (Cassette.asm
+  lines 1136–1140): eight iterations of `rrc l; exx; rr d` rotate one bit at a time into D'
+  via carry — rotate-RIGHT means the first received bit lands in bit7 after shift, i.e. the
+  FIRST bit received ends up at bit0 after 8 iterations → LSB-first. `WriteByte` must send
+  bit0 first. 0xAA (10101010) is the correct sync byte (confirmed from Cassette.asm line 852
+  comment and from `fetch_checksum_postamble` write side: `ld d,0xaa`).
+- **Assumed (wrong — prior session):** `LoadCasImage` wrote THREE separate `WriteData` frames:
+  MARK, HEADER (32 B), DATA (1024 B), with no gaps between them.
+- **Confirmed (correct tape block structure):** per `cas_block_read` (lines 804–918) and
+  `read_mark` / `load_block`: the ROM calls `search_marker` → `wait_70ms` → `load_block`.
+  `search_marker` validates the MARK via `read_until_timeout` (reads until per-bit timeout
+  ~5 ms); it counts `paddingbytes = bytes_read - 3` and retries if `paddingbytes != 0`. With
+  no gap after MARK, `read_until_timeout` reads into the HEADER frame → `paddingbytes != 0`
+  → `search_marker_loop` retries → eventually times out with 'N' or 'M' error.
+- **Fix:** `LoadCasImage` now writes:
+  `MARK (0xAA | 0x00 | 0x00 | 0xAA)` + `MarkDataGap (~81 ms silence)` +
+  `DATA BLOCK (0xAA | header(32B) | data(1024B) | CRC(2B) | 0xAA)`.
+  Header and data share ONE combined frame with ONE CRC — confirmed from `load_block` lines
+  912–918 (`0xAA | header(32B) | data(1024B) | CRC(2B) | 0xAA`). The `MarkDataGap` must be
+  ≥ 70 ms so the DATA BLOCK's preamble starts after `wait_70ms` completes; using 970 phases
+  (~81 ms at 2.5 MHz).
+- **MARK validation mechanism:** `read_until_timeout` uses a per-bit timeout of 256 × 51
+  T-states (~5 ms). In the silence gap, all-false phases → PLL loses lock → RDC stops toggling
+  → `wait_next_bit` times out → `read_until_timeout` exits. The gap must be long enough that
+  the PLL loses lock cleanly before `wait_70ms` completes and `load_block` begins.
+- **Save() updated** to match: skip gap → TryDecodeFrame(0) for MARK → skip MarkDataGap →
+  TryDecodeFrame(1056) for combined HEADER+DATA → split `combined[0..31]` / `combined[32..]`.
+- **Applies to:** `docs/MDCR-implementation.md` §6 (tape block structure, byte order) /
+  `src/P2000.Machine/Devices/Cassette/MiniTape.cs` (`LoadCasImage`, `Save`, `WriteByte`,
+  `ReadByte`, `WriteData`, `UpdateChecksum`, `TryDecodeFrame`).
+- **Synced:** no
+
 ### 2026-07-05 — Milestone 11: config + state serialization
 - **Assumed:** `MachineConfig` fields are JSON-serializable with `System.Text.Json` in-box;
   enum values can be serialized as strings by applying `JsonStringEnumConverter`.

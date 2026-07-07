@@ -18,6 +18,14 @@ public sealed partial class DisplayWindowVm : ObservableObject, IDisposable
 {
     public EmulationRunner Runner { get; } = new();
 
+    /// <summary>Cassette deck ViewModel — shared between the main window (menu) and the
+    /// satellite deck window.</summary>
+    public CassetteDeckVm CassetteVm { get; }
+
+    /// <summary>Raised when the user requests the cassette deck satellite window.
+    /// The view subscribes and shows <see cref="CassetteDeckWindow"/>.</summary>
+    public event Action? OpenDeckWindowRequested;
+
     // ── Observable state ──────────────────────────────────────────────────────
 
     [ObservableProperty] private string _stateText = "Running";
@@ -31,6 +39,7 @@ public sealed partial class DisplayWindowVm : ObservableObject, IDisposable
 
     public DisplayWindowVm()
     {
+        CassetteVm = new CassetteDeckVm(Runner);
         Runner.FrameReady += OnFrameReady;
         Runner.Machine.BreakHit += _ => Dispatcher.UIThread.Post(UpdatePauseState);
         Runner.Start();
@@ -105,6 +114,9 @@ public sealed partial class DisplayWindowVm : ObservableObject, IDisposable
     private bool CanStep() => Runner.Machine.IsPaused;
 
     [RelayCommand]
+    private void OpenCassetteDeck() => OpenDeckWindowRequested?.Invoke();
+
+    [RelayCommand]
     private void ToggleTurbo()
     {
         IsTurbo = !IsTurbo;
@@ -147,6 +159,7 @@ public sealed partial class DisplayWindowVm : ObservableObject, IDisposable
     public void Dispose()
     {
         Runner.FrameReady -= OnFrameReady;
+        CassetteVm.Detach();
         Runner.Dispose();
     }
 }

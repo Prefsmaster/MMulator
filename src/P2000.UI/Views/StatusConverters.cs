@@ -27,3 +27,19 @@ public sealed class BoolToLedBrushConverter : IValueConverter
     public object? ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture)
         => throw new NotSupportedException();
 }
+
+/// <summary>Returns true when an int is zero (for empty-state visibility). Pass
+/// <c>ConverterParameter=invert</c> to flip (visible when non-zero).</summary>
+public sealed class ZeroToBoolConverter : IValueConverter
+{
+    public static readonly ZeroToBoolConverter Instance = new();
+
+    public object? Convert(object? value, Type targetType, object? parameter, CultureInfo culture)
+    {
+        var isZero = value is int i && i == 0;
+        return parameter is "invert" ? !isZero : isZero;
+    }
+
+    public object? ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture)
+        => throw new NotSupportedException();
+}

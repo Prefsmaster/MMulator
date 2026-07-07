@@ -48,6 +48,8 @@ public sealed class MdcrDevice : IDevice
     private bool _phaseLocked;
     private int _phaseCount;
     private bool _phaseOld;
+    // Tracks whether the motor was running on the previous Tick to detect motor-start.
+    private bool _motorWasRunning;
 
     /// <summary>Selects authentic phase-bitstream or turbo ROM-trap mode
     /// (MDCR-implementation.md §0). Default: <see cref="TimingPolicy.Authentic"/>. Turbo
@@ -106,8 +108,40 @@ public sealed class MdcrDevice : IDevice
     public void Tick(int cycles = 1)
     {
         if (_tape == null) return;
-        if (!_cpOut.Forward && !_cpOut.Reverse) return; // motor stopped
-        if (Policy == TimingPolicy.Turbo) return;       // bitstream bypassed; traps handle I/O
+        bool motorRunning = _cpOut.Forward || _cpOut.Reverse;
+        if (!motorRunning)
+        {
+            if (_motorWasRunning)
+            {
+                // Real MDCR: when the motor stops at BOT/EOT the tape springs slightly off the
+                // optical end-sensor, so BET returns to 1 before the ROM's post-motor-off cooldown
+                // wait reads it.  Without this, cas_motor_off's 120 ms wait sees BET=0, triggers
+                // cas_removedorEOT, sets cassette_error='E', and cas_Rewind returns NZ — the caller
+                // (CLOAD/bootloader) aborts before ever starting the forward search.
+                if (_tape != null && _tape.IsAtEnd)
+                {
+                    if (_tape.Position == 0)
+                        _tape.Forward();  // BOT: spring forward one phase
+                    else
+                        _tape.Reverse();  // EOT: spring back one phase
+                    _status |= BetBit;   // tape is no longer at the optical end-sensor
+                }
+            }
+            _motorWasRunning = false;
+            return;
+        }
+        if (Policy == TimingPolicy.Turbo) return;
+
+        // One-shot eager phase when the motor JUST started from a physical end (BOT or EOT).
+        // On real MDCR hardware the optical sensor clears within microseconds of the tape
+        // moving — well before the ROM's first status read at ~105 T-states.  Without this,
+        // BET stays 0 until the first normal phase fires at 209 T-states, causing cas_removedorEOT
+        // to trip immediately with a spurious 'E' error.
+        // Only at BOT (position 0): Forward() advances to 1 → BET=1 ✓.
+        // At EOT (position max): Forward() is a no-op → BET stays 0 ✓ (tape IS at EOT).
+        if (!_motorWasRunning && _tape.IsAtEnd)
+            ProcessPhase(); // eager phase at BOT so BET clears before first ROM status read
+        _motorWasRunning = true;
 
         _tickCount += cycles;
         while (_tickCount >= CyclesPerPhase)
@@ -122,6 +156,7 @@ public sealed class MdcrDevice : IDevice
     public void Reset()
     {
         _tickCount = 0;
+        _motorWasRunning = false;
         ResetPll();
         // Preserve tape mount; only reset motor/clock/data bits in status.
         UpdateStatusFromTape();
@@ -197,7 +232,9 @@ public sealed class MdcrDevice : IDevice
             {
                 _phaseLocked = true;
                 _phaseCount = 0;
-                BitToStatus(phaseNew, reverse);
+                // phase0 (= _phaseOld) is the data bit; phase1 (= phaseNew) is its complement.
+                // Lock fires at the phase0→phase1 mid-bit transition; sample phase0 for correct data.
+                BitToStatus(_phaseOld, reverse);
             }
         }
         else
@@ -207,7 +244,7 @@ public sealed class MdcrDevice : IDevice
             {
                 _phaseCount = 0;
                 if (phaseNew != _phaseOld)
-                    BitToStatus(phaseNew, reverse);
+                    BitToStatus(_phaseOld, reverse); // sample phase0 (first half = data bit value)
                 else
                     _phaseLocked = false; // no transition = lock lost, resynchronise
             }
@@ -219,14 +256,12 @@ public sealed class MdcrDevice : IDevice
     {
         if (reverse && ReverseDataBitMapping)
         {
-            // Unverified reverse-direction branch (MDCR-implementation.md §4): toggle RDA
-            // (data) instead of RDC (clock). Flag in findings once confirmed.
             _status ^= RdaBit;
             if (phase) _status |= RdcBit; else _status &= unchecked((byte)~RdcBit);
         }
         else
         {
-            _status ^= RdcBit; // toggle clock on every recovered bit
+            _status ^= RdcBit;
             if (phase) _status |= RdaBit; else _status &= unchecked((byte)~RdaBit);
         }
     }
@@ -247,8 +282,12 @@ public sealed class MdcrDevice : IDevice
 
         if (_tape == null)
         {
-            // No cassette: CIP active-low → bit SET. BET: set (no physical end). WEN: 0 (N/A).
-            _status |= CipBit | BetBit;
+            // No cassette: CIP active-low → bit SET. BET: set (no physical end).
+            // WEN: SET — the write-protect pin is pulled high when no cassette is present
+            // (just like a real MDCR). Without this, CIP=1 WEN=0 is the one invalid
+            // combination cas_Init rejects, causing BASIC to abort CLOAD without starting
+            // the motor at all.
+            _status |= CipBit | BetBit | WenBit;
         }
         else
         {

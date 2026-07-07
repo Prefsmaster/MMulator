@@ -19,10 +19,11 @@ public sealed class MiniTape
 
     public const int Sides = 2;
 
-    // BOT / BOB / EOB gap lengths in phases (MDCR-implementation.md §6)
-    private const int BotGap = 5_800;
-    private const int BobGap = 6_160;
-    private const int EobGap = 1_856;
+    // Gap lengths in phases (MDCR-implementation.md §6)
+    private const int BotGap = 5_800;   // BOT sensor area
+    private const int BobGap = 6_160;   // inter-block gap (~500ms); ROM skips 120ms then searches
+    private const int MarkDataGap = 970; // gap between MARK and DATA BLOCK (~81ms write / 70ms read)
+    private const int EobGap = 1_856;   // post-data silence; ensures read_until_timeout detects end
 
     private readonly bool[][] _phases;
     private readonly bool[] _protected = new bool[Sides];
@@ -92,9 +93,15 @@ public sealed class MiniTape
     /// side the tape must be ejected and flipped (call <see cref="SeekTo"/> with side 1 after
     /// a new load, or load a second .cas via a separate call on side 1). Tape is
     /// write-protected after loading (MDCR-implementation.md §3). Rewinds to BOT when done.
+    ///
+    /// Tape block structure (Cassette.asm lines 912-918, load_block):
+    ///   MARK:       0xAA | 0x00 | 0x00 | 0xAA  (empty block — 4 bytes total)
+    ///   [MarkDataGap: ~81ms silence; ROM waits ~70ms then starts reading]
+    ///   DATA BLOCK: 0xAA | header(32B) | data(1024B) | CRC(2B) | 0xAA
+    ///
+    /// Header and data share ONE block with ONE combined CRC (not separate frames).
     /// Format: 1280 bytes/record; header (32 bytes) from record offset 0x30, data (1024 bytes)
-    /// from offset 0x100. Both are encoded on tape — the ROM's ZOEK reads headers from the
-    /// bitstream. See MDCR-implementation.md §6.</summary>
+    /// from offset 0x100. See MDCR-implementation.md §6.</summary>
     public void LoadCasImage(byte[] casImage, bool writeProtect = true)
     {
         var blocks = casImage.Length / 1280;
@@ -108,52 +115,53 @@ public sealed class MiniTape
         for (var b = 0; b < blocks; b++)
         {
             WriteGap(BobGap);
-            WriteData(Array.Empty<byte>()); // MARK — empty sync block
+            WriteData(Array.Empty<byte>());    // MARK: empty sync block (0xAA,0,0,0xAA)
+            WriteGap(MarkDataGap);             // ~81ms silence between MARK and DATA BLOCK
             var header = casImage.AsSpan(b * 1280 + 0x30, 32).ToArray();
-            WriteData(header); // 32-byte block header (ZOEK reads this from the tape bitstream)
             var data = casImage.AsSpan(b * 1280 + 0x100, 1024).ToArray();
-            WriteData(data);
+            WriteData([..header, ..data]);     // DATA BLOCK: header(32B)+data(1024B), one combined CRC
             WriteGap(EobGap);
         }
         // Remaining phases are already zero-filled (Array.Clear) → EOT silence
 
         _protected[_side] = writeProtect;
-        _position = 0; // rewind
+        _position = 1; // just past the BOT sensor — IsAtEnd(0) would keep BET=0 forever
     }
 
     // ---- Host face (save / serializer) ------------------------------------------
 
     /// <summary>Decodes the phase bitstream of the current side back into a P2000T
-    /// <c>.cas</c> image. Each decoded block becomes a 1280-byte record with the 32-byte
-    /// header at offset 0x30 and the 1024-byte data at offset 0x100 (MDCR-implementation.md §6).
-    /// Returns null if no valid block triplets (MARK + HEADER + DATA) are found. Does NOT
+    /// <c>.cas</c> image. Each decoded block pair (MARK + DATA BLOCK) becomes a 1280-byte
+    /// record with the 32-byte header at offset 0x30 and the 1024-byte data at offset 0x100
+    /// (MDCR-implementation.md §6). Returns null if no valid pairs are found. Does NOT
     /// move the tape head — safe to call at any time.</summary>
     public byte[]? Save()
     {
         var cursor = 0;
         var records = new List<(byte[] header, byte[] data)>();
 
-        // Skip the combined BOT + BOB gap (all false phases). The 0xAA lead byte of the first
-        // MARK frame starts with bit0 = 0 → phase0 = F, so one extra false phase blends in;
-        // stepping back by 1 after the skip re-aligns to phase0 of bit0 of 0xAA.
-        while (cursor < PhasesPerSide && !_phases[_side][cursor])
-            cursor++;
-        if (cursor == 0 || cursor >= PhasesPerSide) return null;
-        cursor--; // re-align: cursor now = phase0 of bit0 of first 0xAA lead byte
-
         while (cursor < PhasesPerSide)
         {
-            if (!TryDecodeFrame(ref cursor, 0, out _)) break;           // MARK
-            if (!TryDecodeFrame(ref cursor, 32, out var header)) break;  // HEADER
-            if (!TryDecodeFrame(ref cursor, 1024, out var data)) break;  // DATA
+            // Skip gap to next MARK's 0xAA preamble.
+            // 0xAA LSB-first: bit0=0 → phase0=F, so one extra false blends in; step back 1 to re-align.
+            while (cursor < PhasesPerSide && !_phases[_side][cursor])
+                cursor++;
+            if (cursor == 0 || cursor >= PhasesPerSide) break;
+            cursor--; // re-align to phase0 of bit0 of 0xAA
 
-            records.Add((header!, data!));
+            if (!TryDecodeFrame(ref cursor, 0, out _)) break; // MARK (empty)
 
-            // Skip EOB + BOB gap, then re-align to next MARK's 0xAA
+            // Skip MarkDataGap between MARK and DATA BLOCK
             while (cursor < PhasesPerSide && !_phases[_side][cursor])
                 cursor++;
             if (cursor >= PhasesPerSide) break;
-            cursor--; // re-align
+            cursor--; // re-align to phase0 of DATA BLOCK's 0xAA
+
+            // DATA BLOCK: header(32B) + data(1024B) combined in one frame, one CRC
+            if (!TryDecodeFrame(ref cursor, 1056, out var combined)) break;
+
+            records.Add((combined![..32], combined[32..]));
+            // EOB gap follows — outer loop's gap-skip handles it on the next iteration
         }
 
         if (records.Count == 0) return null;
@@ -167,8 +175,8 @@ public sealed class MiniTape
         return casImage;
     }
 
-    /// <summary>Attempts to decode one framed block: lead 0xAA | dataLength bytes | CRC-lo |
-    /// CRC-hi | trail 0xAA. Verifies the CRC-16 and both framing bytes. Advances
+    /// <summary>Attempts to decode one framed block: lead 0x55 | dataLength bytes | CRC-lo |
+    /// CRC-hi | trail 0x55. Verifies the CRC-16 and both framing bytes. Advances
     /// <paramref name="cursor"/> only on success; restores it on failure.</summary>
     private bool TryDecodeFrame(ref int cursor, int dataLength, out byte[]? payload)
     {
@@ -199,7 +207,8 @@ public sealed class MiniTape
     }
 
     /// <summary>Reads one byte from the phase stream at <paramref name="cursor"/> by sampling
-    /// the first phase of each 2-phase bit pair (LSB first). Advances cursor by 16.</summary>
+    /// the first phase of each 2-phase bit pair (LSB first — matches WriteByte). Advances cursor
+    /// by 16.</summary>
     private byte ReadByte(ref int cursor)
     {
         byte b = 0;
@@ -222,7 +231,10 @@ public sealed class MiniTape
 
     private void WriteData(byte[] bytes)
     {
-        // Framing: 0xAA lead | data | CRC-16 (lo, hi) | 0xAA trail
+        // Framing: 0xAA lead | data | CRC-16 (lo, hi) | 0xAA trail.
+        // 0xAA (10101010) LSB-first: bit0=0 → phase0=F, PLL locks at the F→T of phase1.
+        // The ROM assembles bytes via "rr d" (Cassette.asm:1140), which is LSB-first:
+        // first received bit → bit0 of result. So we send bit0 first.
         ushort checksum = 0;
         WriteByte(0xAA);
         foreach (var b in bytes)
@@ -237,7 +249,8 @@ public sealed class MiniTape
 
     private void WriteByte(byte b)
     {
-        // LSB first; bit=1 → hi-lo (true,false); bit=0 → lo-hi (false,true)
+        // LSB first (bit0 first): ROM assembles via "rr d" so first received → bit0 of result.
+        // bit=1 → hi-lo (true,false); bit=0 → lo-hi (false,true).
         for (var i = 0; i < 8; i++)
         {
             var bit = (b & 1) != 0;
@@ -248,12 +261,13 @@ public sealed class MiniTape
     }
 
     /// <summary>CRC-16 variant used by the P2000T cassette format (MDCR-implementation.md §6).
-    /// Process one byte LSB-first: XOR bit into checksum, conditionally XOR 0x4002, rotate right.</summary>
+    /// Process one byte LSB-first (matches ROM's bit-reception order via "rr d"):
+    /// XOR bit into checksum, conditionally XOR 0x4002, rotate right.</summary>
     internal static ushort UpdateChecksum(ushort cs, byte b)
     {
         for (var i = 0; i < 8; i++)
         {
-            cs ^= (ushort)(b & 1);
+            cs ^= (ushort)(b & 1); // LSB first
             if ((cs & 1) != 0) cs ^= 0x4002;
             cs = (ushort)((cs >> 1) | (cs << 15)); // rotate right 1
             b >>= 1;

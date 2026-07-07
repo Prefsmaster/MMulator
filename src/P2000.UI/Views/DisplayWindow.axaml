@@ -20,7 +20,7 @@
         <KeyBinding Gesture="F12"      Command="{Binding ScreenshotCommand}" />
     </Window.KeyBindings>
 
-    <DockPanel>
+    <DockPanel DragDrop.AllowDrop="True">
 
         <!-- ── Menu bar ──────────────────────────────────────────────────────── -->
         <Menu DockPanel.Dock="Top">
@@ -36,6 +36,14 @@
                           IsChecked="{Binding IsTurbo}" />
                 <Separator />
                 <MenuItem Header="Screens_hot"      HotKey="F12"       Command="{Binding ScreenshotCommand}" />
+            </MenuItem>
+            <MenuItem Header="_Cassette">
+                <MenuItem Header="_Open Deck window" Command="{Binding OpenCassetteDeckCommand}" />
+                <Separator />
+                <MenuItem Header="_Mount…"           Command="{Binding CassetteVm.MountCommand}"
+                          ToolTip.Tip="Insert a .cas cassette image (also drag-drop onto display)" />
+                <MenuItem Header="_Eject"            Command="{Binding CassetteVm.EjectCommand}"
+                          ToolTip.Tip="Remove the current cassette" />
             </MenuItem>
         </Menu>
 

@@ -10,6 +10,7 @@ public partial class DisplayWindow : Window
 {
     private DisplayWindowVm? _vm;
     private CassetteDeckWindow? _deckWindow;
+    private ConfigWindow? _configWindow;
     // Track which Avalonia Keys are currently down to suppress OS key-repeat events.
     // The P2000T's 50 Hz ISR handles auto-repeat at the hardware level.
     private readonly HashSet<Key> _keysDown = new();
@@ -32,6 +33,7 @@ public partial class DisplayWindow : Window
         {
             _vm.Runner.FrameReady -= Display.Present;
             _vm.OpenDeckWindowRequested -= ShowDeckWindow;
+            _vm.OpenConfigWindowRequested -= ShowConfigWindow;
         }
 
         _vm = DataContext as DisplayWindowVm;
@@ -40,12 +42,13 @@ public partial class DisplayWindow : Window
         {
             _vm.Runner.FrameReady += Display.Present;
             _vm.OpenDeckWindowRequested += ShowDeckWindow;
+            _vm.OpenConfigWindowRequested += ShowConfigWindow;
         }
 
         base.OnDataContextChanged(e);
     }
 
-    // ── Cassette deck satellite window ────────────────────────────────────────
+    // ── Satellite windows ─────────────────────────────────────────────────────
 
     private void ShowDeckWindow()
     {
@@ -56,6 +59,20 @@ public partial class DisplayWindow : Window
         }
         _deckWindow = new CassetteDeckWindow { DataContext = _vm!.CassetteVm };
         _deckWindow.Show(this);
+    }
+
+    private void ShowConfigWindow()
+    {
+        if (_configWindow is { IsVisible: true })
+        {
+            _configWindow.Activate();
+            return;
+        }
+        _configWindow = new ConfigWindow
+        {
+            DataContext = new ConfigWindowVm(_vm!.Runner)
+        };
+        _configWindow.Show(this);
     }
 
     // ── Drag-and-drop (.cas mount) ────────────────────────────────────────────

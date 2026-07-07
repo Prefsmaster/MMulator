@@ -1,0 +1,103 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="using:P2000.UI.ViewModels"
+        xmlns:m="using:P2000.Machine"
+        x:DataType="vm:ConfigWindowVm"
+        x:Class="P2000.UI.Views.ConfigWindow"
+        Title="Machine Configuration"
+        Width="480" SizeToContent="Height"
+        CanResize="False"
+        WindowStartupLocation="CenterOwner">
+
+    <Window.Styles>
+        <Style Selector="TextBlock.label">
+            <Setter Property="VerticalAlignment" Value="Center" />
+            <Setter Property="Foreground" Value="#ccc" />
+            <Setter Property="Width" Value="140" />
+        </Style>
+        <Style Selector="TextBlock.section">
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="Foreground" Value="#ddd" />
+            <Setter Property="Margin" Value="0,8,0,2" />
+        </Style>
+    </Window.Styles>
+
+    <Border Background="#252525" Padding="16">
+        <StackPanel Spacing="4">
+
+            <!-- ── Model (T-only for now) ──────────────────────────────────── -->
+            <TextBlock Classes="section" Text="Model" />
+            <DockPanel>
+                <TextBlock Classes="label" Text="Machine model" />
+                <TextBlock Text="P2000T" Foreground="#888" VerticalAlignment="Center"
+                           ToolTip.Tip="P2000M is not yet emulated." />
+            </DockPanel>
+
+            <!-- ── RAM ─────────────────────────────────────────────────────── -->
+            <TextBlock Classes="section" Text="Memory" />
+            <DockPanel>
+                <TextBlock Classes="label" Text="RAM" />
+                <ComboBox ItemsSource="{Binding RamVariants}"
+                          SelectedItem="{Binding RamVariant}"
+                          MinWidth="200">
+                    <ComboBox.ItemTemplate>
+                        <DataTemplate x:DataType="m:RamVariant">
+                            <TextBlock Text="{Binding Converter={x:Static vm:RamVariantDescConverter.Instance}}" />
+                        </DataTemplate>
+                    </ComboBox.ItemTemplate>
+                </ComboBox>
+            </DockPanel>
+
+            <!-- ── SLOT1 cartridge ─────────────────────────────────────────── -->
+            <TextBlock Classes="section" Text="SLOT1 Cartridge" />
+            <TextBlock Foreground="#777" FontSize="11"
+                       Text="Empty SLOT1 → cassette-wait boot. Populate with BASIC.bin to boot into BASIC." />
+            <DockPanel>
+                <TextBlock Classes="label" Text="Cartridge image" />
+                <Button Command="{Binding ClearSlot1Command}"
+                        DockPanel.Dock="Right" Content="Clear" Margin="4,0,0,0"
+                        ToolTip.Tip="Remove SLOT1 cartridge (bare machine)" />
+                <Button Command="{Binding BrowseSlot1Command}"
+                        DockPanel.Dock="Right" Content="Browse…" Margin="4,0,0,0" />
+                <TextBox Text="{Binding Slot1CartridgePath}"
+                         Watermark="(empty — bare machine)"
+                         IsReadOnly="True" />
+            </DockPanel>
+
+            <!-- ── Monitor ROM override ────────────────────────────────────── -->
+            <TextBlock Classes="section" Text="Monitor ROM" />
+            <TextBlock Foreground="#777" FontSize="11"
+                       Text="Leave empty to use the built-in embedded ROM (P2000ROM.rom). Override only for patched revisions." />
+            <DockPanel>
+                <TextBlock Classes="label" Text="Custom ROM path" />
+                <Button Command="{Binding ClearMonitorRomCommand}"
+                        DockPanel.Dock="Right" Content="Clear" Margin="4,0,0,0" />
+                <Button Command="{Binding BrowseMonitorRomCommand}"
+                        DockPanel.Dock="Right" Content="Browse…" Margin="4,0,0,0" />
+                <TextBox Text="{Binding MonitorRomPath}"
+                         Watermark="(built-in default)"
+                         IsReadOnly="True" />
+            </DockPanel>
+
+            <!-- ── Buttons ─────────────────────────────────────────────────── -->
+            <Separator Margin="0,12,0,4" />
+            <DockPanel>
+                <!-- .cfg load/save on the left -->
+                <StackPanel DockPanel.Dock="Left" Orientation="Horizontal" Spacing="6">
+                    <Button Command="{Binding LoadCfgCommand}"   Content="Load .cfg…" />
+                    <Button Command="{Binding SaveCfgCommand}"   Content="Save .cfg…" />
+                </StackPanel>
+                <!-- Apply on the right -->
+                <Button Command="{Binding ApplyCommand}"
+                        HorizontalAlignment="Right"
+                        Content="Apply (resets machine)"
+                        ToolTip.Tip="Rebuilds the machine with the settings above and performs a cold reset." />
+            </DockPanel>
+
+            <!-- ── Status message ──────────────────────────────────────────── -->
+            <TextBlock Text="{Binding StatusMessage}"
+                       Foreground="#8bc" FontSize="11"
+                       IsVisible="{Binding StatusMessage, Converter={x:Static vm:NonEmptyStringToBoolConverter.Instance}}" />
+        </StackPanel>
+    </Border>
+</Window>

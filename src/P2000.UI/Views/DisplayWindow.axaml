@@ -37,6 +37,10 @@
                 <Separator />
                 <MenuItem Header="Screens_hot"      HotKey="F12"       Command="{Binding ScreenshotCommand}" />
             </MenuItem>
+            <MenuItem Header="_Config">
+                <MenuItem Header="_Machine configuration…" Command="{Binding OpenConfigCommand}"
+                          ToolTip.Tip="Change RAM, SLOT1, monitor ROM — applies on cold reset" />
+            </MenuItem>
             <MenuItem Header="_Cassette">
                 <MenuItem Header="_Open Deck window" Command="{Binding OpenCassetteDeckCommand}" />
                 <Separator />

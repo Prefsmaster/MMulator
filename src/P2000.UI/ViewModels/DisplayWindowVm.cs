@@ -22,9 +22,11 @@ public sealed partial class DisplayWindowVm : ObservableObject, IDisposable
     /// satellite deck window.</summary>
     public CassetteDeckVm CassetteVm { get; }
 
-    /// <summary>Raised when the user requests the cassette deck satellite window.
-    /// The view subscribes and shows <see cref="CassetteDeckWindow"/>.</summary>
+    /// <summary>Raised when the user requests the cassette deck satellite window.</summary>
     public event Action? OpenDeckWindowRequested;
+
+    /// <summary>Raised when the user requests the config window.</summary>
+    public event Action? OpenConfigWindowRequested;
 
     // ── Observable state ──────────────────────────────────────────────────────
 
@@ -41,7 +43,7 @@ public sealed partial class DisplayWindowVm : ObservableObject, IDisposable
     {
         CassetteVm = new CassetteDeckVm(Runner);
         Runner.FrameReady += OnFrameReady;
-        Runner.Machine.BreakHit += _ => Dispatcher.UIThread.Post(UpdatePauseState);
+        Runner.BreakHit += _ => Dispatcher.UIThread.Post(UpdatePauseState);
         Runner.Start();
     }
 
@@ -57,7 +59,16 @@ public sealed partial class DisplayWindowVm : ObservableObject, IDisposable
         {
             _framesSinceStatusUpdate = 0;
             SpeedText = IsTurbo ? "Turbo" : $"{Runner.SpeedPercent}%";
-            ModelText = Runner.Machine.Config.Model.ToString().Replace("P2000", "");
+            var cfg = Runner.Machine.Config;
+            var model = cfg.Model.ToString().Replace("P2000", "");
+            var ram = cfg.RamVariant switch
+            {
+                P2000.Machine.RamVariant.T38  => "38",
+                P2000.Machine.RamVariant.T54  => "54",
+                P2000.Machine.RamVariant.T102 => "102",
+                _                             => "?"
+            };
+            ModelText = $"{model}/{ram}";
         }
     }
 
@@ -115,6 +126,9 @@ public sealed partial class DisplayWindowVm : ObservableObject, IDisposable
 
     [RelayCommand]
     private void OpenCassetteDeck() => OpenDeckWindowRequested?.Invoke();
+
+    [RelayCommand]
+    private void OpenConfig() => OpenConfigWindowRequested?.Invoke();
 
     [RelayCommand]
     private void ToggleTurbo()

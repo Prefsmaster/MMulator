@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Diagnostics;
 using Avalonia.Threading;
 using P2000.Machine;
+using P2000.Machine.Debug;
 using P2000.Machine.Devices;
 using MachineCore = P2000.Machine.Machine;
 
@@ -14,12 +15,25 @@ namespace P2000.UI.Runner;
 ///
 /// Threading: emulation runs entirely on the emulation thread. Public reads of
 /// <see cref="SpeedPercent"/> and <see cref="Turbo"/> are safe from any thread.
+/// <see cref="Reconfigure"/> may be called from the UI thread; it blocks until the swap
+/// is acknowledged at the next field boundary (~20 ms max).
 /// </summary>
 public sealed class EmulationRunner : IDisposable
 {
     private static readonly long TicksPerField = Stopwatch.Frequency / 50;  // 20 ms at any clock
 
-    public MachineCore Machine { get; }
+    private MachineCore _machine;
+    public MachineCore Machine => _machine;
+
+    // Pending machine built by Reconfigure(); swapped in on the emulation thread at the
+    // next field boundary (race-free: set before the swap-done semaphore is awaited).
+    private volatile MachineCore? _nextMachine;
+    private readonly SemaphoreSlim _swapDone = new(0, 1);
+
+    /// <summary>Forwarded from the current machine's <see cref="MachineCore.BreakHit"/>.
+    /// Subscribers always see breaks from whichever machine is currently active, even after
+    /// a <see cref="Reconfigure"/> swap.</summary>
+    public event Action<BreakEvent>? BreakHit;
 
     /// <summary>Fired on the UI thread at each 50 Hz field boundary.
     /// The <c>uint[]</c> is a stable BGRA copy (640×480) owned by the runner;
@@ -55,9 +69,23 @@ public sealed class EmulationRunner : IDisposable
 
     public EmulationRunner()
     {
-        Machine = new MachineCore(MakeConfig());
-        Machine.Video.FieldComplete += OnFieldComplete;
+        _machine = new MachineCore(MakeConfig());
+        _machine.Video.FieldComplete += OnFieldComplete;
+        _machine.BreakHit += OnBreakHit;
         _thread = new Thread(Run) { IsBackground = true, Name = "Emulation" };
+    }
+
+    /// <summary>Rebuilds the machine with <paramref name="config"/> and cold-resets into it.
+    /// Blocks the caller (~20 ms max) until the emulation thread acknowledges the swap at the
+    /// next field boundary. Safe to call from the UI thread. The cassette is not preserved —
+    /// the new machine starts with an empty deck (topology change = reset-to-apply).</summary>
+    public void Reconfigure(MachineConfig config)
+    {
+        var next = new MachineCore(config);
+        next.Video.FieldComplete += OnFieldComplete;
+        next.BreakHit += OnBreakHit;
+        _nextMachine = next;   // volatile write — emulation thread picks this up at next field boundary
+        _swapDone.Wait(500);   // wait for acknowledgement (should arrive within ~20 ms)
     }
 
     // Locate BASIC.bin relative to the executable (assets/ in the repo root).
@@ -89,7 +117,8 @@ public sealed class EmulationRunner : IDisposable
     {
         _running = false;
         _thread.Join(2000);
-        Machine.Video.FieldComplete -= OnFieldComplete;
+        _machine.Video.FieldComplete -= OnFieldComplete;
+        _machine.BreakHit -= OnBreakHit;
     }
 
     /// <summary>Enqueues a key press or release from the UI thread. Applied to the machine's
@@ -111,19 +140,32 @@ public sealed class EmulationRunner : IDisposable
     private void Run()
     {
         while (_running)
-            Machine.Tick();
+            _machine.Tick();
     }
+
+    private void OnBreakHit(BreakEvent e) => BreakHit?.Invoke(e);
 
     // Called on the emulation thread (synchronously inside Machine.Tick()).
     private void OnFieldComplete()
     {
+        // ── Machine swap (Reconfigure) — acknowledged at field boundary ───────
+        var next = _nextMachine;
+        if (next != null)
+        {
+            _nextMachine = null;
+            _machine.Video.FieldComplete -= OnFieldComplete;
+            _machine.BreakHit -= OnBreakHit;
+            _machine = next;
+            _swapDone.Release();
+        }
+
         // ── Apply queued key events (field boundary — safe point per machine CLAUDE.md §7) ──
         while (_inputQueue.TryDequeue(out var ev))
-            Machine.Keyboard.SetKey(ev.Row, ev.Col, ev.Pressed);
+            _machine.Keyboard.SetKey(ev.Row, ev.Col, ev.Pressed);
 
         // ── Copy framebuffer ──────────────────────────────────────────────────
         var buf = _frameBufs[_writeBufIdx];
-        Array.Copy(Machine.Video.Framebuffer, buf, buf.Length);
+        Array.Copy(_machine.Video.Framebuffer, buf, buf.Length);
         _writeBufIdx ^= 1;
 
         Dispatcher.UIThread.Post(() => FrameReady?.Invoke(buf), DispatcherPriority.Render);

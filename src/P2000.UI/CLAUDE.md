@@ -446,6 +446,52 @@ project.
 - **Synced:** yes (YYYY-MM-DD)
 -->
 
+### 2026-07-07 — Milestone 4: cassette deck + CLOAD end-to-end
+- **Assumed:** the `.cas` tape block structure was MARK + HEADER (32 B) + DATA (1024 B) as three
+  separate WriteData frames. See `src/P2000.Machine/CLAUDE.md` §17 (2026-07-07) for the full
+  root-cause analysis and Cassette.asm trace.
+- **Found (root bug — machine layer):** the correct structure is MARK + ~81 ms gap +
+  combined HEADER+DATA in one frame with one CRC. Without the gap, `read_until_timeout` reads
+  into the HEADER frame after the MARK → `paddingbytes != 0` → `search_marker_loop` retry →
+  eventual 'N'/'M' error. Fixed in `MiniTape.LoadCasImage` and `Save()`.
+- **Found (byte order confirmed LSB-first):** the ROM byte assembler is `rr d`
+  (Cassette.asm:1140), not `rla` (which is CRC-only). 0xAA is the correct sync byte.
+- **Found (CassetteDeckVm — live reference pattern):** `CassetteDeckVm` reads
+  `_runner.Machine.Mdcr` / `_runner.Machine.CpOut` on every `FrameReady` tick rather than
+  caching the device reference. This automatically stays correct after `Reconfigure()` swaps
+  the machine since it dereferences through `_runner.Machine` each time.
+- **Applies to:** project CLAUDE.md §14.4 (milestone 4) / `src/P2000.Machine/CLAUDE.md` §17 /
+  `src/P2000.Machine/Devices/Cassette/MiniTape.cs`,
+  `src/P2000.UI/ViewModels/CassetteDeckVm.cs`.
+- **Synced:** no
+
+### 2026-07-07 — Milestone 5: config window + .cfg load/save
+- **Assumed:** `EmulationRunner.Machine` could remain a get-only property for the lifetime of
+  the app; a topology change would require restarting the process or a separate factory.
+- **Found (Reconfigure swap pattern):** a volatile `_nextMachine` field + `SemaphoreSlim`
+  lets the UI thread build a new machine and block (~20 ms max) while the emulation thread
+  acknowledges the swap at the next field boundary. No lock needed: the volatile write is the
+  signal; the semaphore is purely for the UI thread to wait for acknowledgement. The old
+  machine's `FieldComplete` and `BreakHit` are unsubscribed inside the swap on the emulation
+  thread so there is no race between the old event firing and the new machine taking over.
+- **Found (BreakHit forwarding):** `DisplayWindowVm` previously subscribed to
+  `Runner.Machine.BreakHit` directly (hard reference to the original machine). After
+  `Reconfigure` that subscription would silently stop working. Fixed by adding a forwarding
+  `Action<BreakEvent> BreakHit` event on `EmulationRunner` that re-routes across swaps;
+  `DisplayWindowVm` now subscribes to the runner, not the machine.
+- **Found (status bar model text):** `ModelText` was computed as
+  `config.Model.ToString().Replace("P2000","")` → always "T" regardless of RAM variant.
+  Updated to "T/38", "T/54", "T/102" by appending the `RamVariant` suffix.
+- **Found (ConfigWindow as satellite, not modal):** opening as a non-modal `Show(this)`
+  satellite (same pattern as `CassetteDeckWindow`) is preferable to `ShowDialog` — the user
+  can still interact with the emulator display while the config window is open.
+- **Applies to:** project CLAUDE.md §14.5 (milestone 5) /
+  `src/P2000.UI/Runner/EmulationRunner.cs` (`Reconfigure`, `BreakHit` forwarding),
+  `src/P2000.UI/ViewModels/DisplayWindowVm.cs` (`ModelText`, `OpenConfigCommand`),
+  `src/P2000.UI/ViewModels/ConfigWindowVm.cs`,
+  `src/P2000.UI/Views/ConfigWindow.axaml`.
+- **Synced:** no
+
 ### 2026-07-07 — Milestone 1: app shell + emulation loop + display blit
 - **Assumed:** `AppBuilder.WithInterFont()` was a standard Avalonia 11.1 extension.
 - **Found:** `WithInterFont()` requires a separate `Avalonia.Fonts.Inter` package not included

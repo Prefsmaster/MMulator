@@ -513,3 +513,21 @@ project.
   `src/P2000.UI/Runner/EmulationRunner.cs`,
   `src/P2000.UI/Rendering/DisplayControl.cs`.
 - **Synced:** no
+
+### 2026-07-07 — Milestone 4 addendum: cassette directory — full header fields
+- **Assumed:** the directory only needed the 8-char name (header bytes 06-0D).
+- **Found (tape header structure, from `docs/MDCR/Tape Header.md`):** the 32-byte block header
+  carries the full 16-char filename split across two 8-byte fields (bytes 06-0D + 17-1E),
+  a 3-char extension (bytes 0E-10), a 1-byte creator ID (byte 11), file size as a LE word
+  (bytes 04-05), and a block counter (byte 1F). The directory should show all of these.
+- **Found (block count from bytes 02-03):** header bytes 02-03 hold the space occupied on tape
+  (may be larger than the file if a shorter file was written over a longer one). Divide by 1024
+  to get blocks occupied. Header byte 1F ("blocks remaining") is a write-time counter, not used.
+- **Found (format — monospaced columns):**
+  `{name,-16} {.ext,-4} {creator,-2} {size,8} {blocks,4}` with Dutch-style dot thousands
+  separator for file size (e.g. `24.331`). Header row bound via `DirectoryHeader` static
+  property on the VM; window widened to 440 px to accommodate the extra columns.
+- **Applies to:** project CLAUDE.md §14.4 (milestone 4 addendum) /
+  `src/P2000.UI/ViewModels/CassetteDeckVm.cs` (`ParseDirectory`, `DirectoryHeader`),
+  `src/P2000.UI/Views/CassetteDeckWindow.axaml`.
+- **Synced:** no

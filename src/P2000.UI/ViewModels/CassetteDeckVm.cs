@@ -24,6 +24,10 @@ public sealed partial class CassetteDeckVm : ObservableObject
     [ObservableProperty] private bool _isWriteProtected;
     [ObservableProperty] private IReadOnlyList<string> _programs = [];
 
+    /// <summary>Fixed header row aligned to the formatted program entries below it.</summary>
+    public static string DirectoryHeader { get; } =
+        $"{"Filename",-16} {"Ext",-4} {"Cr",-2} {"Size",8} {"Blk",4}";
+
     public CassetteDeckVm(EmulationRunner runner)
     {
         _runner = runner;
@@ -114,26 +118,49 @@ public sealed partial class CassetteDeckVm : ObservableObject
 
     // ── Directory parsing ────────────────────────────────────────────────────────────────────
 
-    /// <summary>Returns the list of program names from a <c>.cas</c> image. Each 1280-byte
-    /// block has a 32-byte header at offset 0x30; the program name occupies header[6..13]
-    /// (8 bytes, ASCII). Multi-block programs repeat the same header, so names are
-    /// de-duplicated — one entry per unique program name.</summary>
+    /// <summary>Returns formatted directory entries from a <c>.cas</c> image.
+    /// Each 1280-byte block has a 32-byte header at offset 0x30:
+    ///   bytes 06-0D: first 8 chars of filename · 0E-10: extension (3) · 11: creator ID ·
+    ///   17-1E: last 8 chars of filename · 1F: block counter · 04-05: file size (word LE).
+    /// Multi-block programs share the same header — de-duplicated, block count summed.</summary>
     private static IReadOnlyList<string> ParseDirectory(byte[] casImage)
     {
-        var programs = new List<string>();
-        var seen = new HashSet<string>(StringComparer.Ordinal);
-        var blockCount = casImage.Length / 1280;
-        for (var i = 0; i < blockCount; i++)
+        var order = new List<string>();
+        var seen  = new HashSet<string>(StringComparer.Ordinal);
+
+        var totalBlocks = casImage.Length / 1280;
+        for (var i = 0; i < totalBlocks; i++)
         {
             var hdr = i * 1280 + 0x30;
             if (hdr + 32 > casImage.Length) break;
-            // Name occupies bytes 6-13 of the 32-byte header.
-            var name = Encoding.ASCII.GetString(casImage, hdr + 6, 8).TrimEnd('\0', ' ');
-            if (!string.IsNullOrWhiteSpace(name) && seen.Add(name))
-                programs.Add(name);
+
+            // Full 16-char filename: header bytes 06-0D (first 8) + 17-1E (last 8).
+            var first    = Encoding.ASCII.GetString(casImage, hdr + 6,  8);
+            var last     = Encoding.ASCII.GetString(casImage, hdr + 23, 8);
+            var fullName = (first + last).TrimEnd('\0', ' ');
+            if (string.IsNullOrWhiteSpace(fullName)) continue;
+            if (!seen.Add(fullName)) continue;
+
+            var ext     = Encoding.ASCII.GetString(casImage, hdr + 14, 3).TrimEnd('\0', ' ');
+            var creator = (char)casImage[hdr + 17];
+            var size    = casImage[hdr + 4] | (casImage[hdr + 5] << 8);
+            // Bytes 02-03: space occupied on tape (may be larger than file if a shorter file
+            // was written over a larger one). Divide by 1024 to get blocks occupied.
+            var occupied = casImage[hdr + 2] | (casImage[hdr + 3] << 8);
+            var blocks   = occupied / 1024;
+
+            var displayName = fullName.Length > 16 ? fullName[..16] : fullName;
+            var dotExt = $".{ext}";
+            order.Add($"{displayName,-16} {dotExt,-4} {creator,-2} {FormatSize(size),8} {blocks,4}");
         }
-        return programs;
+
+        return order;
     }
+
+    private static string FormatSize(int size) =>
+        size >= 1_000_000 ? $"{size / 1_000_000}.{size / 1000 % 1000:D3}.{size % 1000:D3}" :
+        size >= 1_000     ? $"{size / 1000}.{size % 1000:D3}" :
+        size.ToString();
 
     // ── Cleanup ─────────────────────────────────────────────────────────────────────────────
 

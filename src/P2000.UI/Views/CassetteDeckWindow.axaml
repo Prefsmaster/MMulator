@@ -5,8 +5,8 @@
         x:DataType="vm:CassetteDeckVm"
         x:Class="P2000.UI.Views.CassetteDeckWindow"
         Title="Cassette Deck"
-        Width="260" Height="320"
-        MinWidth="220" MinHeight="250"
+        Width="440" Height="320"
+        MinWidth="380" MinHeight="250"
         CanResize="True"
         Background="#1a1a1a">
 
@@ -66,6 +66,15 @@
                            Text="Programs on tape:"
                            FontSize="11" Foreground="#888"
                            Margin="0,0,0,4" />
+                <!-- Column header -->
+                <TextBlock DockPanel.Dock="Top"
+                           Text="{Binding DirectoryHeader}"
+                           FontSize="11" FontFamily="Consolas,Courier New,monospace"
+                           Foreground="#666"
+                           IsVisible="{Binding Programs.Count,
+                               Converter={x:Static local:ZeroToBoolConverter.Instance},
+                               ConverterParameter=invert}"
+                           Margin="0,0,0,2" />
                 <!-- Empty-state message -->
                 <TextBlock Text="—"
                            FontSize="11" Foreground="#555"
@@ -77,10 +86,16 @@
                          IsVisible="{Binding Programs.Count,
                              Converter={x:Static local:ZeroToBoolConverter.Instance},
                              ConverterParameter=invert}">
+                    <ListBox.Styles>
+                        <Style Selector="ListBoxItem">
+                            <Setter Property="Padding" Value="0" />
+                            <Setter Property="MinHeight" Value="0" />
+                        </Style>
+                    </ListBox.Styles>
                     <ListBox.ItemTemplate>
                         <DataTemplate>
                             <TextBlock Text="{Binding}"
-                                       FontSize="12" FontFamily="Consolas,Courier New,monospace"
+                                       FontSize="11" FontFamily="Consolas,Courier New,monospace"
                                        Foreground="#ddd" />
                         </DataTemplate>
                     </ListBox.ItemTemplate>

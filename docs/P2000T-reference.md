@@ -221,6 +221,34 @@ Config changes that alter hardware topology **require a machine reset to take ef
 - NOT building yet: a full in-emulator assembler/editor (scope creep; external
   cross-assembler + load pipeline already exists).
 
+### Observer + control contract — as built (machine milestones 13–15)
+The debugger above reads and drives the machine through a contract that **lives in `P2000.Machine`**
+(so the future external IDE hook attaches to the same surface, not a UI-private one). Built across
+milestones 13–15; the primitive drive surface is `RunField()` / `StepInstruction()` / `Post(cmd)` /
+`Snapshot()`, with no wall-clock inside any of them (the pacing loop is the UI's, §3a threading).
+- **State snapshot (ms.13):** `TakeSnapshot()` returns a read-only `MachineSnapshot` — full register
+  file (incl. WZ/MEMPTR, IFF1/2, IM, flags with YF/XF), a live side-effect-free `ReadMemory(addr)`
+  (a delegate over the page table, no array copy), and the **in-frame T-state position**
+  (`FieldTState`, forwarded from the video fetch unit's master counter). Never mutates the core.
+- **Breakpoint store (ms.14):** machine-owned `BreakpointStore` — execute + memory R/W/X + I/O-port
+  breakpoints, edited by clients (never held UI-side). A `Count == 0` fast path means an unbroken
+  machine pays nothing. **Semantics that matter:** an **execute** breakpoint fires *before* the
+  instruction runs (PC = the about-to-execute address, correct for a debugger display); **memory/IO**
+  breakpoints fire mid-instruction and defer the actual break to the **start of the next instruction
+  boundary**; **int-ack (M1+IORQ) is excluded** from I/O-port breakpoints (it is not a user I/O
+  access).
+- **Command queue (ms.15):** all mutation is a queued `MachineCommand` drained at
+  `AtInstructionBoundary` — run/pause, warm/cold reset, single-step, step-over, step-out,
+  run-to-scanline, run-to-cycle, set-PC, memory write, load-image-to-address, breakpoint CRUD.
+  **Ordering rule:** the boundary checks (pause-at-next, run-to-cycle, breakpoints) run **before**
+  the drain, and the drain sets state consumed on the **next** boundary — so a single-step queued
+  this boundary executes exactly one instruction and pauses at the following one. A mid-run memory
+  write / load-to-RAM is flagged **non-replayable** (breaks cycle-exact replay for that session,
+  same category as turbo cassette) — allowed, not forbidden.
+- **Run-loop host:** the wall-clock pacing / run-pause-turbo thread is **UI-owned** for this build
+  (`P2000.UI/Runner/`), driving the surface above; it is promoted into a machine-layer `MachineRunner`
+  on the identical surface when external-IDE integration becomes current (a move, not a redesign).
+
 ### Save-state / snapshot (DECIDED: bake SaveState/LoadState into every device NOW)
 - Every device interface (CPU, RAM, video, cassette, FDC, CTC, slot cards) exposes
   `SaveState` / `LoadState` from day one. Cheap now, miserable to retrofit across devices.
@@ -281,6 +309,12 @@ construct `JsonStringEnumConverter` WITHOUT a naming policy (camelCase would giv
 restored from config). State is saved only at Z80 **instruction boundaries** (`AtInstructionBoundary`),
 where the CPU's private phase/tstate/prefix are at reset-compatible defaults, so the CPU struct
 serializes self-consistently without private fields.
+
+**Version-bump PENDING (milestone-12):** the interrupt aggregator gained a second serialized
+boolean (`_nmiPending`, §5e), which changed the device-stream layout. The `.state` version int32
+**must be incremented before any persisted `.state` files are released.** Deferred because no
+external `.state` files exist yet in the T-first build; the bump lands with the UI save-state
+path (P2000.UI milestone 8).
 
 ### File extensions (DECIDED)
 - **Monitor ROM / cartridges: standard `.bin` / `.rom` — NO custom extensions.** These are raw
@@ -416,10 +450,17 @@ in the precise mode once captured.
   display fetch. Behaviourally this matches reality: the glitch is tied to **writing the screen**
   during active scan — ordinary data/stack access to main RAM does NOT glitch the display, which
   a `>= 0x5000` (whole-DRAM) scope would wrongly cause.
-- **Implementation note (milestone-10 was `addr >= 0x5000` — TOO WIDE, FIX to add `< 0x5800`).**
-  Claude Code's milestone-10 finding assumed a shared DRAM bus (any DRAM access contends); the
-  separate-chip VRAM makes that over-inclusive. Correct `IsDramAddress`/the contention check to
-  `>= 0x5000 && < 0x5800`.
+- **Implemented (milestone-10 + 2026-07-06 correction).** The over-wide `addr >= 0x5000` check
+  was corrected to a per-model VRAM window: `IsVideoRamAddress(addr)` (instance method on the page
+  table, using `_videoRamEnd` set at construction from the model):
+  - **P2000T: 0x5000–0x57FF** (2 KB VRAM chip) — 0x57FF contends, 0x5800 is clean.
+  - **P2000M: 0x5000–0x5FFF** (4 KB VRAM chip) — 0x5FFF contends, 0x6000 is clean.
+  Main RAM (0x6000+), expansion RAM, and the banked window are separate DRAM chips the SAA5020
+  never addresses, so CPU access there cannot glitch the display.
+- **Corrupted-cell overlay (as built):** the machine exposes a per-field **40×24 bool map** (index
+  = charRow×40 + col) set whenever a cell's fetch is contended, cleared **after** `FieldComplete`
+  fires so a consumer can read it from the FieldComplete handler (and cleared on `Reset`). This is
+  the hook the UI display "show glitches" overlay and the debugger's VRAM window both consume.
 - **Only-if exception:** if the schematic ever shows a SINGLE DRAM controller multiplexing CPU +
   video across the ENTIRE array (shared RAS/CAS over all chips), the wider scope would hold —
   but the separate-2K×8 note argues against it. Confirm from schematic only if the VRAM-only
@@ -950,6 +991,21 @@ Reading:
 - **CARS1 selects 0x1000–0x2FFF; CARS2 selects 0x3000–0x4FFF** (CONFIRMED). The page table
   drives the matching select for whichever 8 KB half the access falls in; the card responds.
 
+**Implemented (milestone-12) — the typed slot model as built:**
+- SLOT1 is now a first-class typed object (`machine.Slot1`, an `IMemorySlot`), not a hidden raw
+  array. ROM loading moved OUT of the page table into `Machine`, which constructs a
+  `Slot1Cartridge` from `config.Slot1CartridgePath` and passes it to the page table as an
+  `IMemorySlot? cartridge` constructor parameter (default null = empty slot).
+- **Open-bus is 0xFF, not 0x00.** A cartridge image shorter than its 16 KB region reads **0xFF**
+  (unprogrammed-EPROM / open-bus) for every address beyond the image length — `Slot1Cartridge`
+  allocates only the image bytes and returns 0xFF above them. (Harmless in practice for BASIC.bin,
+  which is exactly 16 KB, but correct for short images.) Consistent with the "read-only ROM slot"
+  above; just pins the value.
+- **Register-once (no runtime unregister).** Because topology is reset-to-apply (§3a locked
+  decision), a slot card's port/memory listeners register at machine-assembly time and live for
+  the machine's lifetime — there is no runtime slot-swap. `IIoSlot.RegisterPorts` is the only seam
+  needed; no `UnregisterPorts` exists or is required.
+
 **SLOT2 / PORT2 — CONFIRMED (I/O-mapped, full I/O bus).** 30-contact PCB edge connector,
 pins 1A–15A / 1B–15B. Active-low: RES, RD, M1, IOREQ, INT, WR.
 
@@ -1146,6 +1202,15 @@ NMI (active-low) is driven by the front-panel **soft-reset button** AND is **exp
 SLOT1** (pin 1A, §5c) — a cartridge can pull NMI. If SLOT2 / the internal slot also carry
 NMI (pin-outs TBD), they're sources too. The aggregator should **wired-OR all NMI sources**
 onto the core NMI pin, same as it does for INT.
+
+**Implemented (milestone-12):** the interrupt aggregator now holds a **separate `_nmiPending`
+latch** alongside its INT-pending latch, and both serialize in `SaveState`. Adding the second
+boolean **changed the `.state` device-stream format** — so the `.state` **version field must be
+bumped** before any persisted `.state` files are released (see §3a versioning). No external
+`.state` files exist yet in the T-first build, so the bump is deferred to when the UI save-state
+path lands. (Test note: on a default T38 machine SP=0x0000, so an NMI pushes into the empty
+banked window and the writes are discarded; the CPU still vectors to 0x0066 correctly — the
+corrupt stack only matters on `RETN`.)
 
 ### Interrupt aggregator (build once, like the slot model)
 All interrupt sources feed the SAME Z80 INT line, **wired-OR** (real Z80 peripheral INT

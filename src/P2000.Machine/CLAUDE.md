@@ -182,13 +182,22 @@ Three surfaces (milestones 13–15):
    caveat:** a mid-run memory write / load-to-RAM breaks cycle-exact replay for that session —
    same category as turbo cassette; allowed, documented per-command, NOT forbidden.
 
-**OPEN (owner deciding — §16): the run-loop host / scheduler.** Something must pace the
-deterministic tick loop to wall-clock 50 Hz (or uncapped for turbo), handle run/pause/turbo,
-drain the command queue, and apply queued input at boundaries. Locked decision §2.2 forbids
-wall-clock/threads inside the emulation core, so this host sits OUTSIDE it — most likely a
-machine-layer *runner* both the UI and the IDE drive, keeping `Machine` pure. Placement is an
-open decision; the three surfaces above are **runner-agnostic** and are milestoned first. Add a
-runner milestone once the shape is settled.
+These surfaces sit on a **primitive drive surface** the machine exposes: `RunField()` (advance
+one 50 Hz field; drain the command queue at instruction boundaries; return early on a breakpoint
+hit), `StepInstruction()`, `Post(command)`, `Snapshot()` — **no wall-clock inside any of them**.
+The bare field advance already exists (milestones 5–7); the drain + early-return behaviours are
+delivered by milestones 14–15.
+
+**The run-loop host / scheduler — DECIDED (was §16 open): UI-owned for this build, promotable.**
+Something must pace `RunField()` to wall-clock 50 Hz (uncapped for turbo), handle
+run/pause/turbo, and apply queued input at boundaries. Locked decision §2.2 forbids
+wall-clock/threads inside the emulation core, so this host sits OUTSIDE it — and for now it
+lives in **`P2000.UI` (`Runner/`)**, driving the primitive surface above; **there is NO
+machine-layer runner class in this build.** When external-IDE integration becomes current (§14),
+**promote that loop into a machine-layer `MachineRunner` on the identical surface** so UI + IDE
+share one driver — a move, not a redesign. Keep `RunField`/`StepInstruction`/`Post`/`Snapshot`
+stable to keep that promotion cheap. The three surfaces above are **runner-agnostic** and are
+milestoned (13–15) regardless.
 
 ---
 
@@ -467,8 +476,8 @@ This file is the working scratchpad; the reference doc is the clean source of tr
     now) so expansion drops in later. Tag `P2000.Machine` T-baseline. → commit.
 
 **Post-T-baseline — the observer + control contract (§3b) the debugger + external IDE consume
-(`P2000.UI` §3.2). Runner-agnostic; the run-loop host stays OPEN (§3b / §16) and is milestoned
-separately once its placement is settled.**
+(`P2000.UI` §3.2). Runner-agnostic: the run-loop host is UI-owned for this build (§3b), so there
+is NO machine-layer runner milestone here — it's promoted in with the external IDE (§14).**
 
 13. **Observer state-snapshot surface** (§3b.1). Read-only snapshot: full register file (incl.
     WZ/MEMPTR, IFF1/2, IM, flags incl. YF/XF), a memory-read view, in-frame T-state/cycle
@@ -515,10 +524,11 @@ Ask before: changing a locked decision in §2; implementing any deferred item in
 being asked; deviating from the confirmed hardware in the reference doc; or relaxing a
 validation gate in §12. For the hardware details still marked "to confirm" in the reference
 doc (exact contention corruption mode, WCD/WDA clock, SHIFT/CODE matrix positions), ask rather
-than guess. The **run-loop host / scheduler placement** (§3b) is an OPEN owner decision — do NOT
-build the wall-clock pacing / run-pause-turbo thread until it is settled; milestones 13–15
-(snapshot, breakpoint store, command queue) are runner-agnostic and proceed first. Ordinary
-in-project choices: proceed and keep CI green.
+than guess. The **run-loop host / scheduler** is DECIDED (§3b): the wall-clock pacing /
+run-pause-turbo thread lives in `P2000.UI` for this build — do NOT add a machine-layer runner
+class here yet; that promotion happens with external-IDE integration (§14). Keep the
+`RunField`/`StepInstruction`/`Post`/`Snapshot` surface stable so it stays a move, not a redesign.
+Ordinary in-project choices: proceed and keep CI green.
 
 ---
 
@@ -803,7 +813,7 @@ marked synced. Do NOT edit the reference doc from this project.
   default mode) / `src/P2000.Machine/Contention/VideoFetchUnit.cs`,
   `src/P2000.Machine/Devices/Video.cs`, `src/P2000.Machine/Memory/PageTable.cs`,
   `src/P2000.Machine/Machine.cs`, `tests/P2000.Machine.Tests/Contention/ContentionTests.cs`.
-- **Synced:** no (correction needed in reference doc §4 — contention address window)
+- **Synced:** yes (2026-07-07, into reference doc §4 — corruption default + overlay; window superseded by the correction below)
 
 ### 2026-07-06 — Milestone 10 correction: contention address window
 - **Assumed (wrong):** `IsDramAddress` used `addr >= 0x5000` — any CPU MREQ to VRAM or RAM
@@ -821,7 +831,7 @@ marked synced. Do NOT edit the reference doc from this project.
   0x6000 → false).
 - **Applies to:** reference doc §4 (contention window) / `src/P2000.Machine/Memory/PageTable.cs`,
   `src/P2000.Machine/Machine.cs`, `tests/P2000.Machine.Tests/Contention/ContentionTests.cs`.
-- **Synced:** no
+- **Synced:** yes (2026-07-07, into reference doc §4 — VRAM-only window, T + M)
 
 ### 2026-07-05 — Milestone 9a: MDCR cassette WRITE / CSAVE path
 - **Assumed (earlier):** the bitstream → .cas serializer was missing; realtime write path was
@@ -913,7 +923,7 @@ marked synced. Do NOT edit the reference doc from this project.
   `src/P2000.Machine/Slots/ISlotCard.cs`, `IMemorySlot.cs`, `IIoSlot.cs`, `INmiSource.cs`,
   `Slot1Cartridge.cs`; `src/P2000.Machine/Memory/PageTable.cs`,
   `src/P2000.Machine/Interrupts/InterruptAggregator.cs`, `src/P2000.Machine/Machine.cs`.
-- **Synced:** no
+- **Synced:** yes (2026-07-07, into reference doc §5c — typed slot/open-bus, §5e + §3a — NMI latch + .state version bump pending)
 
 ### 2026-07-06 — Milestone 13: observer state-snapshot surface
 - **Assumed:** the snapshot needed a new FieldTState exposure — `VideoFetchUnit` and `Video`
@@ -941,7 +951,7 @@ marked synced. Do NOT edit the reference doc from this project.
   `src/P2000.Machine/Debug/MachineSnapshot.cs` (new),
   `src/P2000.Machine/Machine.cs` (`TakeSnapshot()`),
   `tests/P2000.Machine.Tests/Debug/MachineSnapshotTests.cs` (new).
-- **Synced:** no
+- **Synced:** yes (2026-07-07, into reference doc §3a — observer contract as built)
 
 ### 2026-07-06 — Milestone 14: machine-owned breakpoint store
 - **Assumed:** the store would need a complex per-tick lookup structure (HashSet etc.) for
@@ -969,7 +979,7 @@ marked synced. Do NOT edit the reference doc from this project.
   `src/P2000.Machine/Machine.cs` (`Breakpoints`, `BreakHit`, `IsPaused`, `Resume()`, `Tick()`,
   `Reset()`),
   `tests/P2000.Machine.Tests/Debug/BreakpointStoreTests.cs` (new).
-- **Synced:** no
+- **Synced:** yes (2026-07-07, into reference doc §3a — breakpoint semantics as built)
 
 ### 2026-07-07 — Milestone 15: command queue (§3b.3)
 - **Assumed:** drain could run first at each boundary, then check `_pauseAtNextBoundary`
@@ -1003,4 +1013,4 @@ marked synced. Do NOT edit the reference doc from this project.
   `ApplyStepOver`, `ApplyStepOut`, `GetCallLikeLength`, `GetEdCallLikeLength`, updated
   `Tick()` + `Reset()`),
   `tests/P2000.Machine.Tests/Debug/CommandQueueTests.cs` (new — 26 tests).
-- **Synced:** no
+- **Synced:** yes (2026-07-07, into reference doc §3a — command queue + ordering rule as built)

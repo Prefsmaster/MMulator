@@ -49,6 +49,55 @@
                 <MenuItem Header="_Eject"            Command="{Binding CassetteVm.EjectCommand}"
                           ToolTip.Tip="Remove the current cassette" />
             </MenuItem>
+            <MenuItem Header="_View">
+                <!-- Display mode (radio group via IsChecked + command) -->
+                <MenuItem Header="Mode: _Interlaced (default)"
+                          IsChecked="{Binding DisplayMode,
+                              Converter={x:Static local:EnumEqualsConverter.Instance},
+                              ConverterParameter={x:Static rendering:DisplayMode.Interlaced}}"
+                          Command="{Binding SetDisplayModeCommand}"
+                          CommandParameter="{x:Static rendering:DisplayMode.Interlaced}"
+                          ToolTip.Tip="Present every 50 Hz field — authentic interlace comb on fast motion" />
+                <MenuItem Header="Mode: _Progressive"
+                          IsChecked="{Binding DisplayMode,
+                              Converter={x:Static local:EnumEqualsConverter.Instance},
+                              ConverterParameter={x:Static rendering:DisplayMode.Progressive}}"
+                          Command="{Binding SetDisplayModeCommand}"
+                          CommandParameter="{x:Static rendering:DisplayMode.Progressive}"
+                          ToolTip.Tip="Composite both fields (25 Hz) — no comb, full vertical detail" />
+                <MenuItem Header="Mode: _Even field only"
+                          IsChecked="{Binding DisplayMode,
+                              Converter={x:Static local:EnumEqualsConverter.Instance},
+                              ConverterParameter={x:Static rendering:DisplayMode.EvenOnly}}"
+                          Command="{Binding SetDisplayModeCommand}"
+                          CommandParameter="{x:Static rendering:DisplayMode.EvenOnly}"
+                          ToolTip.Tip="Show only the even field, line-doubled" />
+                <MenuItem Header="Mode: _Odd field only (smoothed)"
+                          IsChecked="{Binding DisplayMode,
+                              Converter={x:Static local:EnumEqualsConverter.Instance},
+                              ConverterParameter={x:Static rendering:DisplayMode.OddOnly}}"
+                          Command="{Binding SetDisplayModeCommand}"
+                          CommandParameter="{x:Static rendering:DisplayMode.OddOnly}"
+                          ToolTip.Tip="Show only the odd (CRS-smoothed) field, line-doubled" />
+                <Separator />
+                <MenuItem Header="_Integer scaling"
+                          IsChecked="{Binding IntegerScale}"
+                          Command="{Binding ToggleIntegerScaleCommand}"
+                          ToolTip.Tip="Scale by whole-pixel multiples only — crisp pixels, black borders" />
+                <MenuItem Header="PAL _aspect ratio (4:3)"
+                          IsChecked="{Binding PalAspect}"
+                          Command="{Binding TogglePalAspectCommand}"
+                          ToolTip.Tip="Maintain 4:3 ratio (letterbox); off = stretch to fill" />
+                <Separator />
+                <MenuItem Header="_Scanline effect"
+                          IsChecked="{Binding ShowScanlines}"
+                          Command="{Binding ToggleScanlinesCommand}"
+                          ToolTip.Tip="Simulate CRT scanline gaps" />
+                <MenuItem Header="Contention cell _overlay"
+                          IsChecked="{Binding ShowDebugOverlay}"
+                          Command="{Binding ToggleDebugOverlayCommand}"
+                          ToolTip.Tip="Highlight character cells corrupted by CPU-vs-video bus contention" />
+            </MenuItem>
         </Menu>
 
         <!-- ── Toolbar ────────────────────────────────────────────────────────── -->

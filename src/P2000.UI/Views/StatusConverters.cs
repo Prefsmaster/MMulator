@@ -28,6 +28,19 @@ public sealed class BoolToLedBrushConverter : IValueConverter
         => throw new NotSupportedException();
 }
 
+/// <summary>Returns true when the bound value equals the converter parameter (enum radio-button
+/// IsChecked binding).</summary>
+public sealed class EnumEqualsConverter : IValueConverter
+{
+    public static readonly EnumEqualsConverter Instance = new();
+
+    public object? Convert(object? value, Type targetType, object? parameter, CultureInfo culture)
+        => value?.Equals(parameter) == true;
+
+    public object? ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture)
+        => throw new NotSupportedException();
+}
+
 /// <summary>Returns true when an int is zero (for empty-state visibility). Pass
 /// <c>ConverterParameter=invert</c> to flip (visible when non-zero).</summary>
 public sealed class ZeroToBoolConverter : IValueConverter

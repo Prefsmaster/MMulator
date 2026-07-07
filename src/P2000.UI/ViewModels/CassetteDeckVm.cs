@@ -36,7 +36,7 @@ public sealed partial class CassetteDeckVm : ObservableObject
 
     // ── Frame callback (runs on UI thread via Dispatcher.UIThread.Post in EmulationRunner) ──
 
-    private void OnFrameReady(uint[] _)
+    private void OnFrameReady(uint[] _, bool __, bool[] ___)
     {
         var fwd = _runner.Machine.CpOut.Forward;
         var rev = _runner.Machine.CpOut.Reverse;

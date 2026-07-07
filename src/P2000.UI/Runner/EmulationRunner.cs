@@ -3,6 +3,7 @@ using System.Diagnostics;
 using Avalonia.Threading;
 using P2000.Machine;
 using P2000.Machine.Debug;
+using P2000.Machine.Contention;
 using P2000.Machine.Devices;
 using MachineCore = P2000.Machine.Machine;
 
@@ -36,9 +37,12 @@ public sealed class EmulationRunner : IDisposable
     public event Action<BreakEvent>? BreakHit;
 
     /// <summary>Fired on the UI thread at each 50 Hz field boundary.
-    /// The <c>uint[]</c> is a stable BGRA copy (640×480) owned by the runner;
-    /// the UI may read it freely until the next <see cref="FrameReady"/> fires.</summary>
-    public event Action<uint[]>? FrameReady;
+    /// <c>pixels</c> is a stable BGRA copy (640×480) owned by the runner.
+    /// <c>fieldWasOdd</c> is true when the odd field just completed (useful for Progressive /
+    /// EvenOnly / OddOnly display modes). <c>corruption</c> is a stable 40×24 snapshot of the
+    /// machine's CorruptionOverlay for that field.
+    /// All arrays are safe to read until the next <see cref="FrameReady"/> fires.</summary>
+    public event Action<uint[], bool, bool[]>? FrameReady;
 
     /// <summary>Skip the 50 Hz sleep and run as fast as the CPU allows.</summary>
     public volatile bool Turbo;
@@ -53,11 +57,16 @@ public sealed class EmulationRunner : IDisposable
     // Key events queued from the UI thread, drained on the emulation thread at each field boundary.
     private readonly ConcurrentQueue<(int Row, int Col, bool Pressed)> _inputQueue = new();
 
-    // Double-buffered presentation frames.
+    // Double-buffered presentation frames + corruption snapshots.
     private readonly uint[][] _frameBufs =
     {
         new uint[Video.Width * Video.Height],
         new uint[Video.Width * Video.Height]
+    };
+    private readonly bool[][] _corruptionBufs =
+    {
+        new bool[VideoFetchUnit.Columns * Video.CharRows],
+        new bool[VideoFetchUnit.Columns * Video.CharRows]
     };
     private int _writeBufIdx;
 
@@ -163,12 +172,19 @@ public sealed class EmulationRunner : IDisposable
         while (_inputQueue.TryDequeue(out var ev))
             _machine.Keyboard.SetKey(ev.Row, ev.Col, ev.Pressed);
 
-        // ── Copy framebuffer ──────────────────────────────────────────────────
-        var buf = _frameBufs[_writeBufIdx];
-        Array.Copy(_machine.Video.Framebuffer, buf, buf.Length);
+        // ── Copy framebuffer + corruption overlay ─────────────────────────────
+        // IsOddField has already toggled to the NEXT field's parity at this point,
+        // so the field that just completed = !IsOddField.
+        bool fieldWasOdd = !_machine.Video.IsOddField;
+        var buf          = _frameBufs[_writeBufIdx];
+        var corruption   = _corruptionBufs[_writeBufIdx];
+        Array.Copy(_machine.Video.Framebuffer,       buf,        buf.Length);
+        Array.Copy(_machine.Video.CorruptionOverlay, corruption, corruption.Length);
         _writeBufIdx ^= 1;
 
-        Dispatcher.UIThread.Post(() => FrameReady?.Invoke(buf), DispatcherPriority.Render);
+        Dispatcher.UIThread.Post(
+            () => FrameReady?.Invoke(buf, fieldWasOdd, corruption),
+            DispatcherPriority.Render);
 
         // ── Speed measurement ─────────────────────────────────────────────────
         long now = _sw.ElapsedTicks;

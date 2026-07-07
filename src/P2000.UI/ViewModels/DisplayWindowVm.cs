@@ -4,6 +4,7 @@ using Avalonia.Threading;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using P2000.Machine.Debug;
+using P2000.UI.Rendering;
 using P2000.UI.Runner;
 using System.Runtime.InteropServices;
 using MachineDebug = P2000.Machine.Debug;
@@ -37,6 +38,13 @@ public sealed partial class DisplayWindowVm : ObservableObject, IDisposable
     [ObservableProperty] private string _modelText = "T";
     [ObservableProperty] private bool _isTurbo;
 
+    // ── Video prefs (project CLAUDE.md §8) ───────────────────────────────────
+    [ObservableProperty] private DisplayMode _displayMode = DisplayMode.Interlaced;
+    [ObservableProperty] private bool _integerScale;
+    [ObservableProperty] private bool _palAspect = true;
+    [ObservableProperty] private bool _showScanlines;
+    [ObservableProperty] private bool _showDebugOverlay;
+
     private int _framesSinceStatusUpdate;
 
     public DisplayWindowVm()
@@ -49,7 +57,7 @@ public sealed partial class DisplayWindowVm : ObservableObject, IDisposable
 
     // ── Frame callback ────────────────────────────────────────────────────────
 
-    private void OnFrameReady(uint[] _)
+    private void OnFrameReady(uint[] _, bool __, bool[] ___)
     {
         // Update cassette LED every frame (cheap flag read).
         CassetteActive = Runner.Machine.CpOut.Forward || Runner.Machine.CpOut.Reverse;
@@ -137,6 +145,23 @@ public sealed partial class DisplayWindowVm : ObservableObject, IDisposable
         Runner.Turbo = IsTurbo;
         SpeedText = IsTurbo ? "Turbo" : $"{Runner.SpeedPercent}%";
     }
+
+    // ── Video prefs commands ──────────────────────────────────────────────────
+
+    [RelayCommand]
+    private void SetDisplayMode(DisplayMode mode) => DisplayMode = mode;
+
+    [RelayCommand]
+    private void ToggleIntegerScale() => IntegerScale = !IntegerScale;
+
+    [RelayCommand]
+    private void TogglePalAspect() => PalAspect = !PalAspect;
+
+    [RelayCommand]
+    private void ToggleScanlines() => ShowScanlines = !ShowScanlines;
+
+    [RelayCommand]
+    private void ToggleDebugOverlay() => ShowDebugOverlay = !ShowDebugOverlay;
 
     [RelayCommand]
     private unsafe void Screenshot()

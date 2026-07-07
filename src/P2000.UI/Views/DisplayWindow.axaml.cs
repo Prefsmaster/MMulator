@@ -11,6 +11,7 @@ public partial class DisplayWindow : Window
     private DisplayWindowVm? _vm;
     private CassetteDeckWindow? _deckWindow;
     private ConfigWindow? _configWindow;
+    private Action<uint[], bool, bool[]>? _frameReadyHandler;
     // Track which Avalonia Keys are currently down to suppress OS key-repeat events.
     // The P2000T's 50 Hz ISR handles auto-repeat at the hardware level.
     private readonly HashSet<Key> _keysDown = new();
@@ -29,9 +30,9 @@ public partial class DisplayWindow : Window
 
     protected override void OnDataContextChanged(EventArgs e)
     {
-        if (_vm is not null)
+        if (_vm is not null && _frameReadyHandler is not null)
         {
-            _vm.Runner.FrameReady -= Display.Present;
+            _vm.Runner.FrameReady -= _frameReadyHandler;
             _vm.OpenDeckWindowRequested -= ShowDeckWindow;
             _vm.OpenConfigWindowRequested -= ShowConfigWindow;
         }
@@ -40,7 +41,16 @@ public partial class DisplayWindow : Window
 
         if (_vm is not null)
         {
-            _vm.Runner.FrameReady += Display.Present;
+            _frameReadyHandler = (pixels, fieldWasOdd, corruption) =>
+            {
+                Display.Mode             = _vm.DisplayMode;
+                Display.IntegerScale     = _vm.IntegerScale;
+                Display.PalAspect        = _vm.PalAspect;
+                Display.ShowScanlines    = _vm.ShowScanlines;
+                Display.ShowDebugOverlay = _vm.ShowDebugOverlay;
+                Display.Present(pixels, fieldWasOdd, corruption);
+            };
+            _vm.Runner.FrameReady += _frameReadyHandler;
             _vm.OpenDeckWindowRequested += ShowDeckWindow;
             _vm.OpenConfigWindowRequested += ShowConfigWindow;
         }

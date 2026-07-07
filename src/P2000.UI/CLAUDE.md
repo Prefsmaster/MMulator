@@ -514,6 +514,38 @@ project.
   `src/P2000.UI/Rendering/DisplayControl.cs`.
 - **Synced:** no
 
+### 2026-07-07 — Milestone 6: display modes + video prefs
+- **Assumed:** `FrameReady` could remain `Action<uint[]>` for all consumers; mode switching
+  was a pure rendering concern inside `DisplayControl`.
+- **Found (`fieldWasOdd` timing):** when the runner's `OnFieldComplete` fires, `Video.IsOddField`
+  has ALREADY toggled to the next field's parity. The field that just completed = `!IsOddField`.
+  This value gates Progressive (present only after odd field = both interlaced fields done),
+  EvenOnly (present only after even field), and OddOnly (present only after odd field).
+- **Found (corruption overlay must be copied at field boundary):** `Video.CorruptionOverlay` is
+  cleared by the machine AFTER `FieldComplete` returns (Video.cs line 152: `Array.Clear` after
+  the event). The runner's `OnFieldComplete` runs inside the event, so the overlay is still
+  populated when the copy occurs. Must copy it in the runner alongside the framebuffer — not
+  deferred to the UI thread callback where it would already be cleared.
+- **Found (`FrameReady` signature widened):** changed from `Action<uint[]>` to
+  `Action<uint[], bool, bool[]>` (pixels, fieldWasOdd, corruptionSnapshot). Both
+  `CassetteDeckVm` and `DisplayWindowVm` updated; the code-behind handler pushes video prefs
+  from the VM to `DisplayControl` on every frame (cheap property writes at 50 Hz).
+- **Found (`EnumEqualsConverter` needed for AXAML radio-button pattern):** menu `IsChecked`
+  for the four display-mode items binds `DisplayMode` property against a `{x:Static}` enum
+  value via `EnumEqualsConverter`. Added to `StatusConverters.cs`.
+- **Found (`DisplayControl.Background` not supported):** `Control` doesn't expose `Background`
+  without explicitly adding an `AvaloniaProperty`. Removed from AXAML; window background
+  already `Black` so no visual change.
+- **Applies to:** project CLAUDE.md §14.6 (milestone 6) /
+  `src/P2000.UI/Rendering/DisplayMode.cs` (new),
+  `src/P2000.UI/Rendering/DisplayControl.cs` (modes, scaling, scanlines, overlay),
+  `src/P2000.UI/Runner/EmulationRunner.cs` (FrameReady signature, corruption copy),
+  `src/P2000.UI/ViewModels/DisplayWindowVm.cs` (video prefs),
+  `src/P2000.UI/Views/DisplayWindow.axaml` (View menu),
+  `src/P2000.UI/Views/DisplayWindow.axaml.cs` (FrameReady wiring),
+  `src/P2000.UI/Views/StatusConverters.cs` (EnumEqualsConverter).
+- **Synced:** no
+
 ### 2026-07-07 — Milestone 4 addendum: cassette directory — full header fields
 - **Assumed:** the directory only needed the 8-char name (header bytes 06-0D).
 - **Found (tape header structure, from `docs/MDCR/Tape Header.md`):** the 32-byte block header

@@ -37,7 +37,7 @@
                 <TextBlock Text="{Binding StatusText}"
                            Foreground="{Binding IsPaused, Converter={x:Static local:BoolToLedBrushConverter.Instance}}"
                            FontSize="11" VerticalAlignment="Center" />
-                <TextBlock Text="Registers valid at break/step only"
+                <TextBlock Text="Register values are live (best-effort) when running; exact at break/step"
                            Foreground="#555" FontSize="10" VerticalAlignment="Center" />
             </StackPanel>
         </Border>

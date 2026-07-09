@@ -77,10 +77,11 @@ public sealed partial class DebuggerWindowVm : ObservableObject, IDisposable
         // Keep the corruption snapshot current for the paused view.
         _lastCorruption = corruption;
 
-        // When running, update VRAM and memory watches live.
+        // When running, update registers/VRAM/memory watches live.
         if (!IsPaused)
         {
             MachineCore m = _runner.Machine;
+            RegisterFile.UpdateLive(m.Cpu.Reg, m.Video.FieldTState);
             Vram.Update(m.Memory.Read, m.Video.PanX, corruption);
 
             foreach (var watch in MemoryWatches)

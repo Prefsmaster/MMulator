@@ -53,6 +53,43 @@ public sealed class RegisterFileVm : ObservableObject
 
     // ────────────────────────────────────────────────────────────────────────
 
+    /// <summary>
+    /// Populate from live CPU register state (best-effort; call on UI thread).
+    /// Used while the machine is running — values may be mid-instruction.
+    /// </summary>
+    public void UpdateLive(in Z80.Core.Registers reg, int fieldTState)
+    {
+        HasSnapshot = true;
+
+        AF  = $"{reg.AF:X4}";
+        BC  = $"{reg.BC:X4}";
+        DE  = $"{reg.DE:X4}";
+        HL  = $"{reg.HL:X4}";
+
+        AF2 = $"{reg.AF_:X4}";
+        BC2 = $"{reg.BC_:X4}";
+        DE2 = $"{reg.DE_:X4}";
+        HL2 = $"{reg.HL_:X4}";
+
+        IX  = $"{reg.IX:X4}";
+        IY  = $"{reg.IY:X4}";
+        SP  = $"{reg.SP:X4}";
+        PC  = $"{reg.PC:X4}";
+
+        I   = $"{reg.I:X2}";
+        R   = $"{reg.R:X2}";
+        WZ  = $"{reg.WZ:X4}";
+
+        F          = $"{reg.F:X2}";
+        FlagsText  = BuildFlagsFromByte(reg.F);
+
+        IFF1 = reg.IFF1 ? "1" : "0";
+        IFF2 = reg.IFF2 ? "1" : "0";
+        IM   = reg.IM.ToString();
+
+        FieldTState = fieldTState.ToString();
+    }
+
     /// <summary>Populate all properties from <paramref name="snap"/> (call on UI thread).</summary>
     public void Update(MachineSnapshot snap)
     {
@@ -101,7 +138,11 @@ public sealed class RegisterFileVm : ObservableObject
     }
 
     private static string BuildFlags(MachineSnapshot s)
-        => $"{(s.SF ? 'S' : 's')}{(s.ZF ? 'Z' : 'z')}{(s.YF ? 'Y' : 'y')}" +
-           $"{(s.HF ? 'H' : 'h')}{(s.XF ? 'X' : 'x')}{(s.PF ? 'P' : 'p')}" +
-           $"{(s.NF ? 'N' : 'n')}{(s.CF ? 'C' : 'c')}";
+        => BuildFlagsFromByte(s.F);
+
+    private static string BuildFlagsFromByte(byte f)
+        => $"{((f & 0x80) != 0 ? 'S' : 's')}{((f & 0x40) != 0 ? 'Z' : 'z')}" +
+           $"{((f & 0x20) != 0 ? 'Y' : 'y')}{((f & 0x10) != 0 ? 'H' : 'h')}" +
+           $"{((f & 0x08) != 0 ? 'X' : 'x')}{((f & 0x04) != 0 ? 'P' : 'p')}" +
+           $"{((f & 0x02) != 0 ? 'N' : 'n')}{((f & 0x01) != 0 ? 'C' : 'c')}";
 }

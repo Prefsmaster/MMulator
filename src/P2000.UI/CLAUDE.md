@@ -629,8 +629,15 @@ project.
   reference changes (Avalonia uses reference equality). `VramWindowVm.Update` always allocates
   new arrays, which satisfies this. `AffectsRender<VramGridControl>(...)` wires all four
   properties so any change auto-invalidates without manual override of property changed.
+- **Found (live register display — post-ship fix):** registers only updated from
+  `OnBreakHit`, so the panel showed "–" for all registers while the machine was running.
+  Fix: `DebuggerWindowVm.OnFrameReady` now calls `RegisterFile.UpdateLive(m.Cpu.Reg,
+  m.Video.FieldTState)` on every frame when not paused. `RegisterFileVm.UpdateLive` reads
+  directly from the `Registers` struct and derives flags from the `F` byte via bitmask —
+  no snapshot needed. Values are best-effort (sampled at field boundary), exact only at
+  break/step.
 - **Applies to:** project CLAUDE.md §14.9 (milestone 9) /
-  `src/P2000.UI/ViewModels/RegisterFileVm.cs` (manual properties),
+  `src/P2000.UI/ViewModels/RegisterFileVm.cs` (manual properties, `UpdateLive`),
   `src/P2000.UI/ViewModels/MemoryWatchVm.cs`, `VramWindowVm.cs`, `DebuggerWindowVm.cs`,
   `src/P2000.UI/Rendering/VramGridControl.cs`,
   `src/P2000.UI/Views/DebuggerWindow.axaml`, `MemoryWatchWindow.axaml`,

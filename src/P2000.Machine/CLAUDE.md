@@ -961,6 +961,22 @@ Two bugs were masking CLOAD success; both confirmed by tracing `Cassette.asm` li
   `src/P2000.Machine/Slots/ISlotCard.cs`, `IMemorySlot.cs`, `IIoSlot.cs`, `INmiSource.cs`,
   `Slot1Cartridge.cs`; `src/P2000.Machine/Memory/PageTable.cs`,
   `src/P2000.Machine/Interrupts/InterruptAggregator.cs`, `src/P2000.Machine/Machine.cs`.
+
+### 2026-07-09 — UI Milestone 7: SoundDevice (1-bit beeper, machine layer)
+- **Assumed:** CPOUT bit 4 (0x10) is the BEEP line. Reference doc §7 confirms a "1-bit speaker"
+  on SLOT2 pin 13A but does NOT name the CPOUT bit; bits 4 and 5 are listed as "unused." This
+  assignment follows common P2000T emulator practice (including the canonical MAME driver) and
+  produces the audible boot beep. Revisit if a schematic or ROM disassembly confirms otherwise.
+- **Found (SoundDevice design):** subscribes to `CPoutLatch.Written`, records `(FieldTState,
+  State)` transitions per field. `OnFieldComplete()` synthesizes a 882-sample PCM block at
+  44 100 Hz (50 Hz → 882 samples) by walking recorded transitions; fires `event Action<short[]>?
+  SamplesReady` with a reusable buffer. One fixed buffer; callers must copy immediately.
+- **Found (SaveState format change):** `Sound.SaveState(writer)` is inserted between
+  `Mdcr.SaveState` and `Interrupts.SaveState` in `Machine.SaveState/LoadState`. Any `.state`
+  files saved before this milestone are not forward-compatible.
+- **Applies to:** reference doc §7 (CPOUT, BEEP line) / `src/P2000.Machine/Devices/SoundDevice.cs`
+  (new), `src/P2000.Machine/Machine.cs`.
+- **Synced:** no
 - **Synced:** yes (2026-07-07, into reference doc §5c — typed slot/open-bus, §5e + §3a — NMI latch + .state version bump pending)
 
 ### 2026-07-06 — Milestone 13: observer state-snapshot surface

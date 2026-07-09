@@ -56,6 +56,10 @@ public sealed partial class DisplayWindowVm : ObservableObject, IDisposable
     [ObservableProperty] private bool _showScanlines;
     [ObservableProperty] private bool _showDebugOverlay;
 
+    // ── Audio prefs (project CLAUDE.md §9) ───────────────────────────────────
+    [ObservableProperty] private bool  _audioMute;
+    [ObservableProperty] private float _audioVolume = 0.5f;
+
     private int _framesSinceStatusUpdate;
 
     public DisplayWindowVm()
@@ -173,6 +177,12 @@ public sealed partial class DisplayWindowVm : ObservableObject, IDisposable
 
     [RelayCommand]
     private void ToggleDebugOverlay() => ShowDebugOverlay = !ShowDebugOverlay;
+
+    partial void OnAudioMuteChanged(bool value)   => Runner.Audio.Mute   = value;
+    partial void OnAudioVolumeChanged(float value) => Runner.Audio.Volume = value;
+
+    [RelayCommand]
+    private void ToggleAudioMute() => AudioMute = !AudioMute;
 
     [RelayCommand]
     private unsafe void Screenshot()

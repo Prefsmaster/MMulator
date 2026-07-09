@@ -89,6 +89,11 @@
                           IsChecked="{Binding ShowDebugOverlay}"
                           Command="{Binding ToggleDebugOverlayCommand}"
                           ToolTip.Tip="Highlight character cells corrupted by CPU-vs-video bus contention" />
+                <Separator />
+                <MenuItem Header="_Mute audio"
+                          IsChecked="{Binding AudioMute}"
+                          Command="{Binding ToggleAudioMuteCommand}"
+                          ToolTip.Tip="Silence the 1-bit beeper" />
             </MenuItem>
         </Menu>
 

@@ -48,6 +48,11 @@ public sealed class Machine
     /// at runtime (CIP is a live transition — machine CLAUDE.md §7).</summary>
     public MdcrDevice Mdcr { get; }
 
+    /// <summary>1-bit beeper synthesizer (project CLAUDE.md §7 Sound). Monitors CPOUT bit 4
+    /// (assumed BEEP line — see §17 finding), synthesizes 44100 Hz PCM blocks at each 50 Hz
+    /// field boundary, and exposes them via <see cref="SoundDevice.SamplesReady"/>.</summary>
+    public SoundDevice Sound { get; }
+
     /// <summary>Wired-OR INT/NMI aggregator (project CLAUDE.md §8). The video 50 Hz VBLANK
     /// is the only registered INT source for the T-first build. NMI seam is present but no
     /// source fires yet (front-panel soft-reset and SLOT1 pin 1A are wired later).</summary>
@@ -115,6 +120,7 @@ public sealed class Machine
         Video = new Video(Memory);
         Keyboard = new KeyboardDevice(CpOut);
         Mdcr = new MdcrDevice(CpOut);
+        Sound = new SoundDevice(CpOut, () => Video.FieldTState);
 
         Ports.RegisterWrite(CPoutLatch.Port, CpOut.Write);
         Ports.RegisterRead(CprinReader.Port, CpIn.Read);
@@ -131,6 +137,8 @@ public sealed class Machine
 
         // Wire the 50 Hz video VBLANK → INT (project CLAUDE.md §8: T-first INT source).
         Video.FieldComplete += Interrupts.RaiseInt;
+        // Wire the 50 Hz field boundary → Sound sample-block synthesis.
+        Video.FieldComplete += Sound.OnFieldComplete;
 
         Cpu.Reset();
     }
@@ -176,6 +184,7 @@ public sealed class Machine
         Interrupts.Reset();
         Keyboard.Reset();
         Mdcr.Reset();
+        Sound.Reset();
         Slot1?.Reset();
         _pins = 0;
         _breakPending = false;
@@ -542,6 +551,7 @@ public sealed class Machine
         CpIn.SaveState(writer);
         Keyboard.SaveState(writer);
         Mdcr.SaveState(writer);
+        Sound.SaveState(writer);
         Interrupts.SaveState(writer);
     }
 
@@ -559,6 +569,7 @@ public sealed class Machine
         CpIn.LoadState(reader);
         Keyboard.LoadState(reader);
         Mdcr.LoadState(reader);
+        Sound.LoadState(reader);
         Interrupts.LoadState(reader);
     }
 

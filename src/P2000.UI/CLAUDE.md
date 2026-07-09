@@ -546,6 +546,31 @@ project.
   `src/P2000.UI/Views/StatusConverters.cs` (EnumEqualsConverter).
 - **Synced:** no
 
+### 2026-07-09 — Milestone 7: audio (OpenAL beeper sink)
+- **Assumed:** `Silk.NET.OpenAL` 2.21.0 would expose managed `ref`/`out`/array overloads for
+  `GenSources`, `GenBuffers`, `BufferData`, etc. (as some versions do).
+- **Found:** 2.21.0 exposes ONLY raw unsafe pointer overloads. All call sites must use `unsafe`
+  methods with `fixed` blocks for managed arrays. Stack-local `uint` variables (source ID,
+  freed buffer ID, single-buffer queuing) can be addressed with `&local` directly in an
+  `unsafe` context without `fixed` (value types on the stack are not GC-moveable).
+  Array elements accessed inside a loop must be copied to a stack local first
+  (`uint bid = buffers[i]; al.SourceQueueBuffers(source, 1, &bid);`) — nesting a second
+  `fixed (&buffers[i])` inside an existing `fixed` block or attempting `fixed` on a loop
+  variable triggers CS0213.
+- **Found (AudioEngine design):** 4-buffer OpenAL streaming source. Background thread at 5 ms
+  poll: dequeues processed buffers, refills with PCM from `ConcurrentQueue<short[]>` (or
+  silence on starvation), re-queues. Restarts source on starvation stop. Mute/volume driven by
+  lazy `_gainDirty` flag to avoid redundant AL calls.
+- **Found (SoundDevice.SamplesReady buffer ownership):** `SoundDevice` reuses its internal
+  `short[]` buffer immediately after `SamplesReady` returns. `AudioEngine.EnqueueSamples` must
+  copy before enqueuing; it does so with `Array.Copy`.
+- **Applies to:** project CLAUDE.md §14.7 (milestone 7) /
+  `src/P2000.UI/Audio/AudioEngine.cs` (new),
+  `src/P2000.UI/Runner/EmulationRunner.cs` (Audio wiring),
+  `src/P2000.UI/ViewModels/DisplayWindowVm.cs` (AudioMute/AudioVolume),
+  `src/P2000.UI/Views/DisplayWindow.axaml` (View > Mute audio menu item).
+- **Synced:** no
+
 ### 2026-07-07 — Milestone 4 addendum: cassette directory — full header fields
 - **Assumed:** the directory only needed the 8-char name (header bytes 06-0D).
 - **Found (tape header structure, from `docs/MDCR/Tape Header.md`):** the 32-byte block header

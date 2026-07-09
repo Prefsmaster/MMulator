@@ -5,6 +5,7 @@ using P2000.Machine;
 using P2000.Machine.Debug;
 using P2000.Machine.Contention;
 using P2000.Machine.Devices;
+using P2000.UI.Audio;
 using MachineCore = P2000.Machine.Machine;
 
 namespace P2000.UI.Runner;
@@ -25,6 +26,9 @@ public sealed class EmulationRunner : IDisposable
 
     private MachineCore _machine;
     public MachineCore Machine => _machine;
+
+    /// <summary>OpenAL beeper sink. Mute and volume are controlled here.</summary>
+    public AudioEngine Audio { get; } = new();
 
     // Pending machine built by Reconfigure(); swapped in on the emulation thread at the
     // next field boundary (race-free: set before the swap-done semaphore is awaited).
@@ -81,6 +85,7 @@ public sealed class EmulationRunner : IDisposable
         _machine = new MachineCore(MakeConfig());
         _machine.Video.FieldComplete += OnFieldComplete;
         _machine.BreakHit += OnBreakHit;
+        _machine.Sound.SamplesReady += Audio.EnqueueSamples;
         _thread = new Thread(Run) { IsBackground = true, Name = "Emulation" };
     }
 
@@ -93,6 +98,7 @@ public sealed class EmulationRunner : IDisposable
         var next = new MachineCore(config);
         next.Video.FieldComplete += OnFieldComplete;
         next.BreakHit += OnBreakHit;
+        next.Sound.SamplesReady += Audio.EnqueueSamples;
         _nextMachine = next;   // volatile write — emulation thread picks this up at next field boundary
         _swapDone.Wait(500);   // wait for acknowledgement (should arrive within ~20 ms)
     }
@@ -128,6 +134,8 @@ public sealed class EmulationRunner : IDisposable
         _thread.Join(2000);
         _machine.Video.FieldComplete -= OnFieldComplete;
         _machine.BreakHit -= OnBreakHit;
+        _machine.Sound.SamplesReady -= Audio.EnqueueSamples;
+        Audio.Dispose();
     }
 
     /// <summary>Enqueues a key press or release from the UI thread. Applied to the machine's
@@ -164,6 +172,7 @@ public sealed class EmulationRunner : IDisposable
             _nextMachine = null;
             _machine.Video.FieldComplete -= OnFieldComplete;
             _machine.BreakHit -= OnBreakHit;
+            _machine.Sound.SamplesReady -= Audio.EnqueueSamples;
             _machine = next;
             _swapDone.Release();
         }

@@ -99,7 +99,7 @@ public sealed class DisplayControl : Control
         _destRect = ComputeDestRect(Bounds.Width, Bounds.Height);
 
         using (ctx.PushRenderOptions(new RenderOptions
-               { BitmapInterpolationMode = BitmapInterpolationMode.None }))
+               { BitmapInterpolationMode = BitmapInterpolationMode.MediumQuality }))
         {
             ctx.DrawImage(_bitmap, _destRect);
         }
@@ -120,8 +120,16 @@ public sealed class DisplayControl : Control
 
         if (IntegerScale)
         {
-            int n = Math.Max(1, (int)Math.Min(w / Video.Width, h / Video.Height));
-            double sw = n * Video.Width, sh = n * Video.Height;
+            // n must be an integer multiple of physical pixels, not logical pixels.
+            // Bounds are in logical units; multiply by RenderScaling to get physical pixels,
+            // compute n, then divide back so the Rect is in logical units.
+            // Example: at 125% DPI (scale=1.25), a 640px logical width = 800 physical px.
+            // Without this correction n=1 produces a 640-logical dest that Avalonia renders
+            // as 800 physical pixels — one non-integer scale step above the source pixels.
+            double scale = VisualRoot?.RenderScaling ?? 1.0;
+            int n = Math.Max(1, (int)Math.Min(w * scale / Video.Width, h * scale / Video.Height));
+            double sw = n * Video.Width  / scale;
+            double sh = n * Video.Height / scale;
             return new Rect((w - sw) / 2, (h - sh) / 2, sw, sh);
         }
         if (PalAspect)

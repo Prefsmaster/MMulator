@@ -46,6 +46,10 @@
                 <MenuItem Header="_Machine configuration…" Command="{Binding OpenConfigCommand}"
                           ToolTip.Tip="Change RAM, SLOT1, monitor ROM — applies on cold reset" />
             </MenuItem>
+            <MenuItem Header="_Debug">
+                <MenuItem Header="_Debugger…" Command="{Binding OpenDebuggerCommand}"
+                          ToolTip.Tip="Open debugger: register file, VRAM/pan window, memory watches" />
+            </MenuItem>
             <MenuItem Header="_Cassette">
                 <MenuItem Header="_Open Deck window" Command="{Binding OpenCassetteDeckCommand}" />
                 <Separator />

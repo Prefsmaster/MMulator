@@ -11,6 +11,7 @@ public partial class DisplayWindow : Window
     private DisplayWindowVm? _vm;
     private CassetteDeckWindow? _deckWindow;
     private ConfigWindow? _configWindow;
+    private DebuggerWindow? _debuggerWindow;
     private Action<uint[], bool, bool[]>? _frameReadyHandler;
     // Track which Avalonia Keys are currently down to suppress OS key-repeat events.
     // The P2000T's 50 Hz ISR handles auto-repeat at the hardware level.
@@ -32,10 +33,11 @@ public partial class DisplayWindow : Window
     {
         if (_vm is not null && _frameReadyHandler is not null)
         {
-            _vm.Runner.FrameReady -= _frameReadyHandler;
-            _vm.OpenDeckWindowRequested -= ShowDeckWindow;
-            _vm.OpenConfigWindowRequested -= ShowConfigWindow;
-            _vm.ShowMessageRequested -= ShowErrorDialog;
+            _vm.Runner.FrameReady           -= _frameReadyHandler;
+            _vm.OpenDeckWindowRequested     -= ShowDeckWindow;
+            _vm.OpenConfigWindowRequested   -= ShowConfigWindow;
+            _vm.OpenDebuggerWindowRequested -= ShowDebuggerWindow;
+            _vm.ShowMessageRequested        -= ShowErrorDialog;
         }
 
         _vm = DataContext as DisplayWindowVm;
@@ -52,9 +54,10 @@ public partial class DisplayWindow : Window
                 Display.Present(pixels, fieldWasOdd, corruption);
             };
             _vm.Runner.FrameReady += _frameReadyHandler;
-            _vm.OpenDeckWindowRequested += ShowDeckWindow;
-            _vm.OpenConfigWindowRequested += ShowConfigWindow;
-            _vm.ShowMessageRequested += ShowErrorDialog;
+            _vm.OpenDeckWindowRequested     += ShowDeckWindow;
+            _vm.OpenConfigWindowRequested   += ShowConfigWindow;
+            _vm.OpenDebuggerWindowRequested += ShowDebuggerWindow;
+            _vm.ShowMessageRequested        += ShowErrorDialog;
         }
 
         base.OnDataContextChanged(e);
@@ -116,6 +119,17 @@ public partial class DisplayWindow : Window
             DataContext = new ConfigWindowVm(_vm!.Runner)
         };
         _configWindow.Show(this);
+    }
+
+    private void ShowDebuggerWindow()
+    {
+        if (_debuggerWindow is { IsVisible: true })
+        {
+            _debuggerWindow.Activate();
+            return;
+        }
+        _debuggerWindow = new DebuggerWindow { DataContext = _vm!.DebuggerVm };
+        _debuggerWindow.Show(this);
     }
 
     // ── Drag-and-drop (.cas mount) ────────────────────────────────────────────

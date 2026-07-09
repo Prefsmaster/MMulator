@@ -41,6 +41,18 @@ public sealed class EnumEqualsConverter : IValueConverter
         => throw new NotSupportedException();
 }
 
+/// <summary>Colors a memory byte yellow when changed, grey when unchanged.</summary>
+public sealed class BoolToChangedBrushConverter : IValueConverter
+{
+    public static readonly BoolToChangedBrushConverter Instance = new();
+
+    public object? Convert(object? value, Type targetType, object? parameter, CultureInfo culture)
+        => value is true ? Brush.Parse("#ffd700") : Brush.Parse("#999");
+
+    public object? ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture)
+        => throw new NotSupportedException();
+}
+
 /// <summary>Returns true when an int is zero (for empty-state visibility). Pass
 /// <c>ConverterParameter=invert</c> to flip (visible when non-zero).</summary>
 public sealed class ZeroToBoolConverter : IValueConverter

@@ -612,6 +612,32 @@ project.
   `tests/P2000.UI.Tests/` (new project, 6 tests).
 - **Synced:** no
 
+### 2026-07-10 — Milestone 9: debugger observer core
+- **Assumed:** `[ObservableProperty] private string _af` would generate a property named `AF`.
+- **Found:** CommunityToolkit.Mvvm source generator capitalises the first letter only (`_af` → `Af`,
+  not `AF`). All two-letter register acronyms (AF, BC, DE, HL, IX, IY, SP, PC, WZ, IFF1, IFF2, IM)
+  must be written as manual properties with `SetProperty` to keep the public names readable.
+- **Found (corruption overlay geometry):** `Video.CorruptionOverlay` is 40×24 (one bool per
+  visible viewport column, not per VRAM column). Index = `row × 40 + viewportCol` where
+  `viewportCol = vramCol − PanX`. The VRAM grid control maps each absolute VRAM column to a
+  viewport column before checking the corruption flag.
+- **Found (live memory follow — best-effort):** `Machine.Cpu.Reg.HL` etc. are readable outside
+  a snapshot (direct struct access). This is racy mid-instruction but acceptable for the live
+  "follow register" display in memory watches. Snapshot-based reads (at break/step) are exact.
+- **Found (`VramGridControl` — `AffectsRender` + property replacement):** binding arrays
+  (`byte[]`, `bool[]`) to styled properties only triggers `InvalidateVisual` when the array
+  reference changes (Avalonia uses reference equality). `VramWindowVm.Update` always allocates
+  new arrays, which satisfies this. `AffectsRender<VramGridControl>(...)` wires all four
+  properties so any change auto-invalidates without manual override of property changed.
+- **Applies to:** project CLAUDE.md §14.9 (milestone 9) /
+  `src/P2000.UI/ViewModels/RegisterFileVm.cs` (manual properties),
+  `src/P2000.UI/ViewModels/MemoryWatchVm.cs`, `VramWindowVm.cs`, `DebuggerWindowVm.cs`,
+  `src/P2000.UI/Rendering/VramGridControl.cs`,
+  `src/P2000.UI/Views/DebuggerWindow.axaml`, `MemoryWatchWindow.axaml`,
+  `src/P2000.UI/Views/DisplayWindow.axaml` (Debug menu),
+  `tests/P2000.UI.Tests/ViewModels/` (22 new tests).
+- **Synced:** no
+
 ### 2026-07-09 — Integer scaling: physical vs logical pixels
 - **Assumed:** computing the integer multiplier `n` from `Bounds.Width / Video.Width` (logical
   pixels) would produce exact integer multiples of source pixels on screen.

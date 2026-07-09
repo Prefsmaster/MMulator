@@ -28,11 +28,18 @@ public sealed partial class DisplayWindowVm : ObservableObject, IDisposable
     /// satellite deck window.</summary>
     public CassetteDeckVm CassetteVm { get; }
 
+    /// <summary>Debugger ViewModel — subscribes to BreakHit/FrameReady immediately so the
+    /// register file and VRAM window stay current even when the window is not open.</summary>
+    public DebuggerWindowVm DebuggerVm { get; }
+
     /// <summary>Raised when the user requests the cassette deck satellite window.</summary>
     public event Action? OpenDeckWindowRequested;
 
     /// <summary>Raised when the user requests the config window.</summary>
     public event Action? OpenConfigWindowRequested;
+
+    /// <summary>Raised when the user requests the debugger satellite window.</summary>
+    public event Action? OpenDebuggerWindowRequested;
 
     /// <summary>Raised with a user-facing error message (e.g. version-mismatch on load).
     /// The view code-behind shows a modal dialog.</summary>
@@ -73,7 +80,8 @@ public sealed partial class DisplayWindowVm : ObservableObject, IDisposable
 
     public DisplayWindowVm()
     {
-        CassetteVm = new CassetteDeckVm(Runner);
+        CassetteVm  = new CassetteDeckVm(Runner);
+        DebuggerVm  = new DebuggerWindowVm(Runner);
         Runner.FrameReady += OnFrameReady;
         Runner.BreakHit += _ => Dispatcher.UIThread.Post(UpdatePauseState);
         Runner.Start();
@@ -161,6 +169,9 @@ public sealed partial class DisplayWindowVm : ObservableObject, IDisposable
 
     [RelayCommand]
     private void OpenConfig() => OpenConfigWindowRequested?.Invoke();
+
+    [RelayCommand]
+    private void OpenDebugger() => OpenDebuggerWindowRequested?.Invoke();
 
     [RelayCommand]
     private void ToggleTurbo()
@@ -297,6 +308,7 @@ public sealed partial class DisplayWindowVm : ObservableObject, IDisposable
     {
         Runner.FrameReady -= OnFrameReady;
         CassetteVm.Detach();
+        DebuggerVm.Dispose();
         Runner.Dispose();
     }
 }

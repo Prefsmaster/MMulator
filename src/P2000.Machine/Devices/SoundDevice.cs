@@ -89,5 +89,9 @@ public sealed class SoundDevice : IDevice
     }
 
     public void SaveState(IStateWriter writer) => writer.WriteBool(_beeperState);
-    public void LoadState(IStateReader reader) => _beeperState = reader.ReadBool();
+    public void LoadState(IStateReader reader)
+    {
+        _beeperState = reader.ReadBool();
+        _transitions.Clear();  // state is always captured at a field boundary; no pending transitions
+    }
 }

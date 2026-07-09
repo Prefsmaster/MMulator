@@ -322,7 +322,10 @@ Per the reference doc; implement to boot + run:
     a plain "save tape" that writes back to the loaded file. (Host-side `.cas` API, §7.)
   - So the round trip is: `.cas` → bitstream (load) → CSAVE mutates bitstream → bitstream →
     `.cas` (save). Blank-tape CSAVE (no file loaded) → new tape in memory → Save as .cas.
-- **Sound (1-bit beeper):** square-wave from the beeper line; push samples to audio out.
+- **Sound (1-bit beeper — `SoundDevice`, milestone 16):** taps the CPOUT beeper bit (**assumed
+  bit 4** — unconfirmed, reference doc §5 Sound), records level transitions per field, and at each
+  `FieldComplete` emits one **882-sample @ 44 100 Hz** PCM block via `SamplesReady(short[])` (one
+  reusable buffer; the consumer copies immediately). This is the machine→UI audio seam.
 
 ---
 
@@ -495,6 +498,20 @@ is NO machine-layer runner milestone here — it's promoted in with the external
     command applies at a boundary with the expected transition; step-over/step-out land correctly
     across CALL/RET; run-to-cycle N stops exactly at N; a mid-run poke is flagged non-replayable.
     → commit.
+16. **Audio output (1-bit beeper — `SoundDevice`).** The machine's audio-output seam. (The device
+    landed early during P2000.UI ms7 — findings 2026-07-09 — so this milestone formalizes it as a
+    first-class machine device and adds the machine-level output test it was missing.)
+    `SoundDevice : IDevice` taps the CPOUT beeper bit (**assumed bit 4** — flag as unconfirmed,
+    §5/§7 + reference doc §5 Sound), records `(FieldTState, level)` transitions per field, and at
+    each `FieldComplete` synthesizes one **882-sample @ 44 100 Hz** PCM block, raising
+    `SamplesReady(short[])` (ONE reusable buffer; the consumer copies immediately). Serializes in
+    `.state` as a device block between cassette + interrupts (feeds the pending version bump,
+    reference doc §3a). **Test — confirms the Machine can drive audio OUT to a consumer:** attach a
+    fake sink to `SamplesReady`; drive CPOUT beeper toggles (or boot the ROM to emit the power-on
+    beep) for several fields; assert (a) exactly one block per field arrives, (b) block length +
+    rate are 882 @ 44 100 Hz, (c) content is a non-constant square wave while the beeper toggles
+    AND flat silence when it doesn't. This proves the machine emits a consumable sample stream —
+    the UI/OpenAL sink is just another `SamplesReady` subscriber. → commit.
 
 ---
 
@@ -889,7 +906,7 @@ Two bugs were masking CLOAD success; both confirmed by tracing `Cassette.asm` li
 - **Applies to:** `docs/MDCR-implementation.md` §6 (tape block structure, byte order) /
   `src/P2000.Machine/Devices/Cassette/MiniTape.cs` (`LoadCasImage`, `Save`, `WriteByte`,
   `ReadByte`, `WriteData`, `UpdateChecksum`, `TryDecodeFrame`).
-- **Synced:** no
+- **Synced:** yes (2026-07-09, into reference doc §5b — block structure + byte order marked CONFIRMED; NOTE: `docs/MDCR-implementation.md` §6 is this finding's primary home — apply the detailed layout there too, which this pass could not edit)
 
 ### 2026-07-05 — Milestone 11: config + state serialization
 - **Assumed:** `MachineConfig` fields are JSON-serializable with `System.Text.Json` in-box;
@@ -961,6 +978,26 @@ Two bugs were masking CLOAD success; both confirmed by tracing `Cassette.asm` li
   `src/P2000.Machine/Slots/ISlotCard.cs`, `IMemorySlot.cs`, `IIoSlot.cs`, `INmiSource.cs`,
   `Slot1Cartridge.cs`; `src/P2000.Machine/Memory/PageTable.cs`,
   `src/P2000.Machine/Interrupts/InterruptAggregator.cs`, `src/P2000.Machine/Machine.cs`.
+- **Synced:** yes (2026-07-07, into reference doc §5c — typed slot/open-bus, §5e + §3a — NMI latch + .state version bump pending)
+
+### 2026-07-09 — Milestone 16: SoundDevice formalized + machine-level audio tests
+- **Assumed:** `LoadState` only needed to restore `_beeperState` (the single persisted field).
+- **Found:** `LoadState` must also clear `_transitions`. State is always captured at a field
+  boundary when `_transitions` is empty (just been cleared by `OnFieldComplete`). If any
+  CPOUT writes happened between LoadState and the next field boundary, stale transitions would
+  corrupt synthesis. `_transitions.Clear()` added to `LoadState`.
+- **Found (test helper — closure trap):** `SoundDevice` captures `Func<int> getFieldTState` at
+  construction. The lambda must close over the same local variable that the test helper mutates;
+  returning a setter `Action<int>` from `CreateSink()` is the correct pattern. Passing `ref int`
+  to a separate RunField helper doesn't work because C# lambdas can't capture `ref` locals.
+- **Found (test helper — initial CPOUT byte):** `RunField`'s toggle logic XORs `cpoutByte`
+  against the beeper bit. If the latch already holds the beeper bit (e.g. after a previous
+  field), starting `cpoutByte` at 0 means the first "toggle" repeats the current state rather
+  than changing it → no transition recorded. `RunField` takes an `initialCpout` parameter to
+  match the latch's running state.
+- **Applies to:** project CLAUDE.md §13.16 / `src/P2000.Machine/Devices/SoundDevice.cs`
+  (LoadState fix), `tests/P2000.Machine.Tests/Devices/SoundDeviceTests.cs` (new, 13 tests).
+- **Synced:** no
 
 ### 2026-07-09 — UI Milestone 7: SoundDevice (1-bit beeper, machine layer)
 - **Assumed:** CPOUT bit 4 (0x10) is the BEEP line. Reference doc §7 confirms a "1-bit speaker"
@@ -974,10 +1011,9 @@ Two bugs were masking CLOAD success; both confirmed by tracing `Cassette.asm` li
 - **Found (SaveState format change):** `Sound.SaveState(writer)` is inserted between
   `Mdcr.SaveState` and `Interrupts.SaveState` in `Machine.SaveState/LoadState`. Any `.state`
   files saved before this milestone are not forward-compatible.
-- **Applies to:** reference doc §7 (CPOUT, BEEP line) / `src/P2000.Machine/Devices/SoundDevice.cs`
-  (new), `src/P2000.Machine/Machine.cs`.
-- **Synced:** no
-- **Synced:** yes (2026-07-07, into reference doc §5c — typed slot/open-bus, §5e + §3a — NMI latch + .state version bump pending)
+- **Applies to:** reference doc §5 Sound (CPOUT/BEEP bit, audio-output seam), §3a (.state version
+  bump) / `src/P2000.Machine/Devices/SoundDevice.cs` (new), `src/P2000.Machine/Machine.cs`.
+- **Synced:** yes (2026-07-09, into reference doc §5 Sound — BEEP bit + audio seam, §3a — bump folded in; formalized as machine milestone 16)
 
 ### 2026-07-06 — Milestone 13: observer state-snapshot surface
 - **Assumed:** the snapshot needed a new FieldTState exposure — `VideoFetchUnit` and `Video`

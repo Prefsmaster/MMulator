@@ -48,9 +48,9 @@ public sealed class Machine
     /// at runtime (CIP is a live transition — machine CLAUDE.md §7).</summary>
     public MdcrDevice Mdcr { get; }
 
-    /// <summary>1-bit beeper synthesizer (project CLAUDE.md §7 Sound). Monitors CPOUT bit 4
-    /// (assumed BEEP line — see §17 finding), synthesizes 44100 Hz PCM blocks at each 50 Hz
-    /// field boundary, and exposes them via <see cref="SoundDevice.SamplesReady"/>.</summary>
+    /// <summary>1-bit beeper synthesizer (project CLAUDE.md §7 Sound). Monitors writes to
+    /// I/O port 0x50 bit 0 (confirmed — §17 finding 2026-07-09), synthesizes 44100 Hz PCM
+    /// blocks at each 50 Hz field boundary, and exposes them via <see cref="SoundDevice.SamplesReady"/>.</summary>
     public SoundDevice Sound { get; }
 
     /// <summary>Wired-OR INT/NMI aggregator (project CLAUDE.md §8). The video 50 Hz VBLANK
@@ -120,11 +120,12 @@ public sealed class Machine
         Video = new Video(Memory);
         Keyboard = new KeyboardDevice(CpOut);
         Mdcr = new MdcrDevice(CpOut);
-        Sound = new SoundDevice(CpOut, () => Video.FieldTState);
+        Sound = new SoundDevice(() => Video.FieldTState);
 
-        Ports.RegisterWrite(CPoutLatch.Port, CpOut.Write);
-        Ports.RegisterRead(CprinReader.Port, CpIn.Read);
-        Ports.RegisterRead(CprinReader.Port, Mdcr.ReadStatus);
+        Ports.RegisterWrite(CPoutLatch.Port,  CpOut.Write);
+        Ports.RegisterWrite(SoundDevice.Port, Sound.OnPortWrite);
+        Ports.RegisterRead(CprinReader.Port,  CpIn.Read);
+        Ports.RegisterRead(CprinReader.Port,  Mdcr.ReadStatus);
         Ports.RegisterWrite(PageTable.BankSelectPort, Memory.SelectBank);
 
         // Keyboard: ports 0x00-0x09 (reference doc §5f). Each port needs its own closure

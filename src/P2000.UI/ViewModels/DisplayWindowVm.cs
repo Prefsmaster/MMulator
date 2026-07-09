@@ -1,9 +1,14 @@
+using Avalonia;
+using Avalonia.Controls;
+using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Media.Imaging;
 using Avalonia.Platform;
+using Avalonia.Platform.Storage;
 using Avalonia.Threading;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using P2000.Machine.Debug;
+using P2000.Machine.State;
 using P2000.UI.Rendering;
 using P2000.UI.Runner;
 using System.Runtime.InteropServices;
@@ -28,6 +33,10 @@ public sealed partial class DisplayWindowVm : ObservableObject, IDisposable
 
     /// <summary>Raised when the user requests the config window.</summary>
     public event Action? OpenConfigWindowRequested;
+
+    /// <summary>Raised with a user-facing error message (e.g. version-mismatch on load).
+    /// The view code-behind shows a modal dialog.</summary>
+    public event Action<string>? ShowMessageRequested;
 
     // ── Observable state ──────────────────────────────────────────────────────
 
@@ -183,6 +192,74 @@ public sealed partial class DisplayWindowVm : ObservableObject, IDisposable
 
     [RelayCommand]
     private void ToggleAudioMute() => AudioMute = !AudioMute;
+
+    // ── Save / Load state ─────────────────────────────────────────────────────
+
+    [RelayCommand]
+    private async Task SaveStateAsync()
+    {
+        var topLevel = GetTopLevel();
+        if (topLevel is null) return;
+
+        var file = await topLevel.StorageProvider.SaveFilePickerAsync(new FilePickerSaveOptions
+        {
+            Title = "Save Machine State",
+            SuggestedFileName = "machine.state",
+            FileTypeChoices = [new FilePickerFileType("P2000T State") { Patterns = ["*.state"] }],
+            DefaultExtension = "state",
+        });
+        if (file is null) return;
+
+        try
+        {
+            await using var stream = await file.OpenWriteAsync();
+            Runner.SaveStateToStream(stream);
+        }
+        catch (Exception ex)
+        {
+            ShowMessageRequested?.Invoke($"Save failed:\n{ex.Message}");
+        }
+    }
+
+    [RelayCommand]
+    private async Task LoadStateAsync()
+    {
+        var topLevel = GetTopLevel();
+        if (topLevel is null) return;
+
+        var files = await topLevel.StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
+        {
+            Title = "Load Machine State",
+            AllowMultiple = false,
+            FileTypeFilter = [new FilePickerFileType("P2000T State") { Patterns = ["*.state"] }],
+        });
+        if (files.Count == 0) return;
+
+        try
+        {
+            await using var stream = await files[0].OpenReadAsync();
+            using var ms = new MemoryStream();
+            await stream.CopyToAsync(ms);
+            ms.Position = 0;
+            var machine = await Task.Run(() => MachineStateFile.Load(ms));
+            Runner.ReconfigureWithMachine(machine);
+        }
+        catch (InvalidDataException ex)
+        {
+            ShowMessageRequested?.Invoke($"Cannot load state file — version mismatch or corrupt file:\n{ex.Message}");
+        }
+        catch (Exception ex)
+        {
+            ShowMessageRequested?.Invoke($"Load failed:\n{ex.Message}");
+        }
+    }
+
+    private static TopLevel? GetTopLevel()
+    {
+        var mainWindow = (Application.Current?.ApplicationLifetime
+            as IClassicDesktopStyleApplicationLifetime)?.MainWindow;
+        return mainWindow as TopLevel ?? TopLevel.GetTopLevel(mainWindow);
+    }
 
     [RelayCommand]
     private unsafe void Screenshot()

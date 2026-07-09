@@ -35,6 +35,7 @@ public partial class DisplayWindow : Window
             _vm.Runner.FrameReady -= _frameReadyHandler;
             _vm.OpenDeckWindowRequested -= ShowDeckWindow;
             _vm.OpenConfigWindowRequested -= ShowConfigWindow;
+            _vm.ShowMessageRequested -= ShowErrorDialog;
         }
 
         _vm = DataContext as DisplayWindowVm;
@@ -53,9 +54,41 @@ public partial class DisplayWindow : Window
             _vm.Runner.FrameReady += _frameReadyHandler;
             _vm.OpenDeckWindowRequested += ShowDeckWindow;
             _vm.OpenConfigWindowRequested += ShowConfigWindow;
+            _vm.ShowMessageRequested += ShowErrorDialog;
         }
 
         base.OnDataContextChanged(e);
+    }
+
+    // ── Error dialog (version mismatch / save-load failure) ──────────────────
+
+    private async void ShowErrorDialog(string message)
+    {
+        var dialog = new Window
+        {
+            Title = "MMulator",
+            Width = 440, Height = 190,
+            CanResize = false,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+        };
+        var ok = new Button
+        {
+            Content = "OK",
+            MinWidth = 80,
+            HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Center,
+        };
+        ok.Click += (_, _) => dialog.Close();
+        dialog.Content = new Avalonia.Controls.StackPanel
+        {
+            Margin = new Avalonia.Thickness(20),
+            Spacing = 16,
+            Children =
+            {
+                new TextBlock { Text = message, TextWrapping = Avalonia.Media.TextWrapping.Wrap },
+                ok,
+            }
+        };
+        await dialog.ShowDialog(this);
     }
 
     // ── Satellite windows ─────────────────────────────────────────────────────

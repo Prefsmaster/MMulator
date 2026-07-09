@@ -30,6 +30,11 @@
                 <MenuItem Header="Reset (_Warm)"    HotKey="F11"       Command="{Binding WarmResetCommand}" />
                 <MenuItem Header="Reset (_Cold)"    HotKey="Shift+F11" Command="{Binding ColdResetCommand}" />
                 <Separator />
+                <MenuItem Header="Save _State…" Command="{Binding SaveStateCommand}"
+                          ToolTip.Tip="Save machine state to a .state file (captured at next instruction boundary)" />
+                <MenuItem Header="Load S_tate…" Command="{Binding LoadStateCommand}"
+                          ToolTip.Tip="Restore machine state from a .state file" />
+                <Separator />
                 <MenuItem Header="_Step"            HotKey="F8"        Command="{Binding StepCommand}" />
                 <Separator />
                 <MenuItem Header="_Turbo speed"     HotKey="F6"        Command="{Binding ToggleTurboCommand}"

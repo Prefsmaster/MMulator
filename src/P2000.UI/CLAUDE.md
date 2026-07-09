@@ -589,6 +589,29 @@ project.
   `src/P2000.UI/Views/CassetteDeckWindow.axaml`.
 - **Synced:** no
 
+### 2026-07-09 — Milestone 8: save-state UI
+- **Assumed:** `SaveState` / `LoadState` could be called directly from the UI thread at any time.
+- **Found (instruction-boundary guarantee):** `MachineStateFile.Save` must be called at an
+  instruction boundary. The safe mechanism is a volatile `_pendingSaveStream` field checked
+  in `EmulationRunner.OnFieldComplete()` (runs on the emulation thread), identical to the
+  existing `Reconfigure` swap pattern. The UI thread sets the stream, then waits on a
+  `SemaphoreSlim` (~20 ms max); the emulation thread saves and releases.
+- **Found (`ReconfigureWithMachine` added):** `Reconfigure(MachineConfig)` always builds a
+  fresh machine. For load-state, `MachineStateFile.Load` already returns a complete
+  `Machine`; a `ReconfigureWithMachine(Machine)` overload wires the events and swaps it in
+  via the same volatile `_nextMachine` / `_swapDone` mechanism.
+- **Found (`AvaloniaHeadlessPlatformOptions` not `AvaloniaHeadlessOptions`):** the correct
+  Avalonia 11.1.0 headless options type for `AppBuilder.UseHeadless(...)` in test projects
+  is `AvaloniaHeadlessPlatformOptions` (from `Avalonia.Headless`). The `AvaloniaTestApplicationAttribute`
+  is in `Avalonia.Headless`; `[AvaloniaFact]` is in `Avalonia.Headless.XUnit`.
+- **Applies to:** project CLAUDE.md §14.8 (milestone 8) /
+  `src/P2000.UI/Runner/EmulationRunner.cs` (`SaveStateToStream`, `ReconfigureWithMachine`),
+  `src/P2000.UI/ViewModels/DisplayWindowVm.cs` (`SaveStateCommand`, `LoadStateCommand`),
+  `src/P2000.UI/Views/DisplayWindow.axaml` (Machine menu items),
+  `src/P2000.UI/Views/DisplayWindow.axaml.cs` (`ShowErrorDialog`),
+  `tests/P2000.UI.Tests/` (new project, 6 tests).
+- **Synced:** no
+
 ### 2026-07-09 — Integer scaling: physical vs logical pixels
 - **Assumed:** computing the integer multiplier `n` from `Bounds.Width / Video.Width` (logical
   pixels) would produce exact integer multiples of source pixels on screen.

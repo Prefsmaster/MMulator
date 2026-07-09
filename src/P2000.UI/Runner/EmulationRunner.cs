@@ -35,6 +35,11 @@ public sealed class EmulationRunner : IDisposable
     private volatile MachineCore? _nextMachine;
     private readonly SemaphoreSlim _swapDone = new(0, 1);
 
+    // Pending save-state request: stream set by UI thread, cleared + semaphore released on emulation thread.
+    private volatile Stream? _pendingSaveStream;
+    private readonly SemaphoreSlim _saveDone = new(0, 1);
+    private Exception? _saveException;
+
     /// <summary>Forwarded from the current machine's <see cref="MachineCore.BreakHit"/>.
     /// Subscribers always see breaks from whichever machine is currently active, even after
     /// a <see cref="Reconfigure"/> swap.</summary>
@@ -103,6 +108,32 @@ public sealed class EmulationRunner : IDisposable
         _swapDone.Wait(500);   // wait for acknowledgement (should arrive within ~20 ms)
     }
 
+    /// <summary>Swaps in a pre-built machine (e.g. loaded from a .state file) at the next
+    /// field boundary on the emulation thread. Same thread-safety contract as
+    /// <see cref="Reconfigure(MachineConfig)"/>. The machine's existing cassette/runtime
+    /// state is preserved exactly as loaded.</summary>
+    public void ReconfigureWithMachine(MachineCore machine)
+    {
+        machine.Video.FieldComplete += OnFieldComplete;
+        machine.BreakHit += OnBreakHit;
+        machine.Sound.SamplesReady += Audio.EnqueueSamples;
+        _nextMachine = machine;    // volatile write
+        _swapDone.Wait(500);
+    }
+
+    /// <summary>Saves the current machine state to <paramref name="stream"/> at the next
+    /// field boundary on the emulation thread (which guarantees an instruction boundary).
+    /// Blocks the caller until the save completes (~20 ms max). Safe to call from the UI thread.
+    /// Re-throws any exception raised by the serializer.</summary>
+    public void SaveStateToStream(Stream stream)
+    {
+        _saveException = null;
+        _pendingSaveStream = stream;   // volatile write — emulation thread picks this up
+        _saveDone.Wait(500);
+        if (_saveException is not null)
+            System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(_saveException).Throw();
+    }
+
     // Locate BASIC.bin relative to the executable (assets/ in the repo root).
     private static MachineConfig MakeConfig()
     {
@@ -165,7 +196,17 @@ public sealed class EmulationRunner : IDisposable
     // Called on the emulation thread (synchronously inside Machine.Tick()).
     private void OnFieldComplete()
     {
-        // ── Machine swap (Reconfigure) — acknowledged at field boundary ───────
+        // ── Save-state request — field boundary is a guaranteed instruction boundary ──
+        var saveStream = _pendingSaveStream;
+        if (saveStream is not null)
+        {
+            _pendingSaveStream = null;
+            try { P2000.Machine.State.MachineStateFile.Save(_machine, saveStream); }
+            catch (Exception ex) { _saveException = ex; }
+            _saveDone.Release();
+        }
+
+        // ── Machine swap (Reconfigure / ReconfigureWithMachine) ───────────────
         var next = _nextMachine;
         if (next != null)
         {

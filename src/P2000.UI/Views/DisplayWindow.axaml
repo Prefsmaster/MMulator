@@ -50,50 +50,78 @@
                           ToolTip.Tip="Remove the current cassette" />
             </MenuItem>
             <MenuItem Header="_View">
-                <!-- Display mode (radio group via IsChecked + command) -->
+                <!-- Display mode — bullet icon on the active item acts as radio indicator -->
                 <MenuItem Header="Mode: _Interlaced (default)"
-                          IsChecked="{Binding IsModeInterlaced}"
                           Command="{Binding SetDisplayModeCommand}"
                           CommandParameter="{x:Static rendering:DisplayMode.Interlaced}"
-                          ToolTip.Tip="Present every 50 Hz field — authentic interlace comb on fast motion" />
+                          ToolTip.Tip="Present every 50 Hz field — authentic interlace comb on fast motion">
+                    <MenuItem.Icon>
+                        <TextBlock Text="●" IsVisible="{Binding IsModeInterlaced}" />
+                    </MenuItem.Icon>
+                </MenuItem>
                 <MenuItem Header="Mode: _Progressive"
-                          IsChecked="{Binding IsModeProgressive}"
                           Command="{Binding SetDisplayModeCommand}"
                           CommandParameter="{x:Static rendering:DisplayMode.Progressive}"
-                          ToolTip.Tip="Composite both fields (25 Hz) — no comb, full vertical detail" />
+                          ToolTip.Tip="Composite both fields (25 Hz) — no comb, full vertical detail">
+                    <MenuItem.Icon>
+                        <TextBlock Text="●" IsVisible="{Binding IsModeProgressive}" />
+                    </MenuItem.Icon>
+                </MenuItem>
                 <MenuItem Header="Mode: _Even field only"
-                          IsChecked="{Binding IsModeEvenOnly}"
                           Command="{Binding SetDisplayModeCommand}"
                           CommandParameter="{x:Static rendering:DisplayMode.EvenOnly}"
-                          ToolTip.Tip="Show only the even field, line-doubled" />
+                          ToolTip.Tip="Show only the even field, line-doubled">
+                    <MenuItem.Icon>
+                        <TextBlock Text="●" IsVisible="{Binding IsModeEvenOnly}" />
+                    </MenuItem.Icon>
+                </MenuItem>
                 <MenuItem Header="Mode: _Odd field only (smoothed)"
-                          IsChecked="{Binding IsModeOddOnly}"
                           Command="{Binding SetDisplayModeCommand}"
                           CommandParameter="{x:Static rendering:DisplayMode.OddOnly}"
-                          ToolTip.Tip="Show only the odd (CRS-smoothed) field, line-doubled" />
+                          ToolTip.Tip="Show only the odd (CRS-smoothed) field, line-doubled">
+                    <MenuItem.Icon>
+                        <TextBlock Text="●" IsVisible="{Binding IsModeOddOnly}" />
+                    </MenuItem.Icon>
+                </MenuItem>
                 <Separator />
+                <!-- Toggle items — checkmark icon when active -->
                 <MenuItem Header="_Integer scaling"
-                          IsChecked="{Binding IntegerScale}"
                           Command="{Binding ToggleIntegerScaleCommand}"
-                          ToolTip.Tip="Scale by whole-pixel multiples only — crisp pixels, black borders" />
+                          ToolTip.Tip="Scale by whole-pixel multiples only — crisp pixels, black borders">
+                    <MenuItem.Icon>
+                        <TextBlock Text="✓" IsVisible="{Binding IntegerScale}" />
+                    </MenuItem.Icon>
+                </MenuItem>
                 <MenuItem Header="PAL _aspect ratio (4:3)"
-                          IsChecked="{Binding PalAspect}"
                           Command="{Binding TogglePalAspectCommand}"
-                          ToolTip.Tip="Maintain 4:3 ratio (letterbox); off = stretch to fill" />
+                          ToolTip.Tip="Maintain 4:3 ratio (letterbox); off = stretch to fill">
+                    <MenuItem.Icon>
+                        <TextBlock Text="✓" IsVisible="{Binding PalAspect}" />
+                    </MenuItem.Icon>
+                </MenuItem>
                 <Separator />
                 <MenuItem Header="_Scanline effect"
-                          IsChecked="{Binding ShowScanlines}"
                           Command="{Binding ToggleScanlinesCommand}"
-                          ToolTip.Tip="Simulate CRT scanline gaps" />
+                          ToolTip.Tip="Simulate CRT scanline gaps">
+                    <MenuItem.Icon>
+                        <TextBlock Text="✓" IsVisible="{Binding ShowScanlines}" />
+                    </MenuItem.Icon>
+                </MenuItem>
                 <MenuItem Header="Contention cell _overlay"
-                          IsChecked="{Binding ShowDebugOverlay}"
                           Command="{Binding ToggleDebugOverlayCommand}"
-                          ToolTip.Tip="Highlight character cells corrupted by CPU-vs-video bus contention" />
+                          ToolTip.Tip="Highlight character cells corrupted by CPU-vs-video bus contention">
+                    <MenuItem.Icon>
+                        <TextBlock Text="✓" IsVisible="{Binding ShowDebugOverlay}" />
+                    </MenuItem.Icon>
+                </MenuItem>
                 <Separator />
                 <MenuItem Header="_Mute audio"
-                          IsChecked="{Binding AudioMute}"
                           Command="{Binding ToggleAudioMuteCommand}"
-                          ToolTip.Tip="Silence the 1-bit beeper" />
+                          ToolTip.Tip="Silence the 1-bit beeper">
+                    <MenuItem.Icon>
+                        <TextBlock Text="✓" IsVisible="{Binding AudioMute}" />
+                    </MenuItem.Icon>
+                </MenuItem>
             </MenuItem>
         </Menu>
 

@@ -588,3 +588,17 @@ project.
   `src/P2000.UI/ViewModels/CassetteDeckVm.cs` (`ParseDirectory`, `DirectoryHeader`),
   `src/P2000.UI/Views/CassetteDeckWindow.axaml`.
 - **Synced:** no
+
+### 2026-07-09 — Integer scaling: physical vs logical pixels
+- **Assumed:** computing the integer multiplier `n` from `Bounds.Width / Video.Width` (logical
+  pixels) would produce exact integer multiples of source pixels on screen.
+- **Found:** Avalonia `Bounds` are in logical (device-independent) pixels. At 125% Windows DPI
+  (`RenderScaling = 1.25`), `n = floor(logicalWidth / 640) = 1` produces a `Rect` of 640
+  logical units, which Avalonia renders as 800 physical pixels — not an integer multiple of the
+  640×480 source (800 / 640 = 1.25).
+- **Fix:** compute `n` in physical pixel space: `n = floor(logicalWidth × scale / 640)`, then
+  convert back: `sw = n × 640 / scale` logical units → exactly `n × 640` physical pixels.
+  At 125% DPI with a 640-logical-px panel, `n = 1` → 512 logical = 640 physical px.
+- **Applies to:** project CLAUDE.md §14.6 (milestone 6, integer scaling) /
+  `src/P2000.UI/Rendering/DisplayControl.cs` (`ComputeDestRect`).
+- **Synced:** no

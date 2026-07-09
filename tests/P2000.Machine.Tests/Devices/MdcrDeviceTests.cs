@@ -36,11 +36,11 @@ public class MdcrDeviceTests
     }
 
     [Fact]
-    public void NoTape_DefaultStatus_CipPlusBet()
+    public void NoTape_DefaultStatus_CipPlusBetPlusWen()
     {
         var (mdcr, _) = Create();
-        // Bits 3–7 only; bits 0–2 are printer's (contribute 0 here)
-        Assert.Equal(0x30, mdcr.ReadStatus() & 0x38); // CIP(0x10) + BET(0x20), WEN(0x08)=0
+        // Real MDCR pulls WEN high when no cassette is present; cas_Init rejects CIP=1 WEN=0.
+        Assert.Equal(0x38, mdcr.ReadStatus() & 0x38); // CIP(0x10) + BET(0x20) + WEN(0x08)
     }
 
     [Fact]
@@ -112,13 +112,14 @@ public class MdcrDeviceTests
     // ---- BET reflects tape position ---------------------------------------------
 
     [Fact]
-    public void InsertTape_StartsAtBOT_BetClear()
+    public void InsertTape_StartsJustPastBOT_BetSet()
     {
-        // After LoadCasImage the tape is rewound to position 0 = BOT → IsAtEnd = true
+        // LoadCasImage positions at 1 (just past the BOT sensor) so BET=1 immediately after
+        // insert. At position 0 IsAtEnd=true → BET=0, which the ROM misreads as "tape at EOT"
+        // and aborts the motor start. Position 1 → IsAtEnd=false → BET=1 = tape OK.
         var (mdcr, _) = Create();
         mdcr.InsertTape(OneCasRecord());
-        // BET clear = at tape end
-        Assert.Equal(0x00, mdcr.ReadStatus() & 0x20);
+        Assert.Equal(0x20, mdcr.ReadStatus() & 0x20); // BET set = tape OK, not at physical end
     }
 
     [Fact]
@@ -315,7 +316,7 @@ public class MdcrDeviceTests
     // ---- Machine integration: port 0x20 OR-combines with CprinReader -----------
 
     [Fact]
-    public void Machine_InFrom0x20_NoTape_Returns0x30()
+    public void Machine_InFrom0x20_NoTape_Returns0x38()
     {
         var machine = new Machine();
         machine.Memory.LoadRom(new byte[]
@@ -326,7 +327,7 @@ public class MdcrDeviceTests
 
         for (var i = 0; i < 30; i++) machine.Tick();
 
-        Assert.Equal(0x30, machine.Cpu.Reg.A); // CIP(0x10)+BET(0x20)
+        Assert.Equal(0x38, machine.Cpu.Reg.A); // CIP(0x10)+BET(0x20)+WEN(0x08) — WEN pulled high with no tape
     }
 
     [Fact]

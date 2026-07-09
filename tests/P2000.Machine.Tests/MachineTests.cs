@@ -123,9 +123,10 @@ public class MachineTests
             machine.Tick();
         }
 
-        // CIP+BET asserted (0x30): no cassette mounted (CIP active-low), tape-OK sense.
+        // CIP+BET+WEN (0x38): no cassette (CIP active-low), tape-OK sense, WEN pulled high
+        // by real MDCR hardware when no cassette is present (cas_Init rejects CIP=1 WEN=0).
         // MdcrDevice contributes bits 3–7; CprinReader (printer-deferred) contributes 0.
-        Assert.Equal(0x30, machine.Cpu.Reg.A);
+        Assert.Equal(0x38, machine.Cpu.Reg.A);
     }
 
     [Fact]

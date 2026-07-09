@@ -154,11 +154,14 @@ public class MiniTapeTests
     // ---- LoadCasImage -----------------------------------------------------------
 
     [Fact]
-    public void LoadCasImage_Rewinds_ToPosition0()
+    public void LoadCasImage_PositionsAt1_JustPastBotSensor()
     {
+        // LoadCasImage ends at position 1, not 0.  At 0, IsAtEnd=true → BET=0, which the
+        // ROM interprets as "tape at EOT / removed" and aborts motor start. Position 1 means
+        // IsAtEnd=false → BET=1 = tape OK as soon as it is inserted.
         var tape = new MiniTape();
-        tape.LoadCasImage(new byte[1280]); // one block
-        Assert.Equal(0, tape.Position);
+        tape.LoadCasImage(new byte[1280]);
+        Assert.Equal(1, tape.Position);
     }
 
     [Fact]
@@ -268,11 +271,12 @@ public class MiniTapeTests
     {
         var original = new byte[1280];
         var tape = new MiniTape();
-        tape.LoadCasImage(original, writeProtect: false); // rewinds to 0
+        tape.LoadCasImage(original, writeProtect: false); // positions at 1
 
+        var positionBeforeSave = tape.Position;
         tape.Save();
 
-        Assert.Equal(0, tape.Position); // head position unchanged
+        Assert.Equal(positionBeforeSave, tape.Position); // Save() must not move the head
     }
 
     // ---- Checksum ---------------------------------------------------------------

@@ -22,7 +22,6 @@ public sealed class VramGridControl : Control
     private const int VramCols   = 80;
     private const int VramRows   = 24;
     private const int ViewportW  = 40;  // always 40 cols wide
-    private const double CellW   = 8.5;
     private const double CellH   = 14.0;
     private const double FontSz  = 10.5;
 
@@ -83,8 +82,13 @@ public sealed class VramGridControl : Control
 
     protected override Size MeasureOverride(Size availableSize)
     {
-        double w = ShowHex ? VramCols * CellW * 2.5 : VramCols * CellW;
-        return new Size(w, VramRows * CellH);
+        int charsPerCell = ShowHex ? 3 : 1;
+        var ft = new FormattedText(
+            new string('0', VramCols * charsPerCell),
+            System.Globalization.CultureInfo.InvariantCulture,
+            FlowDirection.LeftToRight,
+            MonoFace, FontSz, TextBrush);
+        return new Size(ft.Width, VramRows * CellH);
     }
 
     public override void Render(DrawingContext ctx)
@@ -94,7 +98,15 @@ public sealed class VramGridControl : Control
         int panX       = Math.Clamp(PanX, 0, VramCols - ViewportW);
         bool showHex   = ShowHex;
 
-        double cellW   = showHex ? CellW * 2.5 : CellW;
+        // Measure the actual character pitch from the font — don't trust the hardcoded
+        // CellW constant, which diverges from FormattedText at arbitrary DPI/font size.
+        int charsPerCell = showHex ? 3 : 1;  // "HH " vs single glyph
+        var measureFt = new FormattedText(
+            new string('0', VramCols * charsPerCell),
+            System.Globalization.CultureInfo.InvariantCulture,
+            FlowDirection.LeftToRight,
+            MonoFace, FontSz, TextBrush);
+        double cellW = measureFt.Width / VramCols;
 
         if (vram == null || vram.Length < VramCols * VramRows)
         {

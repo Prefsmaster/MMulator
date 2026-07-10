@@ -53,6 +53,30 @@ public sealed class BoolToChangedBrushConverter : IValueConverter
         => throw new NotSupportedException();
 }
 
+/// <summary>Highlights the PC row yellow in the disassembly listing.</summary>
+public sealed class BoolToPcBrushConverter : IValueConverter
+{
+    public static readonly BoolToPcBrushConverter Instance = new();
+
+    public object? Convert(object? value, Type targetType, object? parameter, CultureInfo culture)
+        => value is true ? Brush.Parse("#2a2400") : Brushes.Transparent;
+
+    public object? ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture)
+        => throw new NotSupportedException();
+}
+
+/// <summary>Colors the breakpoint gutter dot red when set, transparent when not.</summary>
+public sealed class BoolToBpDotConverter : IValueConverter
+{
+    public static readonly BoolToBpDotConverter Instance = new();
+
+    public object? Convert(object? value, Type targetType, object? parameter, CultureInfo culture)
+        => value is true ? Brush.Parse("#c0392b") : Brushes.Transparent;
+
+    public object? ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture)
+        => throw new NotSupportedException();
+}
+
 /// <summary>Returns true when an int is zero (for empty-state visibility). Pass
 /// <c>ConverterParameter=invert</c> to flip (visible when non-zero).</summary>
 public sealed class ZeroToBoolConverter : IValueConverter

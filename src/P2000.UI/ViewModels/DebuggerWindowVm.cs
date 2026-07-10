@@ -21,6 +21,9 @@ public sealed partial class DebuggerWindowVm : ObservableObject, IDisposable
     // Last corruption snapshot from FrameReady (stable, at field boundary)
     private bool[] _lastCorruption = new bool[40 * 24];
 
+    // Tracks exec breakpoint addresses; updated via SyncBreakpointsToMachine.
+    private readonly HashSet<ushort> _execBpSet = new();
+
     /// <summary>Raised when the VRAM window should be opened (or brought to front).</summary>
     public event Action? OpenVramWindowRequested;
 
@@ -31,6 +34,7 @@ public sealed partial class DebuggerWindowVm : ObservableObject, IDisposable
 
     public RegisterFileVm  RegisterFile { get; } = new();
     public VramWindowVm    Vram         { get; } = new();
+    public DisassemblyVm   Disassembly  { get; } = new();
 
     /// <summary>All open memory watch windows (observable so code-behind can react).</summary>
     public ObservableCollection<MemoryWatchVm> MemoryWatches { get; } = new();
@@ -57,13 +61,14 @@ public sealed partial class DebuggerWindowVm : ObservableObject, IDisposable
         Dispatcher.UIThread.Post(() =>
         {
             IsPaused   = true;
-            StatusText = "Paused";
+            StatusText = e.Kind == BreakpointKind.Step ? "Paused" : $"Break @ {e.Address:X4}";
 
             // Machine is paused at an instruction boundary — TakeSnapshot() is safe.
             MachineCore m = _runner.Machine;
             var snap = m.TakeSnapshot();
 
             RegisterFile.Update(snap);
+            Disassembly.Refresh(snap.PC, snap.ReadMemory);
 
             // VRAM: read from snapshot's memory view (live page table, but paused = stable).
             Vram.Update(snap.ReadMemory, m.Video.PanX, _lastCorruption);
@@ -85,6 +90,12 @@ public sealed partial class DebuggerWindowVm : ObservableObject, IDisposable
         {
             MachineCore m = _runner.Machine;
             RegisterFile.UpdateLive(m.Cpu.Reg, m.Video.FieldTState);
+
+            // Live disassembly: re-decode only when PC changes.
+            ushort pc = m.Cpu.Reg.PC;
+            if (Disassembly.NeedsRefresh(pc))
+                Disassembly.Refresh(pc, m.Memory.Read);
+
             Vram.Update(m.Memory.Read, m.Video.PanX, corruption);
 
             foreach (var watch in MemoryWatches)
@@ -106,7 +117,71 @@ public sealed partial class DebuggerWindowVm : ObservableObject, IDisposable
         }
     }
 
-    // ── Commands ────────────────────────────────────────────────────────────
+    // ── Stepping commands (CanExecute = IsPaused) ───────────────────────────
+
+    [RelayCommand(CanExecute = nameof(IsPaused))]
+    private void StepInto()
+    {
+        _runner.Machine.Enqueue(new SingleStepCommand());
+        _runner.Machine.Enqueue(new RunCommand());
+    }
+
+    [RelayCommand(CanExecute = nameof(IsPaused))]
+    private void StepOver()
+    {
+        _runner.Machine.Enqueue(new StepOverCommand());
+        _runner.Machine.Enqueue(new RunCommand());
+    }
+
+    [RelayCommand(CanExecute = nameof(IsPaused))]
+    private void StepOut()
+    {
+        _runner.Machine.Enqueue(new StepOutCommand());
+        _runner.Machine.Enqueue(new RunCommand());
+    }
+
+    [RelayCommand]
+    private void RunPause()
+    {
+        if (IsPaused)
+            _runner.Machine.Enqueue(new RunCommand());
+        else
+            _runner.Machine.Enqueue(new PauseCommand());
+    }
+
+    // Notify CanExecute on IsPaused change.
+    partial void OnIsPausedChanged(bool value)
+    {
+        StepIntoCommand.NotifyCanExecuteChanged();
+        StepOverCommand.NotifyCanExecuteChanged();
+        StepOutCommand.NotifyCanExecuteChanged();
+    }
+
+    // ── Breakpoint commands ─────────────────────────────────────────────────
+
+    /// <summary>Toggle an exec breakpoint at <paramref name="address"/>.</summary>
+    public void ToggleExecBreakpoint(ushort address)
+    {
+        if (!_execBpSet.Remove(address))
+            _execBpSet.Add(address);
+
+        // Keep the disassembly dots in sync.
+        Disassembly.BreakpointAddresses.Clear();
+        foreach (var a in _execBpSet) Disassembly.BreakpointAddresses.Add(a);
+        Disassembly.RefreshBreakpointDots();
+
+        SyncBreakpointsToMachine();
+    }
+
+    private void SyncBreakpointsToMachine()
+    {
+        // Clear all then re-add. Safe because the queue drains atomically at one boundary.
+        _runner.Machine.Enqueue(new ClearBreakpointsCommand());
+        foreach (var a in _execBpSet)
+            _runner.Machine.Enqueue(new AddExecBreakpointCommand(a));
+    }
+
+    // ── Satellite window commands ────────────────────────────────────────────
 
     [RelayCommand]
     private void OpenVramWindow() => OpenVramWindowRequested?.Invoke();

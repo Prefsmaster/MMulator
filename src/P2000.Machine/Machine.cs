@@ -234,6 +234,7 @@ public sealed class Machine
                 {
                     _pauseAtNextBoundary = false;
                     IsPaused = true;
+                    BreakHit?.Invoke(new BreakEvent(BreakpointKind.Step, Cpu.Reg.PC, -1));
                     return;
                 }
 
@@ -242,6 +243,7 @@ public sealed class Machine
                 {
                     _runToFieldTState = -1;
                     IsPaused = true;
+                    BreakHit?.Invoke(new BreakEvent(BreakpointKind.Step, Cpu.Reg.PC, -1));
                     return;
                 }
 
@@ -396,6 +398,7 @@ public sealed class Machine
 
                 case PauseCommand:
                     IsPaused = true;
+                    BreakHit?.Invoke(new BreakEvent(BreakpointKind.Step, Cpu.Reg.PC, -1));
                     break; // continue draining; subsequent commands still apply
 
                 case WarmResetCommand:

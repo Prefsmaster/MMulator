@@ -5,8 +5,8 @@
         x:DataType="vm:DebuggerWindowVm"
         x:Class="P2000.UI.Views.DebuggerWindow"
         Title="Debugger — P2000T"
-        Width="700" Height="560"
-        MinWidth="500" MinHeight="420"
+        Width="900" Height="580"
+        MinWidth="600" MinHeight="420"
         CanResize="True"
         Background="#1a1a1a">
 
@@ -149,12 +149,78 @@
                 </DockPanel>
             </Border>
 
-            <!-- ── Right: milestone 10 placeholder (disassembly / breakpoints / stepping) -->
-            <Border Grid.Column="1" Background="#1a1a1a" Padding="12">
-                <TextBlock Text="Disassembly · Breakpoints · Stepping"
-                           Foreground="#444" FontSize="12"
-                           HorizontalAlignment="Center" VerticalAlignment="Center" />
-            </Border>
+            <!-- ── Right: disassembly + stepping (milestone 10) ─────────────── -->
+            <DockPanel Grid.Column="1" Background="#1a1a1a">
+
+                <!-- Stepping toolbar -->
+                <Border DockPanel.Dock="Top"
+                        Background="#252525" BorderBrush="#333" BorderThickness="0,0,0,1"
+                        Padding="6,4">
+                    <StackPanel Orientation="Horizontal" Spacing="4">
+                        <Button Content="▶/⏸"
+                                Command="{Binding RunPauseCommand}"
+                                MinWidth="44" FontSize="11"
+                                ToolTip.Tip="Run / Pause (F5)" />
+                        <Button Content="⏎ Step"
+                                Command="{Binding StepIntoCommand}"
+                                MinWidth="56" FontSize="11"
+                                ToolTip.Tip="Step into (F11)" />
+                        <Button Content="↷ Over"
+                                Command="{Binding StepOverCommand}"
+                                MinWidth="56" FontSize="11"
+                                ToolTip.Tip="Step over (F10)" />
+                        <Button Content="↑ Out"
+                                Command="{Binding StepOutCommand}"
+                                MinWidth="50" FontSize="11"
+                                ToolTip.Tip="Step out (Shift+F11)" />
+                    </StackPanel>
+                </Border>
+
+                <!-- Disassembly list -->
+                <ScrollViewer DockPanel.Dock="Top"
+                              VerticalScrollBarVisibility="Auto"
+                              HorizontalScrollBarVisibility="Auto">
+                    <ItemsControl x:Name="DisasmItems" ItemsSource="{Binding Disassembly.Lines}" Tapped="OnDisasmTapped">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <Border Background="{Binding IsPC, Converter={x:Static local:BoolToPcBrushConverter.Instance}}"
+                                        Padding="0,1">
+                                    <Grid ColumnDefinitions="12,52,72,*">
+                                        <!-- Breakpoint dot -->
+                                        <Ellipse Grid.Column="0"
+                                                 Width="7" Height="7"
+                                                 Fill="{Binding HasBreakpoint, Converter={x:Static local:BoolToBpDotConverter.Instance}}"
+                                                 HorizontalAlignment="Center"
+                                                 VerticalAlignment="Center" />
+                                        <!-- Address -->
+                                        <TextBlock Grid.Column="1"
+                                                   Text="{Binding Address}"
+                                                   FontFamily="Consolas,Courier New,monospace"
+                                                   FontSize="11"
+                                                   Foreground="#888"
+                                                   VerticalAlignment="Center" />
+                                        <!-- Bytes -->
+                                        <TextBlock Grid.Column="2"
+                                                   Text="{Binding Bytes}"
+                                                   FontFamily="Consolas,Courier New,monospace"
+                                                   FontSize="11"
+                                                   Foreground="#555"
+                                                   VerticalAlignment="Center" />
+                                        <!-- Mnemonic -->
+                                        <TextBlock Grid.Column="3"
+                                                   Text="{Binding Text}"
+                                                   FontFamily="Consolas,Courier New,monospace"
+                                                   FontSize="11"
+                                                   Foreground="#d4d4d4"
+                                                   VerticalAlignment="Center" />
+                                    </Grid>
+                                </Border>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                </ScrollViewer>
+
+            </DockPanel>
 
         </Grid>
     </DockPanel>

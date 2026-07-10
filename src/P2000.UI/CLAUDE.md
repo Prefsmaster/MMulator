@@ -652,6 +652,40 @@ project.
   `tests/P2000.UI.Tests/ViewModels/` (22 new tests).
 - **Synced:** no
 
+### 2026-07-10 — Milestone 10: disassembly + breakpoints + stepping
+- **Assumed:** `BreakHit` would already fire for single-step, PauseCommand, and
+  run-to-scanline/cycle completions so the UI could take a snapshot after stepping.
+- **Found (silent-pause gap):** `SingleStepCommand`, `PauseCommand`, and `_runToFieldTState`
+  all set `IsPaused = true` without firing `BreakHit`. The UI subscribed only to `BreakHit`,
+  so stepping appeared to do nothing (registers didn't update, disassembly didn't refresh).
+  **Fix:** added `BreakpointKind.Step` to the enum (id = -1, no real breakpoint) and wired
+  `BreakHit?.Invoke(new BreakEvent(BreakpointKind.Step, Cpu.Reg.PC, -1))` in all three
+  silent-pause paths in `Machine.cs`.
+- **Found (`DisassemblyVm` in-place update):** `ObservableCollection` fires `CollectionChanged`
+  on every `Add`/`Remove`, causing ListView item recycling flicker on every decode. Fix:
+  overwrite existing `DisassemblyLineVm` items in-place (mutate properties) and only
+  add/remove at the tail to reach the right count.
+- **Found (breakpoint management — no IDs needed):** `BreakpointStore` assigns sequential IDs
+  but the command queue is fire-and-forget (IDs not returned to caller). UI maintains a
+  `HashSet<ushort> _execBpSet`; on toggle: clear all, re-add from the set. The full queue
+  drains atomically at one instruction boundary, so the clear+re-add is race-free.
+- **Found (disassembly live refresh throttle):** re-decoding on every `FrameReady` (50 Hz) is
+  wasteful when PC hasn't moved. `DisassemblyVm.NeedsRefresh(pc)` compares against
+  `_lastPc`; only re-decodes when PC has changed.
+- **Found (Avalonia 11 visual-tree walk):** `Avalonia.Visual.VisualParent` no longer exists.
+  Walking up the tree to find a `DataContext` must use `.Parent as Control` instead.
+- **Applies to:** project CLAUDE.md §14.10 (milestone 10) /
+  `src/P2000.Machine/Debug/BreakpointKind.cs` (`Step` value),
+  `src/P2000.Machine/Machine.cs` (BreakHit in 3 silent-pause paths),
+  `src/P2000.UI/P2000.UI.csproj` (Z80.Disassembler reference),
+  `src/P2000.UI/ViewModels/DisassemblyLineVm.cs` (new),
+  `src/P2000.UI/ViewModels/DisassemblyVm.cs` (new),
+  `src/P2000.UI/ViewModels/DebuggerWindowVm.cs` (stepping cmds, breakpoints, disassembly),
+  `src/P2000.UI/Views/StatusConverters.cs` (BoolToPcBrushConverter, BoolToBpDotConverter),
+  `src/P2000.UI/Views/DebuggerWindow.axaml` (stepping toolbar + disassembly panel),
+  `src/P2000.UI/Views/DebuggerWindow.axaml.cs` (OnDisasmTapped breakpoint toggle).
+- **Synced:** no
+
 ### 2026-07-09 — Integer scaling: physical vs logical pixels
 - **Assumed:** computing the integer multiplier `n` from `Bounds.Width / Video.Width` (logical
   pixels) would produce exact integer multiples of source pixels on screen.

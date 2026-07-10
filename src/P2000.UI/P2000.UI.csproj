@@ -20,6 +20,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\P2000.Machine\P2000.Machine.csproj" />
+    <ProjectReference Include="..\Z80.Disassembler\Z80.Disassembler.csproj" />
   </ItemGroup>
 
 </Project>

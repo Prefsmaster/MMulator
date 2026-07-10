@@ -21,6 +21,9 @@ public sealed partial class DebuggerWindowVm : ObservableObject, IDisposable
     // Last corruption snapshot from FrameReady (stable, at field boundary)
     private bool[] _lastCorruption = new bool[40 * 24];
 
+    /// <summary>Raised when the VRAM window should be opened (or brought to front).</summary>
+    public event Action? OpenVramWindowRequested;
+
     /// <summary>Raised when a new memory watch should be opened in its own window.</summary>
     public event Action<MemoryWatchVm>? OpenMemoryWatchRequested;
 
@@ -104,6 +107,9 @@ public sealed partial class DebuggerWindowVm : ObservableObject, IDisposable
     }
 
     // ── Commands ────────────────────────────────────────────────────────────
+
+    [RelayCommand]
+    private void OpenVramWindow() => OpenVramWindowRequested?.Invoke();
 
     [RelayCommand]
     private void AddMemoryWatch()

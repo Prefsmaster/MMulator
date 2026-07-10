@@ -629,6 +629,13 @@ project.
   reference changes (Avalonia uses reference equality). `VramWindowVm.Update` always allocates
   new arrays, which satisfies this. `AffectsRender<VramGridControl>(...)` wires all four
   properties so any change auto-invalidates without manual override of property changed.
+- **Found (VRAM refactored to satellite window — post-ship):** the VRAM grid was inlined
+  in `DebuggerWindow`'s right panel, leaving no room for milestone 10 content. Extracted
+  to `VramWindow` (same satellite pattern as `MemoryWatchWindow`): `DebuggerWindowVm` fires
+  `OpenVramWindowRequested`; code-behind opens/reuses `VramWindow { DataContext = Vram }`.
+  `DebuggerWindow` now has registers on the left and a blank right panel ready for
+  disassembly/breakpoints/stepping (milestone 10). The `VramWindowVm` and all VRAM update
+  paths are unchanged.
 - **Found (live register display — post-ship fix):** registers only updated from
   `OnBreakHit`, so the panel showed "–" for all registers while the machine was running.
   Fix: `DebuggerWindowVm.OnFrameReady` now calls `RegisterFile.UpdateLive(m.Cpu.Reg,

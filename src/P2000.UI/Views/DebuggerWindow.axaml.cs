@@ -6,6 +6,7 @@ namespace P2000.UI.Views;
 public partial class DebuggerWindow : Window
 {
     private DebuggerWindowVm? _vm;
+    private VramWindow?       _vramWindow;
 
     public DebuggerWindow()
     {
@@ -17,12 +18,31 @@ public partial class DebuggerWindow : Window
         base.OnDataContextChanged(e);
 
         if (_vm is not null)
-            _vm.OpenMemoryWatchRequested -= OnOpenMemoryWatch;
+        {
+            _vm.OpenVramWindowRequested    -= OnOpenVramWindow;
+            _vm.OpenMemoryWatchRequested   -= OnOpenMemoryWatch;
+        }
 
         _vm = DataContext as DebuggerWindowVm;
 
         if (_vm is not null)
-            _vm.OpenMemoryWatchRequested += OnOpenMemoryWatch;
+        {
+            _vm.OpenVramWindowRequested    += OnOpenVramWindow;
+            _vm.OpenMemoryWatchRequested   += OnOpenMemoryWatch;
+        }
+    }
+
+    private void OnOpenVramWindow()
+    {
+        if (_vramWindow is { IsVisible: true })
+        {
+            _vramWindow.Activate();
+            return;
+        }
+
+        _vramWindow = new VramWindow { DataContext = _vm!.Vram };
+        _vramWindow.Closed += (_, _) => _vramWindow = null;
+        _vramWindow.Show(this);
     }
 
     private void OnOpenMemoryWatch(MemoryWatchVm watchVm)
@@ -40,6 +60,9 @@ public partial class DebuggerWindow : Window
     {
         base.OnClosed(e);
         if (_vm is not null)
+        {
+            _vm.OpenVramWindowRequested  -= OnOpenVramWindow;
             _vm.OpenMemoryWatchRequested -= OnOpenMemoryWatch;
+        }
     }
 }

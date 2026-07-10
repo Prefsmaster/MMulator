@@ -199,4 +199,16 @@ public class MachineStateFileTests
         ms.Position = 0;
         Assert.Throws<InvalidDataException>(() => MachineStateFile.Load(ms));
     }
+
+    [Fact]
+    public void Load_VersionOne_Throws()
+    {
+        // v1 files are incompatible: SoundDevice block missing + Interrupts wrote only 1 bool.
+        // They were produced between milestones 11 and 16; reject cleanly rather than misloading.
+        var ms = new MemoryStream();
+        ms.Write("P2ST"u8);
+        ms.Write(new byte[] { 1, 0, 0, 0 }); // version = 1
+        ms.Position = 0;
+        Assert.Throws<InvalidDataException>(() => MachineStateFile.Load(ms));
+    }
 }

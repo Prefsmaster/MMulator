@@ -18,8 +18,18 @@ namespace P2000.Machine.State;
 public static class MachineStateFile
 {
     /// <summary>Current <c>.state</c> format version. Increment when the device-state
-    /// layout changes; the reader rejects files whose version exceeds this value.</summary>
-    public const int CurrentVersion = 1;
+    /// layout changes; the reader rejects files whose version is outside the accepted range.
+    /// <list type="bullet">
+    ///   <item>v1: original (milestones 11–11). Missing SoundDevice block; Interrupts wrote 1 bool.</item>
+    ///   <item>v2: SoundDevice block added between Mdcr and Interrupts (milestone 16);
+    ///     Interrupts writes 2 bools (_intPending + _nmiPending, milestone 12).</item>
+    /// </list></summary>
+    public const int CurrentVersion = 2;
+
+    /// <summary>Oldest <c>.state</c> version accepted by this build. v1 files are rejected
+    /// because the device-stream layout changed incompatibly (SoundDevice added, NMI bool
+    /// added to Interrupts) without a version bump at the time.</summary>
+    private const int MinVersion = 2;
 
     private static readonly byte[] Magic = "P2ST"u8.ToArray();
 
@@ -64,9 +74,9 @@ public static class MachineStateFile
 
         // Version
         var version = ReadInt32(stream);
-        if (version < 1 || version > CurrentVersion)
+        if (version < MinVersion || version > CurrentVersion)
             throw new InvalidDataException(
-                $"Unsupported .state version {version}. This build supports versions 1–{CurrentVersion}.");
+                $"Unsupported .state version {version}. This build supports versions {MinVersion}–{CurrentVersion}.");
 
         // Config JSON
         var configLen = ReadInt32(stream);

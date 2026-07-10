@@ -463,7 +463,7 @@ project.
 - **Applies to:** project CLAUDE.md §14.4 (milestone 4) / `src/P2000.Machine/CLAUDE.md` §17 /
   `src/P2000.Machine/Devices/Cassette/MiniTape.cs`,
   `src/P2000.UI/ViewModels/CassetteDeckVm.cs`.
-- **Synced:** no
+- **Synced:** yes (2026-07-10 — tape block structure in docs/MDCR-implementation.md §6 + reference §5b; already reflected)
 
 ### 2026-07-07 — Milestone 5: config window + .cfg load/save
 - **Assumed:** `EmulationRunner.Machine` could remain a get-only property for the lifetime of
@@ -490,7 +490,7 @@ project.
   `src/P2000.UI/ViewModels/DisplayWindowVm.cs` (`ModelText`, `OpenConfigCommand`),
   `src/P2000.UI/ViewModels/ConfigWindowVm.cs`,
   `src/P2000.UI/Views/ConfigWindow.axaml`.
-- **Synced:** no
+- **Synced:** yes (2026-07-10 — non-modal-satellite decision in UI §5; Reconfigure/ModelText items implementation-only)
 
 ### 2026-07-07 — Milestone 1: app shell + emulation loop + display blit
 - **Assumed:** `AppBuilder.WithInterFont()` was a standard Avalonia 11.1 extension.
@@ -512,7 +512,7 @@ project.
   `src/P2000.UI/Program.cs`, `src/P2000.UI/App.axaml`,
   `src/P2000.UI/Runner/EmulationRunner.cs`,
   `src/P2000.UI/Rendering/DisplayControl.cs`.
-- **Synced:** no
+- **Synced:** yes (2026-07-10 — implementation-only, no reference change)
 
 ### 2026-07-07 — Milestone 6: display modes + video prefs
 - **Assumed:** `FrameReady` could remain `Action<uint[]>` for all consumers; mode switching
@@ -544,7 +544,7 @@ project.
   `src/P2000.UI/Views/DisplayWindow.axaml` (View menu),
   `src/P2000.UI/Views/DisplayWindow.axaml.cs` (FrameReady wiring),
   `src/P2000.UI/Views/StatusConverters.cs` (EnumEqualsConverter).
-- **Synced:** no
+- **Synced:** yes (2026-07-10 — IsOddField-at-FieldComplete in reference §3a, overlay-clear in §4; converter items implementation-only)
 
 ### 2026-07-09 — Milestone 7: audio (OpenAL beeper sink)
 - **Assumed:** `Silk.NET.OpenAL` 2.21.0 would expose managed `ref`/`out`/array overloads for
@@ -569,7 +569,7 @@ project.
   `src/P2000.UI/Runner/EmulationRunner.cs` (Audio wiring),
   `src/P2000.UI/ViewModels/DisplayWindowVm.cs` (AudioMute/AudioVolume),
   `src/P2000.UI/Views/DisplayWindow.axaml` (View > Mute audio menu item).
-- **Synced:** no
+- **Synced:** yes (2026-07-10 — SoundDevice audio seam in reference §5 Sound; OpenAL/pointer items implementation-only)
 
 ### 2026-07-07 — Milestone 4 addendum: cassette directory — full header fields
 - **Assumed:** the directory only needed the 8-char name (header bytes 06-0D).
@@ -587,7 +587,7 @@ project.
 - **Applies to:** project CLAUDE.md §14.4 (milestone 4 addendum) /
   `src/P2000.UI/ViewModels/CassetteDeckVm.cs` (`ParseDirectory`, `DirectoryHeader`),
   `src/P2000.UI/Views/CassetteDeckWindow.axaml`.
-- **Synced:** no
+- **Synced:** yes (2026-07-10 — 32-byte header field table in docs/MDCR-implementation.md §6 + §8 directory de-dup)
 
 ### 2026-07-09 — Milestone 8: save-state UI
 - **Assumed:** `SaveState` / `LoadState` could be called directly from the UI thread at any time.
@@ -610,7 +610,7 @@ project.
   `src/P2000.UI/Views/DisplayWindow.axaml` (Machine menu items),
   `src/P2000.UI/Views/DisplayWindow.axaml.cs` (`ShowErrorDialog`),
   `tests/P2000.UI.Tests/` (new project, 6 tests).
-- **Synced:** no
+- **Synced:** yes (2026-07-10 — save-at-instruction-boundary already in reference §3a; ⚠ .state version-bump NOT recorded — flagged in reference §3a, confirm before sharing .state)
 
 ### 2026-07-10 — Milestone 9: debugger observer core
 - **Assumed:** `[ObservableProperty] private string _af` would generate a property named `AF`.
@@ -650,7 +650,7 @@ project.
   `src/P2000.UI/Views/DebuggerWindow.axaml`, `MemoryWatchWindow.axaml`,
   `src/P2000.UI/Views/DisplayWindow.axaml` (Debug menu),
   `tests/P2000.UI.Tests/ViewModels/` (22 new tests).
-- **Synced:** no
+- **Synced:** yes (2026-07-10 — corruption-overlay viewport-column indexing into reference §4; MVVM/AffectsRender items implementation-only)
 
 ### 2026-07-10 — Milestone 10: disassembly + breakpoints + stepping
 - **Assumed:** `BreakHit` would already fire for single-step, PauseCommand, and
@@ -684,6 +684,28 @@ project.
   `src/P2000.UI/Views/StatusConverters.cs` (BoolToPcBrushConverter, BoolToBpDotConverter),
   `src/P2000.UI/Views/DebuggerWindow.axaml` (stepping toolbar + disassembly panel),
   `src/P2000.UI/Views/DebuggerWindow.axaml.cs` (OnDisasmTapped breakpoint toggle).
+- **Synced:** yes (2026-07-10 — BreakHit-on-all-pause-transitions into reference §3a + machine §3b; disasm/breakpoint-UI items implementation-only)
+
+### 2026-07-10 — .state format version bump: v1 → v2 (retroactive)
+- **Assumed (at milestone 8, when Save/Load State shipped):** `MachineStateFile.CurrentVersion`
+  would be bumped as each format-changing machine milestone landed. Two changes were explicitly
+  flagged as "bumping deferred" but never actually bumped:
+  - Milestone 12: `InterruptAggregator.SaveState` grew from 1 bool to 2 (`_intPending` +
+    `_nmiPending`).
+  - Milestone 16: `SoundDevice` block inserted between `Mdcr` and `Interrupts` in
+    `Machine.SaveState/LoadState`.
+- **Found (silent mis-load risk):** `CurrentVersion` was still 1; the reader accepted v1 files
+  (`version >= 1 && version <= 1`), but the device stream was fatally misaligned —
+  `Sound.LoadState` consumed the old single-bool Interrupts payload, then `Interrupts.LoadState`
+  read garbage or hit EOF. There was no exception until stream underrun.
+- **Fix:** `CurrentVersion = 2`; `MinVersion = 2`; reader rejects v1 files with an
+  `InvalidDataException` ("Unsupported .state version 1. This build supports versions 2–2.")
+  rather than silently loading corrupt state. `Load_VersionOne_Throws` test added.
+- **No migration path:** no external `.state` files were distributed; any saves produced
+  during milestones 11–15 testing should be discarded.
+- **Applies to:** `src/P2000.Machine/State/MachineStateFile.cs` (`CurrentVersion`, `MinVersion`,
+  version-gate check), `tests/P2000.Machine.Tests/State/MachineStateFileTests.cs`
+  (`Load_VersionOne_Throws`).
 - **Synced:** no
 
 ### 2026-07-10 — Audio: OpenAL Soft native DLL + queue-cap latency fix
@@ -712,7 +734,7 @@ project.
   `src/P2000.UI/P2000.UI.csproj` (native content items),
   `src/P2000.UI/runtimes/win-x64/native/openal32.dll` (bundled binary),
   `tools/get-openal.ps1` (download script).
-- **Synced:** no
+- **Synced:** yes (2026-07-10 — OpenAL native-DLL bundling + queue-cap latency: deployment/implementation-only, no reference change)
 
 ### 2026-07-09 — Integer scaling: physical vs logical pixels
 - **Assumed:** computing the integer multiplier `n` from `Bounds.Width / Video.Width` (logical
@@ -726,4 +748,4 @@ project.
   At 125% DPI with a 640-logical-px panel, `n = 1` → 512 logical = 640 physical px.
 - **Applies to:** project CLAUDE.md §14.6 (milestone 6, integer scaling) /
   `src/P2000.UI/Rendering/DisplayControl.cs` (`ComputeDestRect`).
-- **Synced:** no
+- **Synced:** yes (2026-07-10 — DPI/physical-pixel integer scaling: rendering implementation-only, no reference change)

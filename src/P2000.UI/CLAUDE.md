@@ -610,7 +610,7 @@ project.
   `src/P2000.UI/Views/DisplayWindow.axaml` (Machine menu items),
   `src/P2000.UI/Views/DisplayWindow.axaml.cs` (`ShowErrorDialog`),
   `tests/P2000.UI.Tests/` (new project, 6 tests).
-- **Synced:** yes (2026-07-10 — save-at-instruction-boundary already in reference §3a; ⚠ .state version-bump NOT recorded — flagged in reference §3a, confirm before sharing .state)
+- **Synced:** yes (2026-07-10 — save-at-instruction-boundary already in reference §3a; the .state version-bump gap this exposed was fixed later — see the v1→v2 finding below; reference §3a now RESOLVED)
 
 ### 2026-07-10 — Milestone 9: debugger observer core
 - **Assumed:** `[ObservableProperty] private string _af` would generate a property named `AF`.
@@ -706,7 +706,7 @@ project.
 - **Applies to:** `src/P2000.Machine/State/MachineStateFile.cs` (`CurrentVersion`, `MinVersion`,
   version-gate check), `tests/P2000.Machine.Tests/State/MachineStateFileTests.cs`
   (`Load_VersionOne_Throws`).
-- **Synced:** no
+- **Synced:** yes (2026-07-10 — into reference §3a: version-bump note updated PENDING/⚠ → RESOLVED (v2))
 
 ### 2026-07-10 — Audio: OpenAL Soft native DLL + queue-cap latency fix
 - **Assumed:** `openal32.dll` would be present on the developer's machine (many Windows

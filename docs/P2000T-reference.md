@@ -239,7 +239,10 @@ milestones 13–15; the primitive drive surface is `RunField()` / `StepInstructi
   instruction runs (PC = the about-to-execute address, correct for a debugger display); **memory/IO**
   breakpoints fire mid-instruction and defer the actual break to the **start of the next instruction
   boundary**; **int-ack (M1+IORQ) is excluded** from I/O-port breakpoints (it is not a user I/O
-  access).
+  access). The **`BreakHit` event fires on EVERY pause transition** — real breakpoints AND
+  single-step / pause / run-to-scanline / run-to-cycle completions, the latter via a **synthetic
+  `BreakpointKind.Step` (id −1)** — so a debugger can refresh off one event source (P2000.UI ms10;
+  silent pauses that skipped the event were a bug there).
 - **Command queue (ms.15):** all mutation is a queued `MachineCommand` drained at
   `AtInstructionBoundary` — run/pause, warm/cold reset, single-step, step-over, step-out,
   run-to-scanline, run-to-cycle, set-PC, memory write, load-image-to-address, breakpoint CRUD.
@@ -313,12 +316,16 @@ restored from config). State is saved only at Z80 **instruction boundaries** (`A
 where the CPU's private phase/tstate/prefix are at reset-compatible defaults, so the CPU struct
 serializes self-consistently without private fields.
 
-**Version-bump PENDING (milestones 12 + audio):** two device-stream changes have accumulated and
-share one pending bump — the interrupt aggregator's second serialized boolean (`_nmiPending`,
-§5e), and the new **`SoundDevice` block** (inserted between the cassette and interrupt blocks, §5
-Sound). The `.state` version int32 **must be incremented before any persisted `.state` files are
-released.** Deferred because no external `.state` files exist yet in the T-first build; the bump
-lands with the UI save-state path (P2000.UI milestone 8).
+**Version-bump RESOLVED — `.state` is now v2 (2026-07-10).** Two device-stream changes had
+accumulated — the interrupt aggregator's second serialized boolean (`_nmiPending`, §5e,
+milestone 12) and the **`SoundDevice` block** (inserted between the cassette and interrupt blocks,
+§5 Sound, milestone 16). Both were flagged "bump deferred" but the version int32 was left at 1, so
+v1 files loaded with a **misaligned device stream** (`Sound.LoadState` consumed the old single-bool
+Interrupts payload → later underrun, with no exception until then). Fixed:
+`MachineStateFile.CurrentVersion = 2`, `MinVersion = 2`; the reader now **rejects v1 files** with
+`InvalidDataException` ("Unsupported .state version 1…") rather than silently mis-loading. No
+migration path — no external `.state` files were distributed; discard any saves made during
+milestone 11–16 testing.
 
 ### File extensions (DECIDED)
 - **Monitor ROM / cartridges: standard `.bin` / `.rom` — NO custom extensions.** These are raw
@@ -461,8 +468,11 @@ in the precise mode once captured.
   - **P2000M: 0x5000–0x5FFF** (4 KB VRAM chip) — 0x5FFF contends, 0x6000 is clean.
   Main RAM (0x6000+), expansion RAM, and the banked window are separate DRAM chips the SAA5020
   never addresses, so CPU access there cannot glitch the display.
-- **Corrupted-cell overlay (as built):** the machine exposes a per-field **40×24 bool map** (index
-  = charRow×40 + col) set whenever a cell's fetch is contended, cleared **after** `FieldComplete`
+- **Corrupted-cell overlay (as built):** the machine exposes a per-field **40×24 bool map** — the
+  40 is the visible **viewport** width, NOT absolute VRAM columns, so **index = charRow×40 +
+  viewportCol** where `viewportCol = vramCol − PanX`; a consumer maps each absolute VRAM column
+  through `PanX` before testing the flag. Set whenever a cell's fetch is contended, cleared
+  **after** `FieldComplete`
   fires so a consumer can read it from the FieldComplete handler (and cleared on `Reset`). This is
   the hook the UI display "show glitches" overlay and the debugger's VRAM window both consume.
 - **Only-if exception:** if the schematic ever shows a SINGLE DRAM controller multiplexing CPU +

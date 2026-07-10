@@ -176,7 +176,10 @@ Three surfaces (milestones 13–15):
 2. **Breakpoint store (machine-owned).** Execute + memory **R/W/X** watchpoints + **I/O-port**
    breakpoints, held in the machine's debug state and evaluated **inside the tick loop** (the
    loop that already resolves contention, §3 step 4). A hit pauses at the next instruction
-   boundary and raises a **break event** observers see. Clients EDIT this store (via commands);
+   boundary and raises a **break event** observers see. **The break event ALSO fires on every
+   non-breakpoint pause — single-step / pause / run-to-scanline/cycle — via a synthetic
+   `BreakpointKind.Step` (id −1), so observers refresh off one event (P2000.UI ms10).** Clients
+   EDIT this store (via commands);
    they never keep their own — this is what lets the UI debugger and the IDE set the SAME
    breakpoints. Guard the hot loop with an "any breakpoint armed?" fast path so an unbroken
    machine pays nothing.

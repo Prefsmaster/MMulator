@@ -159,6 +159,9 @@ Config changes that alter hardware topology **require a machine reset to take ef
   **progressive** — both fields composited per frame, smooth; **even-only** / **odd-only** —
   present a single field (discard the other), no comb, half vertical detail. Odd-only is slightly
   smoother (the CRS/RA0 rounding lands on odd sub-scanlines); field-only defaults to line-doubling.
+  (Consumer contract: when `FieldComplete` fires, `Video.IsOddField` has ALREADY toggled to the
+  next field, so the field just completed is **`!IsOddField`** — gate even-only/odd-only/progressive
+  presentation on that. Confirmed P2000.UI ms6.)
   Plus: integer-scaling toggle (crisp nearest-neighbour vs smoothed), PAL aspect-ratio correction,
   optional scanline/CRT shader, **"show contention glitches"
   toggle**, and a debug overlay highlighting which character cells were corrupted this
@@ -310,11 +313,12 @@ restored from config). State is saved only at Z80 **instruction boundaries** (`A
 where the CPU's private phase/tstate/prefix are at reset-compatible defaults, so the CPU struct
 serializes self-consistently without private fields.
 
-**Version-bump PENDING (milestone-12):** the interrupt aggregator gained a second serialized
-boolean (`_nmiPending`, §5e), which changed the device-stream layout. The `.state` version int32
-**must be incremented before any persisted `.state` files are released.** Deferred because no
-external `.state` files exist yet in the T-first build; the bump lands with the UI save-state
-path (P2000.UI milestone 8).
+**Version-bump PENDING (milestones 12 + audio):** two device-stream changes have accumulated and
+share one pending bump — the interrupt aggregator's second serialized boolean (`_nmiPending`,
+§5e), and the new **`SoundDevice` block** (inserted between the cassette and interrupt blocks, §5
+Sound). The `.state` version int32 **must be incremented before any persisted `.state` files are
+released.** Deferred because no external `.state` files exist yet in the T-first build; the bump
+lands with the UI save-state path (P2000.UI milestone 8).
 
 ### File extensions (DECIDED)
 - **Monitor ROM / cartridges: standard `.bin` / `.rom` — NO custom extensions.** These are raw
@@ -716,6 +720,19 @@ The machine object builds a **page table** over the 64 KB space when assembled (
 
 ### Sound
 - 1-bit, single-channel speaker (square-wave beeper).
+- **BEEP drive line — I/O port `0x50`, bit 0 (CONFIRMED).** The 1-bit speaker level is the low
+  bit of writes to port `0x50` — a DEDICATED sound-output port, NOT the CPOUT latch (0x10). (An
+  earlier pass wrongly assumed CPOUT bit 4; corrected 2026-07-09.) Writing bit 0 sets the speaker
+  high/low; square-wave tone comes from the ROM toggling it.
+- **Audio-output seam — as built (machine-layer `SoundDevice`, milestone 16):** the device
+  **watches writes to port `0x50` and takes bit 0 as the speaker level**, recording
+  `(field-T-state, level)` transitions within each field, then at each `FieldComplete` synthesizes
+  one **PCM block of 882 samples @ 44 100 Hz** (50 Hz × 882 = 44 100) by walking the recorded
+  transitions, and raises a `SamplesReady(short[])` event. It uses ONE reusable buffer — a consumer
+  (the UI's OpenAL sink) must copy immediately. This is the machine→UI audio seam, symmetric with
+  the framebuffer/observer seams; it serializes in `.state` (adds a device block — see §3a
+  versioning). `LoadState` clears any pending transitions (state is always captured at a field
+  boundary with none pending; stale ones would corrupt the next block).
 
 ### Video output port (RGBS)
 - RGBS via DIN-6 (DIN 45322) at the back.
@@ -891,7 +908,13 @@ them). Two authoritative sources, in priority order:
    Read its cassette loader/saver for the exact `.cas` framing.
 
 Specifically still to pin down (from the two sources above, not invented here):
-- `.cas` record/block size and header field layout; multi-program image layout.
+- `.cas` record/block size + header layout + **byte order — CONFIRMED** (traced from the monitor
+  ROM `Cassette.asm`; authoritative detail in `docs/MDCR-implementation.md` §6): bytes are
+  **LSB-first** (bit 0 first; sync byte 0xAA). On-tape block layout is **MARK
+  (0xAA 0x00 0x00 0xAA) → gap (~81 ms, ≥70 ms) → DATA BLOCK (0xAA · header 32 B · data 1024 B ·
+  CRC 2 B · 0xAA)** — header and data are ONE combined frame under ONE CRC. The 32-byte header
+  field layout (name split 0x06–0x0D + 0x17–0x1E, ext, creator, size, blocks-occupied 0x02–0x03
+  ÷1024) is confirmed — see MDCR guide §6. Multi-program image layout across blocks still to confirm.
 - MDCR controller **I/O port addresses** + status/command **bit assignments** — **BOTH
   DIRECTIONS NOW CONFIRMED (see §5f):** output lines on **CPOUT port 0x10** (FWD/REV/WCD/WDA
   + KBIEN + printer), input/status on **CPRIN port 0x20** (RDC/RDA read pair + CIP/BET/WEN
@@ -1042,7 +1065,8 @@ Reading (CONFIRMED):
   CTC/SIO/counter cards).
 - **±12V rails** (13B +12V, 14A −12V) → analog-capable cards (e.g. RS-232 line drivers).
 - **BEEP on 13A** → the 1-bit sound line is routed to SLOT2; a card can tap/drive audio.
-  Note for the sound device: BEEP is not purely internal.
+  Note for the sound device: BEEP is not purely internal. (The CPU drives this line by writing
+  **port `0x50` bit 0** — see §5 Sound.)
 - **No NMI on SLOT2** (unlike SLOT1). SLOT2's async CPU line is INT only.**Internal extension slot — CONFIRMED (full Z80 bus: memory + I/O).** 40-pin connector, 2
 rows of 20 (row 1 = odd pins, row 2 = even pins). Pins 27–37 active-low. **Home of the
 floppy/CTC card** (populated in M, optional on T).
@@ -1739,3 +1763,4 @@ Two architectures hide under "cycle-accurate":
 - A deliberate stress ROM: tight loop hammering VRAM during active display should
   produce heavy single-cell speckle; the same loop confined to v-blank should display
   cleanly. This is your regression test for the glitch model once captured.
+  

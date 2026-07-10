@@ -113,6 +113,12 @@ and any consumer (Avalonia display, a test, a screenshot writer) reads. Define i
     boundary** hand the UI a read-only view or a fast copy of the whole buffer, then continue
     writing the next field into the SAME buffer (no clear). Snapshot-at-field-boundary avoids
     tearing while keeping the comb.
+  - **`FieldComplete` ordering contract (consumer-facing, confirmed P2000.UI ms6):** when
+    `FieldComplete` fires, `Video.IsOddField` has ALREADY toggled to the NEXT field's parity —
+    so the field that just completed is **`!IsOddField`**. Consumers gating even-only / odd-only
+    / progressive presentation must use `!IsOddField`. The per-field **`CorruptionOverlay` is
+    `Array.Clear`ed AFTER the `FieldComplete` event returns**, so a consumer must **copy it inside
+    the handler** (still populated there), not defer to a later UI-thread callback.
   - **No inter-field erase = maximum comb (simplest + authentic).** Do NOT model phosphor decay
     /field dimming unless asked — leaving the previous field's lines as-is is both simplest and
     the strongest, most faithful effect.
@@ -266,6 +272,8 @@ address, and the read path must **combine** contributing bits. Confirmed ports f
   edges the cassette encoder consumes; KBIEN/FWD/REV are levels).
 - **0x20 CPRIN** (read): RDC/RDA (self-clocking cassette read pair) + CIP/BET/WEN status
   (active-low; drive from device state) + printer PRI/READY/STRAP.
+- **0x50 sound-out** (write): **bit 0 = the 1-bit speaker level** — a DEDICATED sound port,
+  NOT part of the CPOUT latch. `SoundDevice` registers here; the ROM toggles bit 0 for tone.
 - **0x94:** bank-select register (write-only) for the 0xE000–0xFFFF window.
 
 ---
@@ -322,8 +330,9 @@ Per the reference doc; implement to boot + run:
     a plain "save tape" that writes back to the loaded file. (Host-side `.cas` API, §7.)
   - So the round trip is: `.cas` → bitstream (load) → CSAVE mutates bitstream → bitstream →
     `.cas` (save). Blank-tape CSAVE (no file loaded) → new tape in memory → Save as .cas.
-- **Sound (1-bit beeper — `SoundDevice`, milestone 16):** taps the CPOUT beeper bit (**assumed
-  bit 4** — unconfirmed, reference doc §5 Sound), records level transitions per field, and at each
+- **Sound (1-bit beeper — `SoundDevice`, milestone 16):** watches writes to **port `0x50`, bit 0**
+  (CONFIRMED — dedicated sound-out port, NOT CPOUT; reference doc §5 Sound), records level
+  transitions per field, and at each
   `FieldComplete` emits one **882-sample @ 44 100 Hz** PCM block via `SamplesReady(short[])` (one
   reusable buffer; the consumer copies immediately). This is the machine→UI audio seam.
 
@@ -501,13 +510,14 @@ is NO machine-layer runner milestone here — it's promoted in with the external
 16. **Audio output (1-bit beeper — `SoundDevice`).** The machine's audio-output seam. (The device
     landed early during P2000.UI ms7 — findings 2026-07-09 — so this milestone formalizes it as a
     first-class machine device and adds the machine-level output test it was missing.)
-    `SoundDevice : IDevice` taps the CPOUT beeper bit (**assumed bit 4** — flag as unconfirmed,
-    §5/§7 + reference doc §5 Sound), records `(FieldTState, level)` transitions per field, and at
+    `SoundDevice : IDevice` watches writes to **port `0x50`, bit 0** (CONFIRMED — dedicated
+    sound-out port, NOT CPOUT; §5/§7 + reference doc §5 Sound), records `(FieldTState, level)`
+    transitions per field, and at
     each `FieldComplete` synthesizes one **882-sample @ 44 100 Hz** PCM block, raising
     `SamplesReady(short[])` (ONE reusable buffer; the consumer copies immediately). Serializes in
     `.state` as a device block between cassette + interrupts (feeds the pending version bump,
     reference doc §3a). **Test — confirms the Machine can drive audio OUT to a consumer:** attach a
-    fake sink to `SamplesReady`; drive CPOUT beeper toggles (or boot the ROM to emit the power-on
+    fake sink to `SamplesReady`; drive port-`0x50` bit-0 writes (or boot the ROM to emit the power-on
     beep) for several fields; assert (a) exactly one block per field arrives, (b) block length +
     rate are 882 @ 44 100 Hz, (c) content is a non-constant square wave while the beeper toggles
     AND flat silence when it doesn't. This proves the machine emits a consumable sample stream —
@@ -997,7 +1007,7 @@ Two bugs were masking CLOAD success; both confirmed by tracing `Cassette.asm` li
   match the latch's running state.
 - **Applies to:** project CLAUDE.md §13.16 / `src/P2000.Machine/Devices/SoundDevice.cs`
   (LoadState fix), `tests/P2000.Machine.Tests/Devices/SoundDeviceTests.cs` (new, 13 tests).
-- **Synced:** no
+- **Synced:** yes (2026-07-09; SoundDevice seam + LoadState-clears-transitions synced to reference §5 Sound; test-helper items are implementation-only)
 
 ### 2026-07-09 — UI Milestone 7: SoundDevice (1-bit beeper, machine layer)
 - **Assumed:** CPOUT bit 4 (0x10) is the BEEP line. Reference doc §7 confirms a "1-bit speaker"
@@ -1008,6 +1018,7 @@ Two bugs were masking CLOAD success; both confirmed by tracing `Cassette.asm` li
   State)` transitions per field. `OnFieldComplete()` synthesizes a 882-sample PCM block at
   44 100 Hz (50 Hz → 882 samples) by walking recorded transitions; fires `event Action<short[]>?
   SamplesReady` with a reusable buffer. One fixed buffer; callers must copy immediately.
+- **CORRECTED 2026-07-09 — BEEP is I/O port `0x50` bit 0, NOT CPOUT (0x10) bit 4.** The assumption above was wrong. `SoundDevice` must be **rewired to watch port `0x50` writes (bit 0)** instead of `CPoutLatch.Written`; reference doc §5 Sound + machine §6/§7 updated.
 - **Found (SaveState format change):** `Sound.SaveState(writer)` is inserted between
   `Mdcr.SaveState` and `Interrupts.SaveState` in `Machine.SaveState/LoadState`. Any `.state`
   files saved before this milestone are not forward-compatible.

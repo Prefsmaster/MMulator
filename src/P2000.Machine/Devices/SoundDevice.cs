@@ -25,6 +25,7 @@ public sealed class SoundDevice : IDevice
     // (tstate-within-field, new beeper state) transitions recorded during the current field.
     private readonly List<(int TState, bool State)> _transitions = new(16);
 
+
     // Delegate for sampling the current field T-state (fed from Video.FieldTState).
     private readonly Func<int> _getFieldTState;
 

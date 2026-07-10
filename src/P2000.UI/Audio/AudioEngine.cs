@@ -9,12 +9,22 @@ namespace P2000.UI.Audio;
 /// Accepts 882-sample PCM blocks from the emulation thread via <see cref="EnqueueSamples"/>
 /// and streams them through an OpenAL source on a dedicated background thread.
 /// Silently disabled if OpenAL is not available on the host.
+/// <para>
+/// The native <c>openal32.dll</c> (Windows) / <c>libopenal.so.1</c> (Linux) /
+/// system OpenAL framework (macOS) must be present in the output directory or on
+/// the system search path. Run <c>tools/get-openal.ps1</c> once to download and
+/// place the Windows DLL.
+/// </para>
 /// </summary>
 public sealed class AudioEngine : IDisposable
 {
     private const int BufferCount   = 4;
     private const int SampleRate    = SoundDevice.SampleRate;
     private const int SamplesPerBuf = SoundDevice.SamplesPerField;
+    // Keep at most this many blocks in the software queue (~120 ms).
+    // Excess blocks are dropped oldest-first so a slow OpenAL init or a brief
+    // speed-burst never builds a multi-second audio lag.
+    private const int MaxQueueDepth = 6;
 
     private readonly ConcurrentQueue<short[]> _queue = new();
 
@@ -53,6 +63,10 @@ public sealed class AudioEngine : IDisposable
     /// Called from the emulation thread at 50 Hz; returns immediately.</summary>
     public void EnqueueSamples(short[] samples)
     {
+        // Drop oldest blocks when the queue exceeds MaxQueueDepth so a slow
+        // OpenAL init or a speed-burst never builds a multi-second backlog.
+        while (_queue.Count > MaxQueueDepth)
+            _queue.TryDequeue(out _);
         // Copy so the SoundDevice can reuse its internal buffer immediately.
         var copy = new short[samples.Length];
         Array.Copy(samples, copy, samples.Length);

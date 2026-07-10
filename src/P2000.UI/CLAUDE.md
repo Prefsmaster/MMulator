@@ -686,6 +686,34 @@ project.
   `src/P2000.UI/Views/DebuggerWindow.axaml.cs` (OnDisasmTapped breakpoint toggle).
 - **Synced:** no
 
+### 2026-07-10 — Audio: OpenAL Soft native DLL + queue-cap latency fix
+- **Assumed:** `openal32.dll` would be present on the developer's machine (many Windows
+  systems have it via games). It was not — `Silk.NET.OpenAL` threw `FileNotFoundException`
+  on init and audio was silently absent.
+- **Found (native DLL bundling):** Silk.NET.OpenAL is a pure P/Invoke binding with no
+  bundled native library. The correct cross-platform solution is to ship the platform DLL
+  alongside the app via the .NET `runtimes/<rid>/native/` convention.
+  - `tools/get-openal.ps1` downloads OpenAL Soft 1.23.1 Win64 (`soft_oal.dll`) from
+    GitHub releases and places it as `runtimes/win-x64/native/openal32.dll`.
+  - `P2000.UI.csproj` uses `<Content … Link="openal32.dll">` with `IsOSPlatform` guards
+    to copy the right DLL to the output root at build time (`Link=` overrides the default
+    `runtimes/` subfolder preservation that `<None>` would give).
+  - Linux: `libopenal.so.1` from system packages; macOS: system OpenAL framework.
+  - The `runtimes/` folder is committed to git (binary DLL included) so CI/team members
+    don't need to run the script.
+- **Found (startup latency ~1.3 s):** `alc.OpenDevice("")` on Windows blocks for ~1 s on
+  first call (device enumeration / driver init). The emulation thread produces 50 blocks/s
+  into `_queue` during this time. No size cap meant ~60 stale silence-blocks queued ahead
+  of the first audible beep. Fix: `MaxQueueDepth = 6` in `EnqueueSamples` drops oldest
+  blocks when the queue exceeds ~120 ms depth. Combined with 4 OpenAL buffers × 20 ms =
+  80 ms, total latency is capped at ~200 ms regardless of init time.
+- **Applies to:** project CLAUDE.md §14.7 (milestone 7, audio) /
+  `src/P2000.UI/Audio/AudioEngine.cs` (MaxQueueDepth, doc update),
+  `src/P2000.UI/P2000.UI.csproj` (native content items),
+  `src/P2000.UI/runtimes/win-x64/native/openal32.dll` (bundled binary),
+  `tools/get-openal.ps1` (download script).
+- **Synced:** no
+
 ### 2026-07-09 — Integer scaling: physical vs logical pixels
 - **Assumed:** computing the integer multiplier `n` from `Bounds.Width / Video.Width` (logical
   pixels) would produce exact integer multiples of source pixels on screen.

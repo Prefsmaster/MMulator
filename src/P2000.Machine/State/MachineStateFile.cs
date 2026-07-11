@@ -23,13 +23,17 @@ public static class MachineStateFile
     ///   <item>v1: original (milestones 11–11). Missing SoundDevice block; Interrupts wrote 1 bool.</item>
     ///   <item>v2: SoundDevice block added between Mdcr and Interrupts (milestone 16);
     ///     Interrupts writes 2 bools (_intPending + _nmiPending, milestone 12).</item>
+    ///   <item>v3: Interrupts writes a 3rd bool (Lock, milestone 17); an optional Ctc block
+    ///     (4 channels + vector base) is appended after Interrupts when the machine's
+    ///     internal board is FloppyRam.</item>
     /// </list></summary>
-    public const int CurrentVersion = 2;
+    public const int CurrentVersion = 3;
 
-    /// <summary>Oldest <c>.state</c> version accepted by this build. v1 files are rejected
-    /// because the device-stream layout changed incompatibly (SoundDevice added, NMI bool
-    /// added to Interrupts) without a version bump at the time.</summary>
-    private const int MinVersion = 2;
+    /// <summary>Oldest <c>.state</c> version accepted by this build. Older files are rejected
+    /// because the device-stream layout changed incompatibly without a version bump at the
+    /// time (v1→v2: SoundDevice added, NMI bool added to Interrupts; v2→v3: Lock bool added to
+    /// Interrupts, optional Ctc block appended).</summary>
+    private const int MinVersion = 3;
 
     private static readonly byte[] Magic = "P2ST"u8.ToArray();
 

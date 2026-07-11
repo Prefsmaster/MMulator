@@ -592,24 +592,43 @@ Fixed 64 KB layout:
 | **T/102** | 80 KB   | Base + 16 KB expansion + banked 0xE000–0xFFFF via port 0x94.  |
 | **PTC-96K** | 96 KB | PTC-floppyboard variant: 16 KB + 64 KB expansions.           |
 
-**Bank switching (T/102):** the 8 KB window at **0xE000–0xFFFF** shows one of **6 banks**
-(8 KB each) selected by writing **0–5 to I/O port 0x94** (write-only bank register). 6 × 8
-KB = 48 KB banked; combined with the 16 KB expansion that's the "+64 KB over base" figure
-(confirm arithmetic, below).
+**Bank switching — port `0x94`.** The width of this port's decode is **card-specific**, so model
+`0x94` as a property of the installed RAM/expansion card, NOT a fixed motherboard feature:
 
-**0x94 has NO hardware range restriction — make bank count CONFIGURABLE.** The original
-firmware only ever writes 0–5, but the port itself doesn't clamp; a **modern
-bank-switching module could expose up to 256 pages** (2 MB in that window) by honoring any
-byte on 0x94. So parameterize:
-- Page-table bank pointer indexes an array of 8 KB pages whose **count comes from config**,
-  not a constant. `bankCount = 6` for a faithful T/102; up to 256 for a homebrew module.
-- Port 0x94 stores the **raw written byte** as the bank index — no masking.
-- **Index ≥ populated bank count → reads open bus** (same convention as any unpopulated
-  region; keeps a partially-populated custom module, e.g. 16 banks, sane). For a faithful
-  T/102 this never triggers (firmware stays 0–5).
-- This is the "emulator as a superset of the hardware" pattern: model the original
-  faithfully, parameterize the limit so expansion hardware is expressible with no
-  special-casing. Costs an `int bankCount` in config instead of a hardcoded 6.
+- **Original Philips extension board — 1-bit `RAMSW` flip-flop (CONFIRMED, service manual Fig
+  4.12.1).** The board carries up to **two 16 KB RAM banks**:
+  - **BANK0 → 0xA000–0xDFFF** (16 KB, linear — SEL8K carries A13, ordinary full-16 KB addressing).
+    This is the T/54 expansion.
+  - **BANK1 → 0xE000–0xFFFF**: the CPU directly addresses only **8 KB** here, but the bank is a
+    full **16 KB**. Port `0x94` on this board is a **1-bit flip-flop (`RAMSW`), bit `D0` ONLY:**
+    `D0 = 1` → **upper 8 KB** of BANK1 at 0xE000–0xFFFF, `D0 = 0` (reset) → **lower 8 KB**; other
+    bits ignored. A 2-way toggle of one 8 KB window — NOT a multi-bank index. Original board tops
+    out at **2 × 16 KB = 32 KB** extension (48 KB addressable); reset = lower half = power-on default.
+
+- **Homebrew / third-party RAM cards — MORE bits of `0x94` → MORE banks (CONFIRMED, owner).** The
+  1-bit decode is specific to the Philips board; port `0x94` itself can carry a wider value, and
+  homebrew expansion cards decode additional data bits to select **more than two banks**. So the
+  "configurable N-bank register" model is real hardware — it just belongs to these cards, not the
+  original board.
+
+**Model it per-card:**
+- **Original Philips board card:** 1-bit `RAMSW` (D0), BANK1 upper/lower toggle, as above.
+- **Homebrew RAM card:** a configurable-width bank register (`bankBits`/`bankCount` from config),
+  raw value = bank index, index ≥ populated → open bus. The "emulator as a superset of the
+  hardware" path — parameterized so third-party cards are expressible with no special-casing.
+
+**⚠ Reconciles with milestone 2 (not a throw-away).** Milestone 2 already implemented `0x94` as a
+configurable N-bank register — that is CORRECT for the homebrew-card path and should stay. The fix
+is to add the **original Philips board as a 1-bit `RAMSW` card** and make it the default/authentic
+selection, so a stock T/54–T/102 toggles BANK1's two halves rather than indexing 6 banks. Bare-T
+and RAM-only (BANK0-only) configs never write `0x94`.
+
+**⚠ RAM-total reconciliation needed.** The *original* board = 48 KB addressable max, yet the
+variant table lists **T/102 = 80 KB** and **PTC-96K = 96 KB**. Those can't come from the original
+2-bank board as described. (Homebrew wider-`0x94` cards can reach higher totals, but T/102 and
+PTC-96K are *Philips* model names — so their actual board is what needs documenting.) Treat T/54
+(base + BANK0 = 32 KB) and the `RAMSW` BANK1 toggle as confirmed; flag T/102's 80 KB and PTC-96K
+until the board that reaches them is documented.
 
 ### Memory topology = THREE tiers (bare / RAM-only board / floppy+RAM board) — CONFIRMED
 The bare motherboard has a **fixed** memory configuration; larger configs come from an
@@ -686,21 +705,24 @@ The machine object builds a **page table** over the 64 KB space when assembled (
   special-casing (same presence-probe pattern as disk/CTC; the bare-machine default relies
   on this).
 - RAM pages for populated regions.
-- For 0xE000–0xFFFF on T/102: a **switchable page pointer** driven by port 0x94.
-- Port 0x94 = another I/O-dispatch entry: write-only bank register the page table reads when
-  resolving 0xE000–0xFFFF. **SaveState serializes the current bank index + RAM contents.**
+- For 0xE000–0xFFFF on the floppy/RAM board: an 8 KB window into BANK1 whose half is chosen by
+  the **`RAMSW` flip-flop (port `0x94` D0)** — see the CONFIRMED banking note above.
+- Port `0x94` = an I/O-dispatch entry whose decode is **card-specific** (§5 banking): the original
+  Philips board is a **1-bit `RAMSW` flip-flop** (only D0 — D0=1 upper 8 KB of BANK1, D0=0 lower);
+  a homebrew RAM card is a wider bank register. The page table reads it when resolving
+  0xE000–0xFFFF. **SaveState serializes the card's `0x94` state (RAMSW bit or bank index) + RAM.**
 
 ### Open items to confirm (from disassembly / schematic)
-1. **Bank/64 KB arithmetic:** does "+64 KB over base" = the six 0x94 banks (48 KB) PLUS the
-   16 KB expansion? (Assumed yes.)
-2. **Reset default at 0xE000–0xFFFF** before any write to 0x94 — implemented as **bank 0** by
-   default (milestone-2 finding; least-surprising, harmless since firmware writes 0-5 before
-   relying on banking). Confirm against disassembly/schematic if it matters.
-3. **Out-of-range 0x94 writes** — RESOLVED: no hardware restriction. Bank count is
-   configurable (6 for T/102, up to 256 for a modern module); index ≥ populated count reads
-   open bus. See bank-switching note above.
-4. **PTC-96K addressing:** how 16 KB + 64 KB combine — is the 64 KB also behind 0x94
-   (more/wider banks) or mapped differently? Scheme unclear from the base description.
+1. **Bank/64 KB arithmetic — SUPERSEDED.** Not a 6-bank scheme; the board is 2 × 16 KB with a
+   `RAMSW` toggle on BANK1 (above). The old "+64 KB" figure was part of the wrong inference.
+2. **Reset default at 0xE000–0xFFFF — CONFIRMED.** `RAMSW` flip-flop reset state = D0=0 = **lower
+   8 KB of BANK1**. Matches the milestone-2 default; mechanism is the toggle, not a bank index.
+3. **`0x94` decode width — CARD-SPECIFIC (§5 banking).** The original Philips board is a 1-bit
+   `RAMSW` flip-flop (only D0). Homebrew RAM cards decode more bits → more banks (owner-confirmed);
+   the configurable N-bank register models those. Model `0x94` per installed card.
+4. **PTC-96K addressing — STILL OPEN.** The service manual describes the standard 2-bank (32 KB)
+   board; PTC-96K's 16 KB + 64 KB layout is a different/larger board and its scheme is still
+   unconfirmed. Also reconcile the T/102 = 80 KB figure (see the RAM-total note above).
 5. **Panning/scroll register — RESOLVED: port `0x30`** (owner-confirmed from notes). Write
    **0–40**: 0 = no offset (base screen), 40 = max offset (shows the '2nd screen' to the right
    of the base screen). This pans the 40-wide visible viewport across the 80-wide buffer. The
@@ -1142,6 +1164,70 @@ Reading (CONFIRMED):
 
 ## 5d. Floppy disk controller (FDC) — add-on card
 
+### Extension-board I/O map, FDC control port, CTC channels — CONFIRMED (ROM disassembly + service manual)
+Port bases and bit layouts are from the **project's monitor-ROM disassembly (authoritative)**; the
+field-service manual (Fig 4.12) corroborates the devices and adds the analog/mechanical detail.
+
+**I/O port map** (extension-board I/O select `IOE` = A7 high, ports 0x80–0xFF):
+
+| Port(s) | Device | Notes |
+|---------|--------|-------|
+| `0x88` | CTC ch0 | timer / disk interrupt (highest priority) |
+| `0x89` | CTC ch1 | disk **not-ready** interrupt |
+| `0x8A` | CTC ch2 | **communication (serial / I/O) interrupt** |
+| `0x8B` | CTC ch3 | keyboard-scan interrupt — 20 ms / 50 Hz **system tick** |
+| `0x8C` | FDC status (`DSKIO1`, IN) | µPD765 main status; **bit 7 = RDY** |
+| `0x8D` | FDC data/status (`DSKSTAT`, IN/OUT) | **bit 2 = REQ** (data request) |
+| `0x90` | FDC control (`DSKCTRL`, OUT) | control latch — bits below |
+| `0x94` | `RAMSW` bank flip-flop | §5 memory (card-specific: 1-bit original / wider homebrew) |
+
+The CTC's four channels are **one port each, `0x88`–`0x8B`** (A0/A1 select). This **resolves the
+earlier port conflict** — the service-manual "CTC 0x8C–0x8F" text was wrong; `0x88`–`0x8B` is
+correct, and the FDC lives at `0x8C`/`0x8D` (status/data) + `0x90` (control), superseding the
+manual's "FDC 8D–8F."
+
+**CTC control word** (write to a channel port with bit0 = 1):
+bit0 `CTRLWRD` (1 = control word) · bit1 `RESET` (1 = reset CTC) · bit2 `TCNEXT` (1 = next byte is
+the time constant) · bit3 `CLKSTRT` (1 = start on next clock edge, 0 = immediately) · bit4 `ACTTRG`
+(1 = count/trigger on rising edge) · bit5 `PRE256` (1 = prescaler 256, 0 = 16) · bit6 `CNTMD`
+(1 = counter, 0 = timer) · bit7 `INTEN` (1 = generate interrupt). A byte with bit0 = 0 written after
+a `TCNEXT` control word is the **time constant**.
+
+**FDC control latch `OUT 0x90` (`DSKCTRL`) — per the ROM disassembly:**
+bit0 `ENABLE` (1 = read/write FDC registers) · bit1 `Count` (terminal count) · bit2 `RESET`
+(1 = FDC reset) · bit3 `MOTOR` (1 = on) · bit4 `SELDIS` (1 = select disabled — **only on the P2C2
+disk board**). (The service manual described bit0 as a data-vs-command transfer select and folded
+enable+reset into bit2; where the two disagree, the **ROM disassembly is authoritative** for
+emulation.)
+
+**FDC = µPD765, semi-DMA, software-polled (CONFIRMED):** status/data via A0 (`0x8C` status = MSR,
+`RDY`/`REQ` bits; `0x8D` data); command/execute/result phases; MFM; 2 drives; write-protect +
+track-00 sensing; INT at the result phase → CTC ch0. During a read/write execute phase the driver
+polls the request bit and services each transfer itself (semi-DMA), not autonomous DMA.
+
+**Z80-CTC channel roles — CONFIRMED (ROM):**
+- **ch0 (`0x88`, highest priority)** = timer / **FDC interrupt**: the µPD765 result-phase INT feeds
+  ch0, so the FDC has NO direct CPU INT line — it interrupts *through* ch0, IM2-vectored.
+- **ch1 (`0x89`)** = disk **not-ready** interrupt.
+- **ch2 (`0x8A`)** = **communication (serial / I/O) interrupt** — the CTC channel a SLOT2 comms
+  card's interrupt uses; relevant to the SLOT2 milestone.
+- **ch3 (`0x8B`)** = **keyboard-scan / system tick, 20 ms (50 Hz)** — the CTC-path tick that
+  replaces the onboard video 50 Hz INT when the board is present (Lock, §5e).
+- IM2: on int-ack (M1+IORQ) the interrupting channel supplies its programmed vector.
+- **The ROM never *reads* a CTC channel (disassembly-confirmed — no `IN` on `0x88`–`0x8B`).** It
+  only writes control words / time constants and reads FDC status from the separate `0x8C`/`0x8D`
+  ports. So a channel's **read-back value is don't-care for authentic firmware** — a real chip
+  returns the live down-counter, but the emulated chip needn't (returning control flags or 0 is
+  harmless). A correct down-counter read-back is only a **debugger nicety**, not required for
+  correctness.
+
+**Milestone consequences:** the CTC (milestone 17) must exist before FDC interrupts work (FDC →
+ch0); ch2 is the interrupt hook for a SLOT2 comms card; the system tick moves to ch3 when Lock
+asserts (§5e). **Modelled as a standalone, board-agnostic `Z80Ctc` chip** (like the SAA5050): the
+owning board instantiates one and wires its per-channel CLK/TRG + INT routing; a multi-board
+framework is deferred until a second CTC-bearing board is real (machine milestone 17, design note).
+
+
 ### Fits as a slot device; presence check is free
 The FDC is the **internal-extension-slot** device (§5c) — populated in the M, addable to a
 T. The T's FDC card was **compatible with the P2000M's internal floppy controller**. The
@@ -1199,10 +1285,47 @@ images** from `p2000t/software` (test corpus):
 ## 5e. Interrupt architecture + Z80 CTC
 
 ### Two system-tick sources with auto-fallback (presence-probe pattern, via interrupt)
-The monitor ROM probes for a **Z80 CTC** at boot: it configures the CTC and waits for a
-CTC interrupt. If one arrives → CTC present, used as the system tick. If it **times out**
-→ falls back to the **video circuit's 50 Hz VBLANK interrupt** as the tick. Same
-presence-probe idea as the disk check (§5d), but the probe is "does an interrupt fire."
+The monitor ROM probes for a **Z80 CTC** at boot — **CONFIRMED sequence (disassembly):** it sets
+**IM 2**, points CTC ch3's IM2 vector at a test handler (`CTC_testcode`, stored in the
+`CTC_keyboard` vector slot), programs **ch3 (`0x8B`) as a fast timer** — control word **`0x85`**
+(`INTEN` + time-constant-follows + control word; **timer mode, prescaler 16**) then **time constant
+`0x01`** (shortest delay) — and enables interrupts. **If a CTC is present**, ch3 fires almost
+immediately and the IM2 vector diverts execution to the handler → CTC present, used as the system
+tick. **If absent**, no interrupt ever fires and execution falls straight through to `IM 1` + the
+keyboard-scan init → the **video 50 Hz VBLANK** becomes the tick. There is **NO timeout loop** —
+presence is simply "did the interrupt divert us," which works because the probe timer is set to the
+shortest possible delay.
+
+**Emulator consequences:**
+- Once ch3 is programmed `0x85` + TC `0x01` with `INTEN`, a present CTC must assert INT within
+  ~16 T-states (prescaler 16 × TC 1, **timer mode off the system clock**) and the aggregator must
+  deliver ch3's vector by IM2. An absent CTC asserts nothing → the fall-through to `IM 1` is
+  automatic (the bare-T path, unchanged) — this is the exact regression to protect.
+- **Two modes on ch3, both now CONFIRMED:**
+  - **Probe:** control `0x85` (INTEN + TC-follows + control; **timer mode**, prescaler 16) + TC
+    `0x01` — a fast one-shot off the system clock, for presence detection.
+  - **Normal keyboard / system tick (`CTC_enable`):** control `0xD5` (INTEN + **counter mode** +
+    **rising-edge trigger** + TC-follows) + TC `0x01`. In counter mode ch3 counts its **CLK/TRG
+    input = the video vertical-retrace pulse (one per field, 50 Hz)**, so TC 1 → **one interrupt
+    every field = 20 ms**. `CTC_testcode` disables the CTC, restores the `keyscan` handler, then
+    calls `CTC_enable` to arm this mode.
+  So the CTC must support **both** timer mode (system clock, for the probe) and counter mode fed by
+  the **field / retrace pulse** (for the tick). That is the same 50 Hz that drives the bare-T video
+  tick: with the CTC present it feeds ch3's counter and the tick becomes IM2-vectored; without it,
+  the 50 Hz drives INT directly (IM1). `enable_interrupts` = `EI` + `RETI` (the `RETI` also lets the
+  CTC daisy chain see end-of-service — the emulated daisy chain must snoop it).
+- **IM2 vector base = `0x6020` (CONFIRMED).** `CTC_setup_for_IM2` sets `IM 2`, writes the base low
+  byte `0x20` to **CTC ch0** (`0x88`) — the Z80-CTC way to set the vector base for all four channels
+  — and loads `0x60` into `I`. Table entries: ch0 `0x6020`, ch1 `0x6022`, ch2 `0x6024`, **ch3
+  (`CTC_keyboard`) `0x6026`**. The probe stores the test handler at the ch3 slot; `CTC_testcode`
+  later restores `keyscan` there.
+- **Detection diverts the boot flow — it does not "return true":** on the CTC interrupt,
+  `CTC_testcode` **pops (discards) the interrupt return address** so control never falls back to the
+  `IM 1` line; a present CTC simply takes over into keyboard-scan init. This is why absence needs no
+  timeout — only presence changes the control flow.
+- **`KBIEN` = CPOUT **bit 6** (`0x40`, port `0x10`, §5f):** the probe writes `0x00` to quiet keyscan
+  before testing; keyscan init writes `0x40` to enable it. (Same presence-probe idea as the disk
+  check §5d, but the test is "does an interrupt fire.")
 
 **Physical mechanism CONFIRMED (internal-slot pin 37, §5c):** the 50 Hz keyboard-scan
 interrupt signal (**DEW** on T / **R2425** on M) is exposed on the internal extension slot.
@@ -1239,10 +1362,9 @@ onto the core NMI pin, same as it does for INT.
 
 **Implemented (milestone-12):** the interrupt aggregator now holds a **separate `_nmiPending`
 latch** alongside its INT-pending latch, and both serialize in `SaveState`. Adding the second
-boolean **changed the `.state` device-stream format** — so the `.state` **version field must be
-bumped** before any persisted `.state` files are released (see §3a versioning). No external
-`.state` files exist yet in the T-first build, so the bump is deferred to when the UI save-state
-path lands. (Test note: on a default T38 machine SP=0x0000, so an NMI pushes into the empty
+boolean **changed the `.state` device-stream format** — this change (together with the
+milestone-16 `SoundDevice` block) is why `.state` was later bumped to **v2** (see §3a versioning
+— RESOLVED 2026-07-10; the reader now rejects v1 files rather than mis-loading). (Test note: on a default T38 machine SP=0x0000, so an NMI pushes into the empty
 banked window and the writes are discarded; the CPU still vectors to 0x0066 correctly — the
 corrupt stack only matters on `RETN`.)
 
@@ -1314,10 +1436,13 @@ timer. **Disk (FDC) I/O ports CONFIRMED:** `DSKIO1` = 0x8C (FDC status IN), `DSK
 
 ### Still to source from you / the schematic / the disassembly
 1. **Scope:** M is a target (after the T). T-first; CTC deferred to M phase.
-2. **Channel assignments** — partially confirmed above (disk/comms/keyboard); exact channel
-   numbers + baud/system-tick mapping still to pin down.
-3. **CTC I/O port base** (4 channel addresses) + **IM2 vector base** the firmware programs.
-4. **Clock source per channel** (system clock prescaled vs external crystal on CLK/TRG).
+2. **Channel assignments — CONFIRMED (§5d):** ch0 timer/disk, ch1 disk-not-ready, ch2
+   communication (serial/I/O), ch3 keyboard / 50 Hz system tick.
+3. **CTC ports + IM2 vector base — CONFIRMED:** channels `0x88`–`0x8B` (one each); vector base
+   `0x6020` (I = 0x60, base low byte written to ch0) — see the probe sequence above.
+4. **Clock source per channel** — **ch3 CONFIRMED:** timer mode = system clock ÷16 (probe),
+   counter mode = the vertical-retrace pulse on CLK/TRG (normal 20 ms tick). Other channels'
+   clock/trigger sources (ch0 FDC INT, ch1 not-ready, ch2 comms) still to confirm.
 5. **Daisy-chain order/priority** (CTC vs FDC vs SIO/PIO).
 6. **Floppy board:** own CTC or the M's? FDC INT routed through the CTC or independent?
 7. **IM mode of each tick path** (IM1 for video? IM2 for CTC?) — from the monitor disassembly.
@@ -1773,4 +1898,3 @@ Two architectures hide under "cycle-accurate":
 - A deliberate stress ROM: tight loop hammering VRAM during active display should
   produce heavy single-cell speckle; the same loop confined to v-blank should display
   cleanly. This is your regression test for the glitch model once captured.
-  

@@ -3,6 +3,7 @@ using P2000.Machine.Contention;
 using P2000.Machine.Debug;
 using P2000.Machine.Devices;
 using P2000.Machine.Devices.Cassette;
+using P2000.Machine.Devices.Ctc;
 using P2000.Machine.Interrupts;
 using P2000.Machine.Io;
 using P2000.Machine.Memory;
@@ -58,6 +59,14 @@ public sealed class Machine
     /// source fires yet (front-panel soft-reset and SLOT1 pin 1A are wired later).</summary>
     public InterruptAggregator Interrupts { get; } = new();
 
+    /// <summary>Z80-CTC (project CLAUDE.md §13 milestone 17), present only when
+    /// <see cref="MachineConfig.Board"/> is <see cref="InternalBoard.FloppyRam"/> — the only
+    /// board that carries a CTC (reference doc §5d/§5e). <c>null</c> for a bare T or a
+    /// RAM-only board, matching "absent CTC = genuine silence" (ports 0x88-0x8B answer open
+    /// bus, no INT is ever asserted, and the ROM's presence probe auto-falls-through to the
+    /// video 50 Hz IM1 tick).</summary>
+    public Z80Ctc? Ctc { get; }
+
     /// <summary>SLOT1 cartridge (0x1000–0x4FFF, reference doc §5c), or <c>null</c> when the
     /// machine is bare (cassette-wait boot). Constructed from
     /// <see cref="MachineConfig.Slot1CartridgePath"/>; null when that path is not set.</summary>
@@ -106,6 +115,15 @@ public sealed class Machine
 
     private ulong _pins;
 
+    // RETI (ED 4D) snoop state (project CLAUDE.md §13 milestone 17, reference doc §5e): each
+    // prefix byte is its own M1 fetch (Z80.Core CLAUDE.md), so RETI is detected as two
+    // consecutive M1+MREQ+RD opcode fetches, 0xED then 0x4D. Only tracked when a daisy-chain
+    // peripheral is mounted (Ctc != null) — a bare T pays nothing for this.
+    private bool _lastM1WasEd;
+
+    // Cached vector byte for the current int-ack M-cycle (see the int-ack branch in Tick()).
+    private byte _ackVector;
+
     public Machine(MachineConfig? config = null)
     {
         Config = config ?? new MachineConfig();
@@ -137,9 +155,43 @@ public sealed class Machine
         }
 
         // Wire the 50 Hz video VBLANK → INT (project CLAUDE.md §8: T-first INT source).
+        // Lock (below) gates this out at the aggregator level when the floppy+RAM board is
+        // fitted — the video device itself stays unaware of Lock.
         Video.FieldComplete += Interrupts.RaiseInt;
         // Wire the 50 Hz field boundary → Sound sample-block synthesis.
         Video.FieldComplete += Sound.OnFieldComplete;
+
+        // Floppy+RAM internal-extension board (project CLAUDE.md §13 milestone 17, reference
+        // doc §5d/§5e): the only board that carries a CTC. Board-agnostic chip; wiring here is
+        // the "owning board"'s job, per the design decision (no separate board class needed
+        // until a second CTC-bearing board is real).
+        if (Config.Board == InternalBoard.FloppyRam)
+        {
+            Ctc = new Z80Ctc();
+
+            for (var ch = 0; ch < Z80Ctc.ChannelCount; ch++)
+            {
+                var channel = ch;
+                var port = (byte)(Z80Ctc.PortBase + ch);
+                Ports.RegisterWrite(port, v => Ctc.WritePort(channel, v));
+                Ports.RegisterRead(port, () => Ctc.ReadPort(channel));
+            }
+
+            // ch3 CLK/TRG ← the video 50 Hz field pulse (reference doc §5e: the CTC-as-
+            // system-tick wiring; confirmed from the owner's working video code).
+            Video.FieldComplete += () => Ctc.ClkTrg(3);
+
+            // IM2 daisy chain: CTC channels register in priority order, ch0 highest
+            // (reference doc §5d/§5e).
+            var daisyChain = new DaisyChain();
+            foreach (var device in Ctc.DaisyChainDevices)
+                daisyChain.Register(device);
+            Interrupts.AttachDaisyChain(daisyChain);
+
+            // Lock (internal-slot pin 35): an active extension board suppresses the onboard
+            // video 50 Hz INT so only the CTC drives INT (reference doc §5e "hardware arbiter").
+            Interrupts.SetLock(true);
+        }
 
         Cpu.Reset();
     }
@@ -186,8 +238,10 @@ public sealed class Machine
         Keyboard.Reset();
         Mdcr.Reset();
         Sound.Reset();
+        Ctc?.Reset();
         Slot1?.Reset();
         _pins = 0;
+        _lastM1WasEd = false;
         _breakPending = false;
         _pauseAtNextBoundary = false;
         _runToFieldTState = -1;
@@ -308,6 +362,13 @@ public sealed class Machine
             _pins &= ~Pins.NMI;
         }
 
+        // Captured before Step() so the int-ack branch below can tell a brand-new int-ack
+        // M-cycle (Interrupts.Acknowledge() has side effects for a daisy-chain source — must
+        // fire exactly once) apart from its later T-states (the int-ack M-cycle holds M1+IORQ
+        // asserted for multiple T-states — Z80.Core CLAUDE.md §5 "6T ack" — and this Tick()
+        // runs once per T-state).
+        var pinsBeforeStep = _pins;
+
         _pins = Cpu.Step(_pins);
 
         if ((_pins & Pins.MREQ) != 0)
@@ -315,7 +376,25 @@ public sealed class Machine
             if ((_pins & Pins.RD) != 0)
             {
                 var addr = Pins.GetAddress(_pins);
-                _pins = Pins.SetData(_pins, Memory.Read(addr));
+                var data = Memory.Read(addr);
+                _pins = Pins.SetData(_pins, data);
+
+                // RETI snoop (reference doc §5e): only an opcode fetch (M1) can be part of the
+                // ED 4D sequence — a plain data read never is. Gated on Ctc != null so a bare T
+                // does zero extra work here (project CLAUDE.md §3b.2 "armed?" fast-path spirit).
+                if (Ctc != null && (_pins & Pins.M1) != 0)
+                {
+                    if (_lastM1WasEd && data == 0x4D)
+                    {
+                        Interrupts.OnReti();
+                        _lastM1WasEd = false;
+                    }
+                    else
+                    {
+                        _lastM1WasEd = data == 0xED;
+                    }
+                }
+
                 if (Breakpoints.AnyArmed && !_breakPending)
                 {
                     var hit = Breakpoints.CheckMemRead(addr);
@@ -340,12 +419,18 @@ public sealed class Machine
 
             if ((_pins & Pins.M1) != 0)
             {
-                // INT-ack cycle: M1+IORQ asserted together (Z80.Core §5 "INT ack" template).
-                // The aggregator clears its pending latch and returns the vector byte; for IM1
-                // the CPU ignores the byte (uses the fixed 0x0038 vector) but we drive it anyway
-                // so the bus looks correct and a future IM2 source can supply a real vector.
-                // Int-ack is not a user I/O access — no IO breakpoint check here.
-                _pins = Pins.SetData(_pins, Interrupts.Acknowledge());
+                // INT-ack cycle: M1+IORQ asserted together (Z80.Core §5 "INT ack" template),
+                // held for multiple T-states. Call Acknowledge() only on the FIRST T-state of a
+                // given ack cycle (edge-detected against the pre-Step() pins) and re-drive the
+                // same cached byte on the rest — a daisy-chain Acknowledge() has side effects
+                // (clears pending, sets in-service) that must fire exactly once per ack, not
+                // once per T-state. For IM1 the CPU ignores the byte (fixed 0x0038 vector); for
+                // IM2 a real peripheral vector is returned. Not a user I/O access — no IO
+                // breakpoint check here.
+                const ulong AckMask = Pins.M1 | Pins.IORQ;
+                if ((pinsBeforeStep & AckMask) != AckMask)
+                    _ackVector = Interrupts.Acknowledge();
+                _pins = Pins.SetData(_pins, _ackVector);
             }
             else if ((_pins & Pins.RD) != 0)
             {
@@ -374,8 +459,10 @@ public sealed class Machine
         if ((_pins & Pins.MREQ) != 0 && Memory.IsVideoRamAddress(Pins.GetAddress(_pins)))
             Video.CorruptLastFetch();
 
-        // Advance master-clock devices (cassette bit engine; later CTC — machine CLAUDE.md §3 step 5).
+        // Advance master-clock devices (cassette bit engine; CTC timer-mode channels —
+        // machine CLAUDE.md §3 step 5).
         Mdcr.Tick(1);
+        Ctc?.Tick();
     }
 
     // ── Command queue drain (project CLAUDE.md §3b.3, milestone 15) ──────────────────────
@@ -557,6 +644,7 @@ public sealed class Machine
         Mdcr.SaveState(writer);
         Sound.SaveState(writer);
         Interrupts.SaveState(writer);
+        Ctc?.SaveState(writer);
     }
 
     /// <summary>Restores runtime state saved by <see cref="SaveState"/>. Intended to be
@@ -575,6 +663,7 @@ public sealed class Machine
         Mdcr.LoadState(reader);
         Sound.LoadState(reader);
         Interrupts.LoadState(reader);
+        Ctc?.LoadState(reader);
     }
 
     // ---- CPU register serialization (Z80.Core has no IStateWriter dependency) -------------

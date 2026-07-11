@@ -151,6 +151,26 @@ public class MachineStateFileTests
         Assert.Equal(config.Board, restored.Config.Board);
     }
 
+    /// <summary>Project CLAUDE.md §13 milestone 17: the optional Ctc block (present only when
+    /// the FloppyRam board is fitted) and the aggregator's Lock bool both survive a round trip.</summary>
+    [Fact]
+    public void StateRoundTrip_CtcAndLock_ArePreserved()
+    {
+        var machine = new Machine(new MachineConfig { Board = InternalBoard.FloppyRam });
+        machine.Ports.Write(0x88, 0x20);       // CTC vector base
+        machine.Ports.Write(0x8B, 0xD5);       // ch3: counter mode, INTEN, TCNEXT, rising trig
+        machine.Ports.Write(0x8B, 0x01);       // TC = 1
+
+        var restored = SaveAndReload(machine);
+
+        Assert.True(restored.Interrupts.LockAsserted);
+        Assert.NotNull(restored.Ctc);
+
+        // Vector base + programming survived: one CLK/TRG edge fires ch3 with vector 0x26.
+        restored.Ctc!.ClkTrg(3);
+        Assert.Equal(0x26, restored.Ctc.DaisyChainDevices[3].Acknowledge());
+    }
+
     // ---- Stream/file API -------------------------------------------------------------------
 
     [Fact]
@@ -208,6 +228,18 @@ public class MachineStateFileTests
         var ms = new MemoryStream();
         ms.Write("P2ST"u8);
         ms.Write(new byte[] { 1, 0, 0, 0 }); // version = 1
+        ms.Position = 0;
+        Assert.Throws<InvalidDataException>(() => MachineStateFile.Load(ms));
+    }
+
+    [Fact]
+    public void Load_VersionTwo_Throws()
+    {
+        // v2 files are incompatible: Interrupts wrote only 2 bools (no Lock) and no Ctc block.
+        // Produced between milestones 16 and 17; reject cleanly rather than misloading.
+        var ms = new MemoryStream();
+        ms.Write("P2ST"u8);
+        ms.Write(new byte[] { 2, 0, 0, 0 }); // version = 2
         ms.Position = 0;
         Assert.Throws<InvalidDataException>(() => MachineStateFile.Load(ms));
     }

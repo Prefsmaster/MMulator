@@ -242,8 +242,10 @@ Build a **page table** over the 64 KB space at machine-assembly time from the co
   the config presets are contiguous, so the two coincide. Do NOT bake "stop at gap" into the
   page table — that's a firmware convention, not a bus fact.
 - ROM pages read-only; SLOT1 cartridge region 0x1000–0x4FFF with CARS1 (0x1000–0x2FFF) /
-  CARS2 (0x3000–0x4FFF); banked 0xE000–0xFFFF via port 0x94 with a **configurable bank
-  count** (6 for T/102, up to 256 for a homebrew module; index ≥ populated → open bus).
+  CARS2 (0x3000–0x4FFF); 0xE000–0xFFFF banking on port 0x94 is **card-specific** (reference doc
+  §5): the original Philips board is a **1-bit `RAMSW` flip-flop** (D0 → BANK1 upper/lower 8 KB),
+  homebrew RAM cards decode more bits for more banks. **⚠ milestone 2's configurable N-bank model
+  STAYS (that's the homebrew path); ADD the original board as the 1-bit RAMSW default card.**
 - **Monitor ROM is the BASE machine, not a cartridge.** Fixed 4 KB at 0x0000–0x0FFF, present
   from power-on on every machine. The emulator loads a **built-in default monitor ROM**
   automatically; `MachineConfig` exposes an OPTIONAL `MonitorRomPath` override (null → default)
@@ -277,7 +279,7 @@ address, and the read path must **combine** contributing bits. Confirmed ports f
   (active-low; drive from device state) + printer PRI/READY/STRAP.
 - **0x50 sound-out** (write): **bit 0 = the 1-bit speaker level** — a DEDICATED sound port,
   NOT part of the CPOUT latch. `SoundDevice` registers here; the ROM toggles bit 0 for tone.
-- **0x94:** bank-select register (write-only) for the 0xE000–0xFFFF window.
+- **0x94:** bank-select, **card-specific** (reference doc §5) — original Philips board = 1-bit `RAMSW` flip-flop (D0, BANK1 upper/lower 8 KB); homebrew cards = wider bank register (configurable width).
 
 ---
 
@@ -525,14 +527,97 @@ is NO machine-layer runner milestone here — it's promoted in with the external
     rate are 882 @ 44 100 Hz, (c) content is a non-constant square wave while the beeper toggles
     AND flat silence when it doesn't. This proves the machine emits a consumable sample stream —
     the UI/OpenAL sink is just another `SamplesReady` subscriber. → commit.
+17. **Z80 CTC (Z8430) + IM2 daisy chain + Lock interlock** (reference doc §5e; the
+    interrupt-architecture foundation the FDC INT and SLOT2 vectored INT build on — promoted
+    from §14).
+    - **Design — standalone chip (DECISION):** model the CTC as a **board-agnostic `Z80Ctc` chip**
+      (its own class + unit tests), NOT logic inlined in a board. Its interface is fully pinned
+      (ports / control word / timer+counter / IM2 / RETI — §5d/§5e) and coincides with the real
+      chip boundary, so this is honest modelling, not a speculative abstraction. The **owning board
+      wires it**: the extension board instantiates one `Z80Ctc`, feeds **ch3 CLK/TRG ← the
+      vertical-retrace pulse**, **ch0 ← the µPD765 INT**, and registers the chip into the
+      aggregator's IM2 daisy chain. The chip stays board-agnostic; wiring is the board's job.
+      **Defer the multi-board *framework*** — confirmed P2000 hardware has exactly one CTC (ch2
+      comms is the same chip), so a second (homebrew) CTC just instantiates + wires its own, no
+      framework needed until one is real. (Mirrors the `SAA5050` standalone-chip decision.)
+    - **CTC device** (`Ctc : IDevice`): 4 channels, each with a control register (timer/counter
+      mode, prescaler 16/256, edge/trigger, int-enable, time-constant-follows), a down-counter,
+      and a ZC/TO output (channel 3 has no pin output). Programming = write control then time
+      constant. **Ports + roles CONFIRMED (ROM disassembly, reference §5d)** — one port per
+      channel: **ch0 `0x88`** (highest) = timer / FDC interrupt (the µPD765 INT feeds ch0 — the
+      FDC has no direct CPU INT line); **ch1 `0x89`** = disk not-ready; **ch2 `0x8A`** =
+      communication (serial / I/O) interrupt — the SLOT2 comms hook; **ch3 `0x8B`** = the
+      keyboard-scan / system tick every 20 ms (50 Hz), the CTC-path replacement for the video
+      50 Hz tick when Lock asserts. Control-word bit layout confirmed (reference §5d).
+    - **IM2 daisy chain** (`DaisyChain`): an ordered source chain plugged into the aggregator's
+      existing IM2 seam (§8 — int-ack vector-from-bus, snoopable fetches). On int-ack (M1+IORQ)
+      the highest-priority pending source drives its **vector** onto the bus; the core vectors via
+      `(I<<8) | vector`. CTC channels register in priority order (ch0 > … > ch3); SLOT2 cards
+      (later) register behind them. The chain must **snoop `RETI` (ED 4D)** to clear each
+      source's in-service latch (the ROM's `enable_interrupts` is `EI` + `RETI`) — the §8 seam's
+      snoopable fetches cover this.
+    - **Lock interlock** (§5e, internal-slot pin 35): an input to the aggregator, asserted when an
+      active **floppy+RAM extension board** occupies the internal slot. Lock asserted → aggregator
+      **suppresses the onboard video 50 Hz INT**; the CTC (fed by the 50 Hz line) drives the tick
+      via IM2. Lock deasserted (bare T, current behaviour) → video 50 Hz → IM1 / RST 0x0038,
+      unchanged. A GATE ensuring exactly one tick source is electrically live.
+    - **Absent CTC = genuine silence:** with no board, CTC ports read open-bus 0xFF and INT is
+      NEVER asserted, so the ROM's CTC probe times out and auto-selects the video tick — the
+      fallback the bare T already relies on. A stray status read or latched INT would break it.
+    - **`.state`:** CTC channels (control, counters, time constants, vectors, pending) + Lock +
+      daisy-chain pending serialize → **bump `.state` to v3** (`CurrentVersion`/`MinVersion = 3`,
+      reject older) AT BUILD TIME, not retroactively — the v1→v2 silent-misload lesson.
+    - **Confirmed (ROM disassembly):** CTC ports **`0x88`–`0x8B`** (one per channel; roles above);
+      the **control-word bit layout** (CTRLWRD/RESET/TCNEXT/CLKSTRT/ACTTRG/PRE256/CNTMD/INTEN,
+      reference §5d); IM2 via M1+IORQ vector-from-channel; and the **presence-probe sequence** (§5e)
+      — ch3 programmed as a fast timer (control `0x85` + TC `0x01`, `INTEN`) with its IM2 vector at a
+      test handler, **no timeout**: present → the interrupt diverts to the handler, absent → falls
+      through to `IM 1`. So the CTC must support **timer mode** (system-clock-driven), and
+      absent-CTC = no INT = the bare-T fall-through (the regression to protect). **IM2 vector base
+      CONFIRMED = `0x6020`** (I=0x60, base low byte to ch0; ch3/keyboard entry `0x6026`, §5e);
+      normal ch3 is CONFIRMED counter mode (control `0xD5`, TC 1) counting the vertical-retrace
+      pulse → 20 ms tick (§5e); the probe uses timer mode. Detection diverts the boot flow (the
+      handler discards its return address) rather than timing out. **Only open item:** whether
+      **Lock gates NMI too or only maskable INT** (§5e) — resolvable during implementation, as it
+      only affects whether the reset NMI is also suppressed. Model absent-CTC first.
+    - **Tests:** (a) **timer mode** — a channel counts down prescaler × time-constant off the CPU
+      clock and fires ZC/INT at the right cycle; (b) **counter mode fires exactly ONCE per TC
+      trigger pulses** — clock a counter-mode channel (TC 1) with CLK/TRG pulses and assert one
+      INT per pulse (TC N → one per N pulses); catches a double-decrement that would double the
+      tick rate (ch3 → 100 Hz instead of 50 Hz); (c) IM2 int-ack puts the interrupting channel's
+      vector on the bus and the core vectors correctly; (d) daisy priority — two pending, higher
+      wins, lower defers; (e) Lock gate — board present suppresses the video INT and the CTC drives
+      the tick, bare T leaves IM1 unchanged; (f) **fallback regression** — no board → CTC open-bus
+      + INT silent → existing T-baseline boot and 50 Hz IM1 tick still pass. → commit.
+18. **Tape turbo — ROM-trap fast load/save** (reference doc §5b "trap the monitor ROM cassette
+    entry points"; the trap itself was deferred at milestone 9 pending addresses). Today
+    `TimingPolicy.Turbo` only bypasses the 209-cycle phase engine (faster bit playback) — it does
+    NOT skip the ROM's byte-by-byte transfer loop. This adds the real turbo: **trap the
+    monitor-ROM cassette entry points and block-copy `.cas`↔RAM directly.**
+    - On a trapped **load** (`cas_block_read` / `load_block`) or **save** (`cas_Write` /
+      `write_block` / `cas_block_write`, Cassette.asm): read the ROM calling-convention registers
+      (buffer pointer, length, block/record), copy the whole block between the mounted `.cas`
+      image and emulator RAM, set the result registers/flags exactly as the ROM routine would,
+      and `RET`. The bit engine is bypassed — transfer is instant.
+    - **Only under `TimingPolicy.Turbo`;** Authentic keeps the port-level phase engine
+      (cycle-exact, replay-safe). The trap is a deliberate side-channel that breaks
+      cycle-exactness for the transfer (like the load-image command, §3b) — never under Authentic.
+    - Host-side `.cas` API (mount/eject/directory) is unchanged and always fast; adds no `.state`
+      device block (no version bump).
+    - **Needs (source first — same ROM-disassembly pass as the CTC probe):** the exact **trap
+      addresses** + **register/flag calling convention** for the load and save entry points (MDCR
+      guide §5/§6 name the routines; the addresses were the deferred piece).
+    - **Tests:** (a) turbo load of a known `.cas` yields byte-identical RAM to an authentic-mode
+      load of the same image; (b) turbo save round-trips (authentic re-load matches); (c) result
+      registers/flags after the trap match the ROM's documented post-conditions so BASIC/ROM
+      callers continue; (d) Authentic mode fires no trap. → commit.
 
 ---
 
 ## 14. Deferred (build the seams now, implement later)
 
 Do NOT implement these in this build, but keep the interfaces ready (they're specced in the
-reference doc): **P2000M** (different video-memory sharing, 4 KB VRAM); **CTC** (Z8430, the
-system-tick source when present) + **IM2 daisy chain** + **Lock interlock**; **FDC/floppy**
+reference doc): **P2000M** (different video-memory sharing, 4 KB VRAM); **FDC/floppy**
 (internal-slot µPD765 card) + disk images; **hires overlay board**; **SLOT2 expansion cards**;
 **80-column mode**; **printer**. The aggregator (§8), slot model (§12.12), and `TimingPolicy`
 (§7) are the seams these plug into.
@@ -1118,3 +1203,60 @@ Two bugs were masking CLOAD success; both confirmed by tracing `Cassette.asm` li
   `Tick()` + `Reset()`),
   `tests/P2000.Machine.Tests/Debug/CommandQueueTests.cs` (new — 26 tests).
 - **Synced:** yes (2026-07-07, into reference doc §3a — command queue + ordering rule as built)
+
+### 2026-07-11 — Milestone 17: Z80 CTC + IM2 daisy chain + Lock interlock
+- **Assumed:** the CTC ports/control-word bits/vector formula/Lock semantics were all
+  CONFIRMED hardware (reference doc §5d/§5e) and implemented as documented.
+- **Found (real integration bug — corrected):** `Machine.Tick()`'s int-ack branch called
+  `Interrupts.Acknowledge()` on EVERY T-state the int-ack M-cycle holds M1+IORQ asserted
+  (Z80.Core's ack M-cycle is 6T, with M1+IORQ together across 3 of them — T2/T3/T4). This was
+  harmless for the old stateless IM1 pull-up (`Acknowledge()` just returned a constant 0xFF,
+  idempotent), but a daisy-chain `Acknowledge()` has real side effects (clears pending, sets
+  in-service) — the second/third call within the SAME M-cycle saw the just-acknowledged
+  channel now blocked by its own in-service flag, fell through to the 0xFF pull-up, and
+  overwrote the correct vector byte on the data bus before the core's T4 sample. Net effect:
+  IM2 always vectored through address `(I<<8)|0xFE` instead of the real vector, landing in
+  whatever RAM happened to be there. Fixed by edge-detecting the FIRST T-state of a given ack
+  cycle (comparing pins captured before `Cpu.Step()` against after) and caching/re-driving the
+  same byte for the rest of the M-cycle. Worth flagging for `P2000.UI`/debugger code too if it
+  ever reads bus state mid-M-cycle.
+- **Found (confirms existing Z80.Core-documented behaviour, surprised test-writing):** a
+  maskable INT acceptance clears BOTH IFF1 and IFF2 (Z80.Core CLAUDE.md §5 ack-cycle T1), so a
+  bare `RETI` after a normal (non-nested) interrupt leaves interrupts DISABLED — the ISR must
+  `EI` before `RETI` (the standard idiom; reference doc §5e's `enable_interrupts = EI + RETI`
+  is not just style, it's load-bearing). A CTC test omitting the `EI` silently "worked" for a
+  single interrupt but left the second field's interrupt pending-forever un-acceptable.
+- **Found (test-writing gotcha, not a Machine bug):** on this core, returning via `RET`/`RETI`
+  to a `HALT` instruction's address does NOT resume the halted state — real Z80 (and this
+  core) only re-enters the halt loop by re-executing an actual `HALT` opcode; a return to
+  `HALT_addr+1` just continues linear execution. A multi-interrupt test parked on `HALT` will
+  fall through into whatever follows (zero-filled ROM reads as NOP; open-bus SLOT1 reads as
+  `0xFF` = `RST 38h`) and wander unpredictably. Use a tight `JR -2` spin loop instead (already
+  the established pattern in `InterruptAggregatorTests.RaiseNmi_VectorsToNmiHandler_At0x0066`)
+  for any test that must survive more than one interrupt cycle.
+- **Found (re-confirms milestone-15's T38-SP finding, now load-bearing for IM2 too):** the
+  default post-reset SP=0x0000 (T38 banked-window-open-bus finding, milestone 15 above) also
+  corrupts `RETI`'s pop when a CTC ISR pushes/pops a return address — any interrupt-driven CTC
+  test needs `LD SP,nn` into real RAM (e.g. `0x9FFE`) first.
+- **Design decision (not a hardware finding):** `DaisyChain` registrants are individual CTC
+  *channels* (ch0..ch3), not the chip as a whole — each channel gets its own
+  `IDaisyChainDevice` link, matching how the real chip's channels chain IEI→IEO internally
+  (reference doc §5d: "CTC channels register in priority order (ch0 > … > ch3)"). A future
+  SLOT2 card registers as a single chip-level link behind them.
+- **Design decision (documented default for the one open item, per the milestone's own
+  "resolvable during implementation" note):** Lock gates only the maskable video INT, not NMI
+  — the front-panel reset button and SLOT1 NMI have no logical tie to the internal-slot board.
+  Revisit if a schematic/service-manual capture confirms Lock also gates NMI.
+- **Applies to:** reference doc §5d/§5e (CTC ports/control word/vector formula/Lock — all
+  implemented as documented, no corrections needed there) /
+  `src/P2000.Machine/Devices/Ctc/Z80Ctc.cs`, `CtcChannel.cs` (new),
+  `src/P2000.Machine/Interrupts/DaisyChain.cs`, `IDaisyChainDevice.cs` (new),
+  `src/P2000.Machine/Interrupts/InterruptAggregator.cs` (Lock + daisy-chain gating),
+  `src/P2000.Machine/Machine.cs` (Ctc wiring, RETI snoop, int-ack edge-detection fix),
+  `src/P2000.Machine/State/MachineStateFile.cs` (bumped to v3),
+  `tests/P2000.Machine.Tests/Devices/Ctc/Z80CtcTests.cs` (new — 12),
+  `tests/P2000.Machine.Tests/Interrupts/DaisyChainTests.cs` (new — 6),
+  `tests/P2000.Machine.Tests/Interrupts/CtcIntegrationTests.cs` (new — 7),
+  `tests/P2000.Machine.Tests/State/MachineStateFileTests.cs` (+2: Ctc/Lock round-trip, v2 now rejected).
+- **Synced:** no (pending human sync into P2000T-reference.md + Z80.Core/P2000.UI notes re:
+  the int-ack multi-T-state gotcha)

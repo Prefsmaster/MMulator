@@ -52,8 +52,9 @@ public sealed class MdcrDevice : IDevice
     private bool _motorWasRunning;
 
     /// <summary>Selects authentic phase-bitstream or turbo ROM-trap mode
-    /// (MDCR-implementation.md §0). Default: <see cref="TimingPolicy.Authentic"/>. Turbo
-    /// bypass wiring is present; actual trap addresses are deferred (see CLAUDE.md §17).</summary>
+    /// (MDCR-implementation.md §0). Default: <see cref="TimingPolicy.Authentic"/>. Turbo mode
+    /// is implemented by <see cref="CassetteTurboTrap"/>, checked from <c>Machine.Tick()</c>
+    /// (project CLAUDE.md §13.18).</summary>
     public TimingPolicy Policy { get; set; } = TimingPolicy.Authentic;
 
     /// <summary>When true (default, owner-unverified) and the motor runs in REVERSE: toggles
@@ -70,6 +71,32 @@ public sealed class MdcrDevice : IDevice
     // ---- Host face ---------------------------------------------------------------
 
     public bool HasTape => _tape != null;
+
+    /// <summary>True when a tape is mounted and its current side is write-protected. False
+    /// (writable) when no tape is mounted — callers must check <see cref="HasTape"/>
+    /// separately (matches <c>cas_writable</c>'s CIP-before-WEN check, Cassette.asm:1618).</summary>
+    public bool IsWriteProtected => _tape?.IsProtected ?? false;
+
+    /// <summary>Turbo-trap read: decodes one block at the tape's current head position and
+    /// advances past it (project CLAUDE.md §13.18). Delegates to
+    /// <see cref="MiniTape.TryReadBlockAtHead"/>; false when no tape is mounted or no block
+    /// is found before the tape end.</summary>
+    public bool TryReadBlockAtHead(out byte[] header, out byte[] data)
+    {
+        if (_tape == null)
+        {
+            header = Array.Empty<byte>();
+            data = Array.Empty<byte>();
+            return false;
+        }
+        return _tape.TryReadBlockAtHead(out header, out data);
+    }
+
+    /// <summary>Turbo-trap write: encodes one block at the tape's current head position and
+    /// advances past it (project CLAUDE.md §13.18). Delegates to
+    /// <see cref="MiniTape.WriteBlockAtHead"/>; false when no tape is mounted, the tape is
+    /// write-protected, or the block would run past the physical end of the side.</summary>
+    public bool WriteBlockAtHead(byte[] header, byte[] data) => _tape?.WriteBlockAtHead(header, data) ?? false;
 
     /// <summary>Decodes the mounted tape's phase bitstream back into a P2000T <c>.cas</c>
     /// image. Always instant regardless of <see cref="Policy"/> (host-side API —

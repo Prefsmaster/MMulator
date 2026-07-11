@@ -114,18 +114,69 @@ public sealed class MiniTape
 
         for (var b = 0; b < blocks; b++)
         {
-            WriteGap(BobGap);
-            WriteData(Array.Empty<byte>());    // MARK: empty sync block (0xAA,0,0,0xAA)
-            WriteGap(MarkDataGap);             // ~81ms silence between MARK and DATA BLOCK
             var header = casImage.AsSpan(b * 1280 + 0x30, 32).ToArray();
             var data = casImage.AsSpan(b * 1280 + 0x100, 1024).ToArray();
-            WriteData([..header, ..data]);     // DATA BLOCK: header(32B)+data(1024B), one combined CRC
-            WriteGap(EobGap);
+            WriteBlockFrames(header, data);
         }
         // Remaining phases are already zero-filled (Array.Clear) → EOT silence
 
         _protected[_side] = writeProtect;
         _position = 1; // just past the BOT sensor — IsAtEnd(0) would keep BET=0 forever
+    }
+
+    // ---- Head-relative block access (turbo ROM trap — machine CLAUDE.md §13.18) ----------
+
+    /// <summary>Phase count of one encoded MARK+DATA-BLOCK pair (<see cref="WriteBlockFrames"/>),
+    /// used to bounds-check <see cref="WriteBlockAtHead"/> before it writes.</summary>
+    private const int PhasesPerBlock =
+        BobGap + (1 + 0 + 2 + 1) * 16 /* MARK */ + MarkDataGap + (1 + 1056 + 2 + 1) * 16 /* DATA BLOCK */ + EobGap;
+
+    /// <summary>Decodes one MARK+DATA-BLOCK pair starting at the current head position and,
+    /// on success, advances the head past it — the turbo trap's read-side counterpart to the
+    /// authentic bit-engine's marker-search + block-load (Cassette.asm <c>search_marker</c> +
+    /// <c>load_block</c>). Returns false (head unchanged) when no valid pair is found before
+    /// the tape end, mirroring the bit-engine's own mark-not-found / end-of-tape failure.</summary>
+    public bool TryReadBlockAtHead(out byte[] header, out byte[] data)
+    {
+        var cursor = _position;
+        if (!TryDecodeBlockAt(ref cursor, out var h, out var d))
+        {
+            header = Array.Empty<byte>();
+            data = Array.Empty<byte>();
+            return false;
+        }
+        header = h!;
+        data = d!;
+        _position = cursor;
+        return true;
+    }
+
+    /// <summary>Encodes one MARK+DATA-BLOCK pair at the current head position and advances
+    /// past it — the turbo trap's write-side counterpart to the authentic bit-engine's
+    /// <c>save_marker</c> + <c>save_block</c>. Writing at the current head position naturally
+    /// reproduces both REPLACE (head parked over an existing block) and APPEND (head parked
+    /// at blank tape) without needing the ROM's own forward mark-search, since the emulator
+    /// always knows the exact head position. Returns false (head unchanged) when the tape is
+    /// write-protected or the block would run past the physical end of the side (EOT during
+    /// write — Cassette.asm's 'E' condition).</summary>
+    public bool WriteBlockAtHead(byte[] header, byte[] data)
+    {
+        if (_protected[_side]) return false;
+        if (_position + PhasesPerBlock > PhasesPerSide) return false;
+        WriteBlockFrames(header, data);
+        return true;
+    }
+
+    /// <summary>Encodes one on-tape block (MARK, gap, header+data DATA BLOCK, gap) at the
+    /// current head position, advancing past it. Shared by <see cref="LoadCasImage"/> (per
+    /// .cas record) and <see cref="WriteBlockAtHead"/> (turbo trap).</summary>
+    private void WriteBlockFrames(byte[] header, byte[] data)
+    {
+        WriteGap(BobGap);
+        WriteData(Array.Empty<byte>());    // MARK: empty sync block (0xAA,0,0,0xAA)
+        WriteGap(MarkDataGap);              // ~81ms silence between MARK and DATA BLOCK
+        WriteData([..header, ..data]);      // DATA BLOCK: header(32B)+data(1024B), one combined CRC
+        WriteGap(EobGap);
     }
 
     // ---- Host face (save / serializer) ------------------------------------------
@@ -142,26 +193,9 @@ public sealed class MiniTape
 
         while (cursor < PhasesPerSide)
         {
-            // Skip gap to next MARK's 0xAA preamble.
-            // 0xAA LSB-first: bit0=0 → phase0=F, so one extra false blends in; step back 1 to re-align.
-            while (cursor < PhasesPerSide && !_phases[_side][cursor])
-                cursor++;
-            if (cursor == 0 || cursor >= PhasesPerSide) break;
-            cursor--; // re-align to phase0 of bit0 of 0xAA
-
-            if (!TryDecodeFrame(ref cursor, 0, out _)) break; // MARK (empty)
-
-            // Skip MarkDataGap between MARK and DATA BLOCK
-            while (cursor < PhasesPerSide && !_phases[_side][cursor])
-                cursor++;
-            if (cursor >= PhasesPerSide) break;
-            cursor--; // re-align to phase0 of DATA BLOCK's 0xAA
-
-            // DATA BLOCK: header(32B) + data(1024B) combined in one frame, one CRC
-            if (!TryDecodeFrame(ref cursor, 1056, out var combined)) break;
-
-            records.Add((combined![..32], combined[32..]));
-            // EOB gap follows — outer loop's gap-skip handles it on the next iteration
+            if (!TryDecodeBlockAt(ref cursor, out var header, out var data)) break;
+            records.Add((header!, data!));
+            // EOB gap follows — the next iteration's gap-skip handles it.
         }
 
         if (records.Count == 0) return null;
@@ -173,6 +207,38 @@ public sealed class MiniTape
             Array.Copy(records[i].data, 0, casImage, i * 1280 + 0x100, 1024);
         }
         return casImage;
+    }
+
+    /// <summary>Decodes one MARK+DATA-BLOCK pair starting anywhere at or before
+    /// <paramref name="cursor"/> (skipping the leading gap), advancing it past the pair on
+    /// success. Shared by <see cref="Save"/> (whole-tape decode, cursor unrelated to the head)
+    /// and <see cref="TryReadBlockAtHead"/> (decodes from the live head position).</summary>
+    private bool TryDecodeBlockAt(ref int cursor, out byte[]? header, out byte[]? data)
+    {
+        header = null;
+        data = null;
+
+        // Skip gap to next MARK's 0xAA preamble.
+        // 0xAA LSB-first: bit0=0 → phase0=F, so one extra false blends in; step back 1 to re-align.
+        while (cursor < PhasesPerSide && !_phases[_side][cursor])
+            cursor++;
+        if (cursor == 0 || cursor >= PhasesPerSide) return false;
+        cursor--; // re-align to phase0 of bit0 of 0xAA
+
+        if (!TryDecodeFrame(ref cursor, 0, out _)) return false; // MARK (empty)
+
+        // Skip MarkDataGap between MARK and DATA BLOCK
+        while (cursor < PhasesPerSide && !_phases[_side][cursor])
+            cursor++;
+        if (cursor >= PhasesPerSide) return false;
+        cursor--; // re-align to phase0 of DATA BLOCK's 0xAA
+
+        // DATA BLOCK: header(32B) + data(1024B) combined in one frame, one CRC
+        if (!TryDecodeFrame(ref cursor, 1056, out var combined)) return false;
+
+        header = combined![..32];
+        data = combined[32..];
+        return true;
     }
 
     /// <summary>Attempts to decode one framed block: lead 0x55 | dataLength bytes | CRC-lo |

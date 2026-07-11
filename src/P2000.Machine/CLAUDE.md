@@ -1260,3 +1260,71 @@ Two bugs were masking CLOAD success; both confirmed by tracing `Cassette.asm` li
   `tests/P2000.Machine.Tests/State/MachineStateFileTests.cs` (+2: Ctc/Lock round-trip, v2 now rejected).
 - **Synced:** no (pending human sync into P2000T-reference.md + Z80.Core/P2000.UI notes re:
   the int-ack multi-T-state gotcha)
+
+### 2026-07-11 — Milestone 18: tape turbo — ROM-trap fast load/save
+- **Assumed:** the milestone's own spec named `cas_block_read`/`load_block` and
+  `cas_Write`/`write_block`/`cas_block_write` as candidate trap points, from before a
+  disassembly existed.
+- **Found (source obtained — owner-supplied commented disassembly, not a fresh disassembly
+  pass):** the owner provided `MonitorRom.sym` (full label→address symbol table) plus
+  commented `Cassette.asm`/`Startup.asm`. Confirmed addresses: `cas_Read`=0x0552,
+  `cas_Write`=0x057A, `cas_block_read`=0x0872, `load_block`=0x091C, `cas_block_write`=0x061F,
+  `write_block`=0x0594; RAM variables `transfer`=0x6030, `file_length`=0x6032,
+  `record_length`=0x6034, `des1`=0x6068, `des_length`=0x606A, `cassette_error`=0x6017.
+- **Design decision (trap point chosen, deviates from the milestone's own placeholder
+  names):** traps **`cas_Read`/`cas_Write`**, NOT the lower `cas_block_read`/`cas_block_write`.
+  Tracing the calling convention showed `cas_Read`/`cas_Write` own the ENTIRE multi-block
+  transfer loop themselves (their own `block_counter` loop calling `get_block_parameters` +
+  the block-level routine each iteration) and are entered with a clean, fully-defined RAM
+  contract already established by the "cassette" jump-table dispatcher
+  (`knowncascommand`/`do_cas_jump`) before jumping in — trapping one level higher means ONE
+  intercept per file transfer instead of one per block, and avoids needing to reverse-engineer
+  `cas_block_read`/`cas_block_write`'s internal replace-vs-append search logic at all (see
+  next finding).
+  - Both routines are entered via `jp (hl)` with the return address (`cas_command_return`)
+    already pushed by `do_cas_jump` — functionally identical to a `CALL`. The trap performs
+    the whole transfer in C#, writes `cassette_error`, and simulates the routine's own final
+    `RET` (pop PC off the real stack). It deliberately does NOT replicate
+    `cas_command_return`'s cleanup (motor off, `enablekey`, register restore) — that code runs
+    completely normally afterwards since the trap only ever intercepts execution AT the
+    cas_Read/cas_Write entry point, never past it.
+- **Found (block-count/valid-length math, transcribed from `get_length_blocks`/
+  `get_block_parameters`):** block count = ceil(file_length/1024) with a minimum of 1
+  (replicated as a repeated 16-bit subtract that stops on the first borrow, exactly matching
+  the ROM's own loop including its behaviour for file_length==0); each block's real
+  (non-padding) byte count = min(remaining, 1024), where `remaining` starts at `record_length`
+  and only the LAST block can be partial. The destination/source address always advances by
+  exactly 1024 bytes per block regardless of how many of those bytes are "real" — a partial
+  last block still consumes a full 1024-byte destination slot.
+- **Design decision (write semantics — replace vs append):** the real ROM's `cas_block_write`
+  distinguishes REPLACE (overwrite an existing block, found by searching forward for its
+  marker) from APPEND (write at the end of written data) via a physical forward tape search,
+  because real hardware doesn't know the head position without reading. The emulator always
+  KNOWS the exact head position, so the turbo trap skips that search entirely and just writes
+  the new MARK+DATA-BLOCK pair at wherever the head currently is — this reproduces the same
+  net effect (overwrite in place when parked over an existing block, append when parked on
+  blank tape) without needing to port the search/replace logic.
+- **Added (`MiniTape`):** `TryReadBlockAtHead`/`WriteBlockAtHead` — head-relative single-block
+  decode/encode, refactored out of the existing `Save()`/`LoadCasImage()` per-block logic
+  (`TryDecodeBlockAt`/`WriteBlockFrames` are now shared private helpers) so turbo and
+  authentic modes produce byte-identical on-tape encoding — confirmed by the read-side test
+  (turbo load vs. a real CPU-driven authentic load of the same `.cas`, byte-identical RAM) and
+  the write-side test (turbo-written tape decoded via the authentic `Save()` matches the
+  source bytes exactly).
+- **Found (test-writing pattern):** driving `cas_Read`/`cas_Write` directly (bypassing the
+  "cassette" jump-table dispatcher) needs `des_length` (0x606A) set to 0x20 in RAM — the real
+  dispatcher always sets it, but a test that jumps straight to `cas_Read` must set it manually
+  or the authentic engine's `load_block` skips the header segment entirely (`des_length==0`
+  short-circuits it). The turbo trap itself does NOT read `des_length` (treats header size as
+  the architecturally-fixed 32 bytes), so this only matters for the authentic comparison leg
+  of the test suite, not the trap's own correctness.
+- **Applies to:** project CLAUDE.md §13.18 (whole milestone) / `Cassette.asm`/`Startup.asm`/
+  `MonitorRom.sym` (owner-supplied, not in this repo) /
+  `src/P2000.Machine/Devices/Cassette/CassetteTurboTrap.cs` (new),
+  `src/P2000.Machine/Devices/Cassette/MiniTape.cs` (`TryReadBlockAtHead`, `WriteBlockAtHead`,
+  `TryDecodeBlockAt`, `WriteBlockFrames` refactor), `MdcrDevice.cs` (`TryReadBlockAtHead`,
+  `WriteBlockAtHead`, `IsWriteProtected`), `src/P2000.Machine/Machine.cs` (trap check in
+  `Tick()`), `tests/P2000.Machine.Tests/Devices/CassetteTurboTrapTests.cs` (new — 6 tests).
+- **Synced:** no (pending human sync into P2000T-reference.md §5b — the confirmed trap
+  addresses and RAM variable layout aren't in the reference doc yet, since they came from an
+  external symbol table/disassembly not held in this repo).

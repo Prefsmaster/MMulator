@@ -328,6 +328,17 @@ public sealed class Machine
                         return;
                     }
                 }
+
+                // D2. Cassette turbo ROM trap (project CLAUDE.md §13.18): intercepts
+                // cas_Read/cas_Write before the ROM's bit-engine executes, when Turbo policy
+                // is selected. Performs the whole multi-block transfer in C# directly against
+                // the mounted .cas tape and simulates the routine's own RET — see
+                // CassetteTurboTrap for the full calling-convention rationale. Authentic mode
+                // never checks these addresses.
+                if (Mdcr.Policy == TimingPolicy.Turbo && CassetteTurboTrap.TryHandle(this))
+                {
+                    return;
+                }
             }
 
             // E. Drain the command queue (project CLAUDE.md §3b.3, milestone 15).

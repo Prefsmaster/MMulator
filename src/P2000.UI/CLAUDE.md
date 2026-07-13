@@ -90,10 +90,10 @@ snapshots, and it submits input + commands.** Keep every window on this side of 
   consume the same hook.
 - **Typed slots.** `machine.Slot1` etc., for the config window to reflect population.
 
-### 3.2 What the Machine layer STILL OWES the UI (contract additions)
-Planned as **machine milestones 13–15** (`P2000.Machine` CLAUDE.md §3b/§13). They do not exist
-in `P2000.Machine` today and belong there (locked §2.8), NOT in the UI. The UI is specified
-assuming them; they gate the debugger milestones (§14). **Do not implement them in the UI layer.**
+### 3.2 What the machine provides for the debugger (contract additions — now built)
+Delivered by **machine milestones 13–15** (`P2000.Machine` CLAUDE.md §3b/§13), now **green** and
+living in `P2000.Machine` (locked §2.8), NOT the UI. The UI consumes them for the debugger
+milestones (§14); **do not reimplement them in the UI layer.**
 - **A read-only state snapshot surface** (machine ms.13): full register file incl. WZ/MEMPTR,
   IFF1/2, IM, flag bits (incl. YF/XF), plus memory reads and the in-frame T-state/cycle
   position. Snapshot-based, taken at a break; never races the core.
@@ -165,9 +165,10 @@ snapshot / the framebuffer view. None mutate the core except by enqueuing comman
    present (like a cassette swap — no reset), else a topology change that provisions the drive →
    cold reset. Disk mounting is **deferred with the FDC** (§15) — the *rule* is fixed here, not
    the implementation.
-2. **Config window** (modal-ish) — the topology axes (§7). Load/save `.cfg`. Changes queue and
-   apply on cold reset; the window makes the reset-to-apply nature explicit (an "Apply (resets
-   machine)" affordance), except cassette mount which is live.
+2. **Config window** (**non-modal satellite** — `Show(this)`, NOT `ShowDialog`, so the emulator
+   display stays interactive while it's open) — the topology axes (§7). Load/save `.cfg`. Changes
+   queue and apply on cold reset; the window makes the reset-to-apply nature explicit (an "Apply
+   (resets machine)" affordance), except cassette mount which is live.
 3. **Keyboard window** — the original P2000 key layout. Doubles as a **soft keyboard** (click a
    key → enqueue the matrix event, applied at frame boundary like any host key) and as the
    **host-key mapping reference**. Read the layout/labels; the machine models the 10×8 matrix +
@@ -263,6 +264,12 @@ extension); cassette = `.cas` (primary) / `.p2000t`; config = `.cfg`; state = `.
 - The machine produces 1-bit beeper square-wave sample **blocks** into a ring across the thread
   boundary; the UI pushes them to the OpenAL source. Mute + volume are UI-side (§7).
 - Keep the audio consumer decoupled from frame presentation (its own block cadence).
+- **As built (UI milestone 7 / machine milestone 16):** the machine's `SoundDevice` raises
+  `SamplesReady(short[])` once per field (882 samples @ 44 100 Hz) with ONE reusable buffer; the
+  UI's `AudioEngine` (a 4-buffer OpenAL streaming source with a ~5 ms background refill thread)
+  **copies on enqueue** (`Array.Copy` — the machine reuses the buffer immediately) into a
+  `ConcurrentQueue`, playing silence on starvation and restarting the source after a stop.
+  `Silk.NET.OpenAL` 2.21.0 exposes only unsafe pointer overloads, so the sink uses `fixed`/`&`.
 
 ---
 
@@ -355,7 +362,7 @@ direction: UI → {Machine, Disassembler} → Core.
 7. **No core races:** windows only ever read snapshots / enqueue commands (assert no direct-core
    mutation path exists).
 
-Gates 6–7 depend on the §3.2 machine-contract additions landing first.
+Gates 6–7 depend on the §3.2 machine-contract additions — now landed (machine ms 13–15 green).
 
 ---
 
@@ -387,6 +394,30 @@ builds did. Do not advance while the current milestone is red. Record spec corre
     symbols, byte column), breakpoint gutter, exec/mem/port breakpoints, step/over/out,
     run-to-scanline/cycle. *(Depends on the §3.2 breakpoint store + command queue.)* Tag
     `P2000.UI` T-baseline. → commit.
+11. **Symbol tables / ROM labels (debugger).** Load an external symbol file and annotate the
+    disassembly + debugger with names (reference doc §3a "Symbol resolution — DESIGN DECISION").
+    Builds on ms10's inline symbol hook; post-T-baseline enhancement.
+    - **Pluggable parser (`ISymbolFileParser`) → `(name, value, [bank], [type])`.** Ship the
+      **z80asm** parser (`label:⇥equ $hex`) first; leave the seam for sjasmplus / z88dk `.map` /
+      WLA-DX·no$ / VICE, deferred until a user has that toolchain (don't write them speculatively).
+      Detect format by extension + first-line sniff.
+    - **Typed, context resolution — NOT a flat address map.** Classify symbols into
+      code/data/port/const buckets (format type-hint if present, else address-range + name-prefix
+      heuristics; multimap for N-names-per-address; user-overridable). Resolve each disasm operand
+      against the bucket matching its KIND (code target / data ref / port / immediate) so
+      ports/constants don't mislabel low addresses; constants annotate immediates as trailing
+      comments, never labels.
+    - **Prerequisite:** confirm `Z80.Disassembler` exposes each operand's value + kind (not just a
+      formatted string). If strings only, do Phase 1 and add operand typing before Phase 2.
+    - **Phase 1 (core):** code labels on disasm line addresses + jump/call/branch targets (code
+      bucket). Per-ROM scoping (monitor `.sym` vs cartridge/CP-M); bank-carrying formats resolve
+      against current banking state.
+    - **Phase 2 (fast-follow):** port/data/const operand annotation; break-at-symbol, go-to-symbol,
+      symbols in the PC + call-stack display.
+    - **Tests:** (a) z80asm parser round-trips `MonitorRom.sym` (433 symbols; duplicate addresses
+      preserved as a multimap); (b) `OUT (0x88)` resolves to `CTC_CH0` while the disasm line at
+      `0x0088` does NOT get the port name; (c) `BIT_MOTON $0002` never labels address 0x0002;
+      (d) an unknown-format file is rejected cleanly with a clear message. → commit.
 
 ---
 

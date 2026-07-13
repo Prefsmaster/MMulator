@@ -203,9 +203,44 @@ Config changes that alter hardware topology **require a machine reset to take ef
     for ROM; fall back to the heuristic for RAM/cartridge.
   - **Show raw bytes + mnemonic:** `1234: 21 00 60   LD HL,6000h` — the encoding matters for a
     hardware debugger (shows prefix/undocumented form; makes mis-decodes visible).
-  - **Symbol resolution:** annotate addresses/ports with names from the existing disassembly
-    (e.g. `OUT (0x10)` → CPOUT, `CALL 0x0038`). Turns hex into readable code; where the
-    disassembly work pays off directly.
+  - **Symbol resolution — labels for known ROM addresses (DESIGN DECISION).** Annotate the
+    disassembly from a loaded symbol file (e.g. `CALL 0x0872` → `cas_block_read`, `OUT (0x88),A` →
+    `CTC_CH0`). This is a future **P2000.UI debugger** enhancement (own milestone), orthogonal to
+    the machine layer. Design:
+    - **Resolve by operand CONTEXT, not raw address.** A symbol file is a flat name→value map that
+      really mixes four kinds — **code addresses, RAM/data addresses, I/O ports, bit/constant
+      values** (e.g. `MonitorRom.sym` carries `BEEP $01ea`, `CTC_CH0 $0088`, `CTC_keyboard $6026`,
+      `BIT_MOTON $0002`, all as `equ $x`), and the 0x00–0xFF band is packed with ports/constants
+      that alias low ROM addresses and each other (`0x10` = `CPOUT` + `CIP`). A naive address→label
+      map mislabels. Instead the disassembler tags each operand's KIND and the debugger looks the
+      value up in the **matching bucket only** — so `0x88` is `CTC_CH0` as a *port* operand and a
+      code label only if code targets `0x0088`. Constants annotate immediates as a trailing comment
+      (`LD A,0x02 ; BIT_MOTON`), never as address labels.
+    - **Layering:** `Z80.Disassembler` stays pure (address → mnemonic + **typed operands**); the
+      symbol table + resolution live in the UI/debugger as a render-time overlay. **Prerequisite to
+      confirm before wiring:** the disassembler must expose each operand's value + kind, not just a
+      formatted string. If it returns strings, Phase-1 code labels still work but operand-context
+      needs operand typing surfaced first.
+    - **Pluggable file format (`ISymbolFileParser`).** Symbol-file syntax is assembler-specific: the
+      supplied file is **z80asm** (`label:⇥equ $hex`); others differ — **sjasmplus** (`label: EQU
+      addr`), **z88dk `.map`** (`NAME = $addr ; type,scope,file` — carries a type), **WLA-DX / no$**
+      (`bank:addr label` — carries a bank), **rasm**, **VICE `.lbl`**. Define a parser seam that
+      normalizes any of them to `(name, value, [bank], [type])`; **ship the z80asm parser now, defer
+      the rest until a user actually has that toolchain's output** (chip-now / framework-later, like
+      the CTC). Detect format by extension + a sniff of the first lines.
+    - **Classification into buckets** (code / data / port / const): use the format's own type/scope
+      hint when present (z88dk); else heuristics — **address range** (ROM code, VRAM, RAM-var region,
+      the 0x00–0xFF port/const band) + **name-prefix conventions** (`BIT_*`/`CST_*` = const,
+      `*_CH[0-3]`/`CPOUT` = port). Heuristics are imperfect, so the table is a **multimap** (N names
+      → 1 address is common) and buckets are **user-overridable** (it's the owner's own disassembly).
+      Constants/ports are excluded from the code-label set outright so they never pollute line labels.
+    - **Per-ROM / per-bank scoping:** a symbol set is tied to a ROM image (the monitor `.sym` labels
+      0x0000–0x0FFF + its RAM vars; a cartridge / CP-M image brings its own). Bank-carrying formats
+      resolve against the current banking state (SLOT1 cartridge, the RAMSW BANK1 window, CP/M @
+      0xE000).
+    - **Two phases:** Phase 1 = **code labels only** (line labels + jump/call/branch targets) — 80%
+      of the value, near-zero risk, readable disassembly. Phase 2 = port/data/const operand
+      annotation + **break-at-symbol / go-to-symbol / symbol in the PC & call-stack display**.
   - **Breakpoint gutter in the same view:** click a line to toggle a breakpoint, marker on
     breakpointed lines, distinct PC-line marker. The disassembly view IS the breakpoint UI.
   - **Decode with the SAME opcode/prefix tables as the core** (generate both from one source —
@@ -326,6 +361,11 @@ Interrupts payload → later underrun, with no exception until then). Fixed:
 `InvalidDataException` ("Unsupported .state version 1…") rather than silently mis-loading. No
 migration path — no external `.state` files were distributed; discard any saves made during
 milestone 11–16 testing.
+
+**`.state` now v3 (2026-07-11, milestone 17):** the CTC channels + Lock state added another device
+block, bumped at build time (`CurrentVersion`/`MinVersion = 3`); v2 files are now rejected. This is
+the discipline working as designed — every device-block change bumps at build time, never
+retroactively.
 
 ### File extensions (DECIDED)
 - **Monitor ROM / cartridges: standard `.bin` / `.rom` — NO custom extensions.** These are raw
@@ -896,12 +936,31 @@ tape position, and a transport state machine; only the timing policy differs.
    Meter bits in/out at real 6000 baud off the **same deterministic master clock** as
    the core; ROM routines run completely unmodified. Loading takes exactly as long as
    hardware did. **This is the cycle-exact path — deterministic, replay/regression-safe.**
-2. **Host speed — trap the monitor ROM cassette entry points (block level).** Detect the
-   Z80 calling the ROM load/save/search routines; service the whole block transfer
-   directly (copy between `.cas` image and RAM); set up the register/flag state the ROM
-   would have returned; `RET`. Bit timing bypassed; transfer instant. **This is "turbo".
-   It is a deliberate side-channel that breaks cycle-exactness for the transfer's
-   duration — fine, but point tape regression tests at AUTHENTIC mode.**
+2. **Host speed — trap the monitor ROM cassette entry points. CONFIRMED & BUILT (milestone 18).**
+   Traps at the **whole-file level: `cas_Read` (0x0552) / `cas_Write` (0x057A)** — NOT the lower
+   per-block routines — because those two own the entire multi-block transfer loop and are entered
+   with a clean, fully-set-up RAM contract from the cassette jump-table dispatcher (`do_cas_jump`,
+   which pushes `cas_command_return` then `jp (hl)` — functionally a `CALL`). One intercept per file
+   instead of per block, and no need to reverse-engineer the block routines' replace-vs-append
+   search. The trap performs the whole transfer in C#, writes `cassette_error` (0x6017), and
+   simulates the routine's own final `RET` (pops PC off the real stack); it does NOT replicate
+   `cas_command_return`'s cleanup (motor-off, key re-enable, register restore) — that runs normally
+   afterwards, since the trap only ever fires AT the entry point. Turbo-only; authentic keeps the
+   port-level bit engine. **Point tape regression tests at AUTHENTIC mode.**
+   - **Confirmed RAM variables (`MonitorRom.sym`):** `transfer` 0x6030, `file_length` 0x6032,
+     `record_length` 0x6034, `des1` 0x6068, `des_length` 0x606A, `cassette_error` 0x6017.
+   - **Block-count / valid-length math** (from `get_length_blocks` / `get_block_parameters`): block
+     count = **ceil(`file_length` / 1024), min 1**; each block's real (non-padding) bytes =
+     **min(remaining, 1024)** with `remaining` starting at `record_length` and only the LAST block
+     partial; the source/dest pointer advances a full **1024 bytes per block regardless** (a partial
+     last block still consumes a full 1024-byte slot).
+   - **Replace vs append:** the real ROM does a physical forward tape search for an existing block's
+     marker (hardware can't know the head position); the emulator KNOWS the head position, so the
+     trap **writes the MARK+DATA pair at the current head** — same net effect (overwrite in place
+     when parked over a block, append on blank tape) with none of the search logic.
+   - **Byte-identical to authentic:** `MiniTape.TryReadBlockAtHead` / `WriteBlockAtHead` share the
+     per-block encode/decode helpers with `Save()`/`LoadCasImage()`, so a turbo-written tape
+     re-loads identically through the authentic path (verified both directions).
 
 Generalize the setting to a **speed multiplier**: 1× = real baud + real mechanics,
 N× = scaled, ∞ = ROM-trap instant. Nicer UI slider than a 2-way toggle.
@@ -952,8 +1011,8 @@ Specifically still to pin down (from the two sources above, not invented here):
   + KBIEN + printer), input/status on **CPRIN port 0x20** (RDC/RDA read pair + CIP/BET/WEN
   status + printer PRI/READY/STRAP). Route 0x10 writes and 0x20 reads to the shared
   keyboard/MDCR/printer devices.
-- Monitor ROM **cassette entry points** (load / search / save) and their register/flag
-  **calling convention** (turbo trap).
+- Monitor ROM **cassette entry points + calling convention — CONFIRMED (milestone 18, above):**
+  turbo traps `cas_Read` 0x0552 / `cas_Write` 0x057A at the whole-file level.
 
 ### Useful confirmations already in hand
 - ROM images (from MAME set): monitor `p2000.rom` 4 KB
@@ -1344,7 +1403,25 @@ detects which source is live. Emulator model:
   INT (IM2).
 - Lock deasserted (bare T) → video 50 Hz tick reaches INT normally (IM1).
 - So it's a gate in the aggregator, ensuring only one tick source is electrically active;
-  the probe tells firmware which. (TO CONFIRM: does Lock gate NMI too, or only maskable INT?)
+  the probe tells firmware which. **RESOLVED (milestone 17, documented default): Lock gates only
+  the maskable video INT, NOT NMI** — the front-panel reset button and SLOT1 NMI have no logical
+  tie to the internal-slot board. Revisit only if a schematic/service-manual capture shows Lock
+  also gating NMI.
+
+**Implementation notes (milestone 17, as built):**
+- **The daisy chain registers individual CTC *channels* (ch0…ch3), not the chip as a whole** —
+  each channel is its own IEI→IEO link, matching how the real chip chains its channels internally.
+  A future SLOT2 card registers as a single chip-level link *behind* all four CTC channels.
+- **Int-ack `Acknowledge()` must fire ONCE per ack M-cycle, on its first T-state** — not per
+  T-state. Z80.Core's int-ack M-cycle holds M1+IORQ across 3 T-states; a stateless IM1 pull-up
+  didn't care (idempotent 0xFF), but a **stateful daisy-chain `Acknowledge()` has side effects**
+  (clears pending, sets in-service), so calling it 3× drove the wrong vector (the 2nd/3rd call saw
+  the channel self-blocked and fell through to the 0xFE pull-up). Edge-detect the first T-state and
+  cache/re-drive the same byte for the rest of the cycle. (Also a caution for any UI/debugger code
+  that reads bus state mid-M-cycle.)
+- **`EI` before `RETI` is load-bearing, not stylistic** (§5e's `enable_interrupts = EI + RETI`):
+  accepting a maskable INT clears BOTH IFF1 and IFF2, so a bare `RETI` after a non-nested interrupt
+  leaves interrupts disabled and the next field's tick pends forever.
 
 **Consequence — the stock T needs NO CTC:** model an absent CTC exactly like an empty
 slot (open-bus reads, INT never asserted) and the ROM auto-selects the video 50 Hz tick.

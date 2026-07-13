@@ -1258,8 +1258,9 @@ Two bugs were masking CLOAD success; both confirmed by tracing `Cassette.asm` li
   `tests/P2000.Machine.Tests/Interrupts/DaisyChainTests.cs` (new — 6),
   `tests/P2000.Machine.Tests/Interrupts/CtcIntegrationTests.cs` (new — 7),
   `tests/P2000.Machine.Tests/State/MachineStateFileTests.cs` (+2: Ctc/Lock round-trip, v2 now rejected).
-- **Synced:** no (pending human sync into P2000T-reference.md + Z80.Core/P2000.UI notes re:
-  the int-ack multi-T-state gotcha)
+- **Synced:** yes (2026-07-11 — into reference §5e: Lock-gates-maskable-INT-only RESOLVED,
+  per-channel daisy chain, int-ack-once-per-M-cycle, EI+RETI load-bearing; §3a .state v3.
+  RET/RETI-to-HALT, SP=0x0000, and the test-harness items are implementation-only.)
 
 ### 2026-07-11 — Milestone 18: tape turbo — ROM-trap fast load/save
 - **Assumed:** the milestone's own spec named `cas_block_read`/`load_block` and
@@ -1325,6 +1326,7 @@ Two bugs were masking CLOAD success; both confirmed by tracing `Cassette.asm` li
   `TryDecodeBlockAt`, `WriteBlockFrames` refactor), `MdcrDevice.cs` (`TryReadBlockAtHead`,
   `WriteBlockAtHead`, `IsWriteProtected`), `src/P2000.Machine/Machine.cs` (trap check in
   `Tick()`), `tests/P2000.Machine.Tests/Devices/CassetteTurboTrapTests.cs` (new — 6 tests).
-- **Synced:** no (pending human sync into P2000T-reference.md §5b — the confirmed trap
-  addresses and RAM variable layout aren't in the reference doc yet, since they came from an
-  external symbol table/disassembly not held in this repo).
+- **Synced:** yes (2026-07-11 — into reference §5b: trap points cas_Read 0x0552 / cas_Write
+  0x057A, RAM-variable layout, block-count math, replace-vs-append, byte-identical guarantee.
+  The MiniTape refactor + des_length test-pattern are implementation-only.)
+  

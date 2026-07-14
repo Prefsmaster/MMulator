@@ -1470,4 +1470,87 @@ Two bugs were masking CLOAD success; both confirmed by tracing `Cassette.asm` li
 - **Synced:** yes (2026-07-11 — into reference §5b: trap points cas_Read 0x0552 / cas_Write
   0x057A, RAM-variable layout, block-count math, replace-vs-append, byte-identical guarantee.
   The MiniTape refactor + des_length test-pattern are implementation-only.)
-  
+
+### 2026-07-14 — Tape capacity: 42 blocks/side confirmed (BASIC manual), enforcement unconfirmed
+- **Found (new source — owner's BASIC manual):** capacity is stated as **42 blocks per side**.
+  Cross-checks exactly against the reference doc's existing ~42 KB/side figure: 42 × the
+  CONFIRMED 1024-byte block data payload = 43,008 bytes ≈ 42 KB. Two independent sources (ROM
+  disassembly's block-size math, the printed manual) now agree — no contradiction, a
+  confirmation.
+- **Open question raised, not resolved here (design-doc pass only, no code read):** does
+  `MiniTape` actually enforce this as a per-side capacity limit (tape-full / BET asserting at
+  the real 42-block boundary), or does it just run out whenever its buffer — described
+  elsewhere in this log as "the full 1 MB phase array" (see the milestone-9 `.state`-
+  serialization finding above) — physically ends? Phase math from the CONFIRMED block layout
+  (MARK 4 B + `MarkDataGap` 970 phases + combined HEADER+DATA frame 1060 B = 17,994 phases/
+  block) puts 42 blocks at ≈755,748 phases, comfortably inside a 1,000,000-phase buffer — so
+  the buffer is at least big enough, but nothing sourced ties `IsAtEnd`/BET's far-end trigger
+  to 42 blocks specifically (only BOT/position-0 is confirmed to assert BET). **Whoever next
+  touches `MiniTape`: check whether this is enforced, and if not, decide deliberately (enforce
+  the real limit vs. explicitly accept the simplification) rather than leaving it as an
+  accident of buffer sizing.**
+- **Applies to:** reference doc §5 (Storage) / §5b ("Tape capacity" — new subsection) /
+  `src/P2000.Machine/Devices/Cassette/MiniTape.cs` (capacity/`IsAtEnd` logic — not inspected
+  this pass).
+- **Synced:** yes (2026-07-14 — into P2000T-reference.md §5 Storage + §5b new "Tape capacity"
+  subsection).
+
+### 2026-07-14 — DECIDED (not yet implemented): MdcrDevice.InsertBlankTape()
+- **Reported by Claude Code, working UI milestone 13** (`P2000.UI/CLAUDE.md` §14.13 — cassette
+  deck "New (blank) tape"): `MdcrDevice` has no live mount entry point that doesn't require real
+  `.cas` bytes to parse. The existing method is **`MdcrDevice.InsertTape()`** (the first time
+  this exact symbol name has surfaced in either project's docs — previously only `MiniTape`'s
+  `LoadCasImage`/`Save` and `MdcrDevice.SaveTape` were on record); it always parses a `.cas`
+  byte stream via `MiniTape.LoadCasImage`. There is no equivalent for "mount an empty tape."
+  This is exactly the gap UI milestone 13's own spec flagged as "verify, don't assume" and told
+  Claude Code to report back rather than add unilaterally — working as intended.
+- **Decision (this entry IS the authorization to implement):** add
+  **`MdcrDevice.InsertBlankTape()`** — same shape as `InsertTape()`, skipping the parse step:
+  - Construct an empty `MiniTape` — zero blocks, head at BOT, **no backing file path** (so the
+    UI's "Save" vs. "Save as…" distinction, milestone 13, has an unbacked tape to detect).
+  - Flip CIP live exactly like `InsertTape()` does (same runtime-exception mount path, reference
+    doc §5b) — one CIP transition, indistinguishable to the ROM from any other insert.
+  - No changes to `MiniTape`'s read/write/CSAVE paths, `Save()`/serialization, or `MdcrDevice`'s
+    status-bit logic. Purely a second constructor-and-mount path into the same "tape mounted"
+    state `InsertTape()` already produces — not a new subsystem.
+  - Naming: `InsertBlankTape()` chosen over `MountBlank()` (UI milestone 13's placeholder name)
+    to match the real `InsertTape()` symbol now that it's known, rather than inventing a
+    parallel naming scheme.
+- **Not resolved here — small implementation calls left to Claude Code, log the outcome:**
+  whether `MiniTape` needs a new `CreateBlank()` static/constructor or whether `InsertBlankTape()`
+  builds the empty state inline; whether "no backing file path" is `null`, `string.Empty`, or a
+  dedicated flag/property the UI's Save-vs-Save-as check reads.
+- **Applies to:** `src/P2000.Machine/Devices/Cassette/MdcrDevice.cs` (new `InsertBlankTape()`),
+  `src/P2000.Machine/Devices/Cassette/MiniTape.cs` (blank-construction path) /
+  `src/P2000.UI/CLAUDE.md` §14.13 (the consumer) — reference doc §5b (host-side `.cas` API,
+  "create-blank" entry — no hardware content changes, this is software-architecture only).
+- **Synced:** no (internal API decision, not a hardware/reference-doc fact — stays local to this
+  file; §7's cassette bullet above still describes the pre-this-decision spec and is intentionally
+  left as historical intent, per this project's own convention — reality tracked here instead).
+
+### 2026-07-14 — IMPLEMENTED: MdcrDevice.InsertBlankTape() (closes the entry above)
+- **Resolved (no `MiniTape` change needed at all):** `MiniTape`'s existing parameterless
+  constructor already produces exactly the required blank state — position 0 (BOT), side 0,
+  unprotected, pseudo-noise-filled. `InsertBlankTape()` is therefore a two-line method:
+  `_tape = new MiniTape(); ResetPll(); UpdateStatusFromTape();` — no `CreateBlank()` static, no
+  new `MiniTape` field/flag. The "same shape as `InsertTape()`, skipping the parse step" framing
+  in the entry above turned out to be exact, not approximate.
+- **Resolved ("no backing file path" is a UI-only concept):** `MiniTape`/`MdcrDevice` have no
+  notion of a file path at all (they only model phases) — there was never a machine-layer flag
+  to design. The Save-vs-Save-as distinction lives entirely in `P2000.UI`'s `CassetteDeckVm`,
+  which now tracks the backing `IStorageFile?` itself (null after `InsertBlankTape()`, set after
+  a file-dialog/drag-drop mount or a prior Save-as). No machine-layer surface for this at all.
+- **Confirmed ("one CIP transition, not two" is structural, not something to special-case):**
+  because `InsertBlankTape()` reassigns `_tape` directly (old tape object → new tape object)
+  without ever setting it to `null` in between, CIP never passes through "absent" when swapping
+  a mounted tape for a blank one — this falls out of the existing field-swap shape for free, no
+  eject-then-insert logic was written or needed.
+- **Tests:** `tests/P2000.Machine.Tests/Devices/MdcrDeviceTests.cs` — CIP clears like
+  `InsertTape`; `HasTape` true; not write-protected (WEN clear); immediately writable via
+  `WriteBlockAtHead` (no format step); a full blank→write→`SaveTape()`→reload→`TryReadBlockAtHead`
+  round-trip is byte-identical; mounting blank over an already-mounted tape leaves CIP "present"
+  throughout (never observed absent).
+- **Applies to:** `src/P2000.Machine/Devices/Cassette/MdcrDevice.cs` (`InsertBlankTape`),
+  `tests/P2000.Machine.Tests/Devices/MdcrDeviceTests.cs` (+6 tests).
+- **Synced:** no (implementation-only, closes the internal API decision above — no
+  hardware/reference-doc content).

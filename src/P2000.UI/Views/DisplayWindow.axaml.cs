@@ -155,7 +155,7 @@ public partial class DisplayWindow : Window
             using var ms = new MemoryStream();
             await stream.CopyToAsync(ms);
             var name = Path.GetFileNameWithoutExtension(file.Name);
-            _vm.CassetteVm.MountBytes(ms.ToArray(), name);
+            _vm.CassetteVm.MountBytes(ms.ToArray(), name, file);
             break; // mount only the first cassette
         }
     }

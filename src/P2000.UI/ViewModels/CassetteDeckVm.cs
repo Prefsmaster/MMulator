@@ -9,13 +9,20 @@ using System.Text;
 namespace P2000.UI.ViewModels;
 
 /// <summary>ViewModel for the cassette deck window. Subscribes to FrameReady to reflect
-/// live motor direction and R/W activity. Mount/Eject are the only mutations: both call
-/// <c>MdcrDevice</c> directly (CIP is the one runtime exception per machine CLAUDE.md §7).</summary>
+/// live motor direction and R/W activity. Mount/Eject/New/Save are the only mutations: all
+/// call <c>MdcrDevice</c> directly (CIP is the one runtime exception per machine CLAUDE.md §7).
+/// "New (blank) tape" + "Save"/"Save as…" are UI milestone 13 — host-side container operations
+/// in the same category as mount/eject, not physical MDCR controls (§5).</summary>
 public sealed partial class CassetteDeckVm : ObservableObject
 {
     private readonly EmulationRunner _runner;
     private byte[]? _casBytes;
     private int _frameTick;
+
+    /// <summary>The file this tape was loaded from or last saved to; null when the mounted
+    /// tape is unbacked (fresh off "New (blank) tape"). Drives "Save" vs "Save as…" (§14
+    /// milestone 13): "Save" reuses this path directly; only prompts when null.</summary>
+    private IStorageFile? _backingFile;
 
     [ObservableProperty] private bool _hasTape;
     [ObservableProperty] private string _tapeLabel = "No cassette";
@@ -27,6 +34,9 @@ public sealed partial class CassetteDeckVm : ObservableObject
     /// <summary>Fixed header row aligned to the formatted program entries below it.</summary>
     public static string DirectoryHeader { get; } =
         $"{"Filename",-16} {"Ext",-4} {"Cr",-2} {"Size",8} {"Blk",4}";
+
+    /// <summary>Raised when a save error should be surfaced as a dialog.</summary>
+    public event Action<string>? ShowMessageRequested;
 
     public CassetteDeckVm(EmulationRunner runner)
     {
@@ -54,10 +64,7 @@ public sealed partial class CassetteDeckVm : ObservableObject
     [RelayCommand]
     private async Task MountAsync()
     {
-        // Get any available TopLevel (main window on a classic desktop lifetime).
-        var mainWindow = (Avalonia.Application.Current?.ApplicationLifetime
-            as IClassicDesktopStyleApplicationLifetime)?.MainWindow;
-        var topLevel = mainWindow as Avalonia.Controls.TopLevel ?? Avalonia.Controls.TopLevel.GetTopLevel(mainWindow);
+        var topLevel = GetTopLevel();
         if (topLevel is null) return;
 
         var files = await topLevel.StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
@@ -79,7 +86,7 @@ public sealed partial class CassetteDeckVm : ObservableObject
         var bytes = ms.ToArray();
         var name = Path.GetFileNameWithoutExtension(files[0].Name);
 
-        MountBytes(bytes, name);
+        MountBytes(bytes, name, files[0]);
     }
 
     [RelayCommand(CanExecute = nameof(CanEject))]
@@ -87,6 +94,7 @@ public sealed partial class CassetteDeckVm : ObservableObject
     {
         _runner.Machine.Mdcr.EjectTape();
         _casBytes = null;
+        _backingFile = null;
         HasTape = false;
         TapeLabel = "No cassette";
         IsWriteProtected = false;
@@ -96,25 +104,126 @@ public sealed partial class CassetteDeckVm : ObservableObject
 
     private bool CanEject() => HasTape;
 
+    /// <summary>"New (blank) tape" (§14 milestone 13): mounts a fresh, empty, unbacked tape
+    /// live. Mounting straight over an already-mounted tape is a single CIP transition (the
+    /// machine layer's <c>InsertBlankTape</c> never observes "absent" in between) — the same
+    /// live runtime exception a file-dialog mount already uses, not a topology change. No
+    /// format step: the blank tape is immediately writable (CSAVE appends at BOT).</summary>
+    [RelayCommand]
+    private void NewBlankTape()
+    {
+        _runner.Machine.Mdcr.InsertBlankTape();
+        _casBytes = null;
+        _backingFile = null;
+        HasTape = true;
+        IsWriteProtected = false;
+        TapeLabel = "(blank tape)";
+        Programs = [];
+        EjectCommand.NotifyCanExecuteChanged();
+        SaveCommand.NotifyCanExecuteChanged();
+        SaveAsCommand.NotifyCanExecuteChanged();
+    }
+
+    /// <summary>Writes the mounted tape back to its existing backing file; behaves like
+    /// "Save as…" when the tape is unbacked (fresh off "New (blank) tape").</summary>
+    [RelayCommand(CanExecute = nameof(HasTape))]
+    private async Task SaveAsync()
+    {
+        if (_backingFile is null)
+        {
+            await SaveAsAsync();
+            return;
+        }
+        await WriteTapeToFileAsync(_backingFile);
+    }
+
+    /// <summary>Always prompts for a destination, then adopts it as the new backing file
+    /// (so a subsequent plain "Save" writes back to it without re-prompting).</summary>
+    [RelayCommand(CanExecute = nameof(HasTape))]
+    private async Task SaveAsAsync()
+    {
+        var topLevel = GetTopLevel();
+        if (topLevel is null) return;
+
+        var file = await topLevel.StorageProvider.SaveFilePickerAsync(new FilePickerSaveOptions
+        {
+            Title = "Save Cassette As",
+            SuggestedFileName = $"{SuggestedFileNameStem()}.cas",
+            FileTypeChoices = [new FilePickerFileType("P2000T Cassette") { Patterns = ["*.cas"] }],
+            DefaultExtension = "cas",
+        });
+        if (file is null) return;
+
+        if (!await WriteTapeToFileAsync(file)) return;
+
+        _backingFile = file;
+        TapeLabel = Path.GetFileNameWithoutExtension(file.Name);
+    }
+
+    private string SuggestedFileNameStem() =>
+        _backingFile is not null ? Path.GetFileNameWithoutExtension(_backingFile.Name) : "tape";
+
+    /// <summary>Serializes the mounted tape (<c>MdcrDevice.SaveTape</c> — machine ms.9a, no
+    /// machine change needed here) and writes it to <paramref name="file"/>. Returns false
+    /// (and surfaces a message) on failure or when the tape has no valid blocks to save.</summary>
+    private async Task<bool> WriteTapeToFileAsync(IStorageFile file)
+    {
+        var bytes = _runner.Machine.Mdcr.SaveTape();
+        if (bytes is null)
+        {
+            ShowMessageRequested?.Invoke("No valid blocks found on tape — nothing to save.");
+            return false;
+        }
+
+        try
+        {
+            await using var stream = await file.OpenWriteAsync();
+            await stream.WriteAsync(bytes);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            ShowMessageRequested?.Invoke($"Save failed:\n{ex.Message}");
+            return false;
+        }
+    }
+
+    private static Avalonia.Controls.TopLevel? GetTopLevel()
+    {
+        var mainWindow = (Avalonia.Application.Current?.ApplicationLifetime
+            as IClassicDesktopStyleApplicationLifetime)?.MainWindow;
+        return mainWindow as Avalonia.Controls.TopLevel ?? Avalonia.Controls.TopLevel.GetTopLevel(mainWindow);
+    }
+
     // ── Public host-face (called by drag-drop handler in the view) ──────────────────────────
 
     /// <summary>Inserts a <c>.cas</c> image at runtime (live CIP transition). Safe to call
     /// from the UI thread. Also called by the drag-drop handler in
-    /// <see cref="Views.DisplayWindow"/>.</summary>
-    public void MountBytes(byte[] casImage, string filename)
+    /// <see cref="Views.DisplayWindow"/>. <paramref name="backingFile"/> is the source file
+    /// when known (file dialog/drag-drop) — it becomes the tape's Save target; pass null for
+    /// an unbacked mount.</summary>
+    public void MountBytes(byte[] casImage, string filename, IStorageFile? backingFile = null)
     {
         _runner.Machine.Mdcr.InsertTape(casImage, writeProtect: true);
         _casBytes = casImage;
+        _backingFile = backingFile;
         HasTape = true;
         IsWriteProtected = true;
         TapeLabel = filename;
         Programs = ParseDirectory(casImage);
         EjectCommand.NotifyCanExecuteChanged();
+        SaveCommand.NotifyCanExecuteChanged();
+        SaveAsCommand.NotifyCanExecuteChanged();
     }
 
     // ── CommunityToolkit hooks ───────────────────────────────────────────────────────────────
 
-    partial void OnHasTapeChanged(bool value) => EjectCommand.NotifyCanExecuteChanged();
+    partial void OnHasTapeChanged(bool value)
+    {
+        EjectCommand.NotifyCanExecuteChanged();
+        SaveCommand.NotifyCanExecuteChanged();
+        SaveAsCommand.NotifyCanExecuteChanged();
+    }
 
     // ── Directory parsing ────────────────────────────────────────────────────────────────────
 

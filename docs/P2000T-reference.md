@@ -173,11 +173,21 @@ Config changes that alter hardware topology **require a machine reset to take ef
   (implemented in the core — expose it), plus IFF1/2, IM, and the flag bits broken out
   (incl. YF/XF).
 - **Memory watch windows (MULTIPLE, independent):** each is an observer over the state snapshot
-  with its own address range — freely spawnable (stack, sysvars, a data structure, etc.). Live
-  hex + ASCII, refreshed per frame / per step. **Highlight bytes changed since last refresh**
-  (colour flash) — turns a static dump into a view of what the program is touching. Optional
-  **"follow" a register pair** (follow HL / SP) so a window tracks what the code is working on.
-  Read-only; never touches the live core.
+  with its own address range — freely spawnable (stack, sysvars, a data structure, etc.). **Range
+  is explicitly configurable** (a Length field alongside the base address; not fixed at spawn —
+  CORRECTED 2026-07-14, UI build). Live hex + ASCII, refreshed per frame / per step. **Highlight
+  bytes changed since last refresh** (colour flash) — turns a static dump into a view of what the
+  program is touching. Optional **"follow" a register pair** (follow HL / SP) so a window tracks
+  what the code is working on. **Read-only for interactive cell editing — this is not a hex
+  editor — but "never touches the live core" is now CORRECTED (2026-07-14, UI build):** a window
+  can **export its configured range to a file** (reads the snapshot, no mutation) and **import a
+  file to an address** (a bulk RAM write, queued through the same command-queue/boundary
+  mechanism as any other machine mutation — not live-poking, not exempt from the "every mutation
+  is a queued command" rule, but a real write nonetheless). The export/import range defaults to
+  the window's own Base/Length but is independently editable at save time, so a one-off export
+  doesn't require changing what the window is currently watching. Motivating case: pulling a
+  machine-code routine out of RAM (e.g. one loaded from a `.cas`/disk by a BASIC wrapper) for
+  offline disassembly, and pushing an assembled routine back in.
 - **Special VRAM window (the P2000T panning made visible):** shows the **80×24** screen buffer
   (0x5000–0x577F) laid out **spatially as 80×24** (not linear) — matching the hardware addressing
   `0x5000 + col + 80*row`. Each cell shows the char byte, toggleable between **rendered glyph**
@@ -827,7 +837,11 @@ The machine object builds a **page table** over the 64 KB space when assembled (
 ### Storage
 - Built-in Mini-Cassette (MDCR) drive, ~42 KB per side, **6000 baud**, FM encoding,
   directly-coupled analog circuitry. Treated like a floppy from the user's view
-  (CLOAD / CSAVE / directory).
+  (CLOAD / CSAVE / directory). **CONFIRMED against the owner's BASIC manual (2026-07-14):**
+  stated capacity is **42 blocks per side** — at the confirmed 1024-byte data payload per
+  block (§5b), 42 × 1024 = 43,008 bytes ≈ 42 KB, matching this figure exactly. Two independent
+  sources (ROM-disassembly block-size math, the printed manual's stated capacity) agree — see
+  §5b "Tape capacity" for whether this is actually enforced as a limit yet.
 
 ---
 
@@ -1075,6 +1089,27 @@ Specifically still to pin down (from the two sources above, not invented here):
   cassette interactions your traps will intercept.
 - Loading note: P2000T BASIC identifies a program by only the **first character** of its
   name (e.g. `cload "h"` matches `"hello world"`). Relevant to your search emulation.
+
+### Tape capacity — CONFIRMED figure (2026-07-14), NOT YET an enforced emulator limit
+- **CONFIRMED (owner's BASIC manual):** capacity is **42 blocks per side** — cross-checks
+  exactly against the ~42 KB/side figure in the Storage section above (42 × 1024-byte block
+  data payload = 43,008 bytes ≈ 42 KB). Two independent sources — ROM-disassembly block-size
+  math and the printed BASIC manual's stated capacity — now agree.
+- **OPEN — whether the emulator enforces this as a hard limit is unconfirmed.** The only
+  capacity-adjacent number found in the machine-side build notes is an aside describing
+  `MiniTape`'s buffer as "the full 1 MB phase array" (milestone-9 `.state`-serialization
+  finding — mentioned only to explain what does/doesn't get saved, not a deliberate capacity
+  calculation). Working the phase math from the CONFIRMED block layout above (MARK 4 B → 64
+  phases; `MarkDataGap` 970 phases; combined HEADER+DATA frame 1060 B → 16,960 phases =
+  **17,994 phases/block**), 42 blocks ≈ 755,748 phases — comfortably inside a 1,000,000-phase
+  buffer, so it's at least big enough, but nothing sourced ties `IsAtEnd`/BET's far-end trigger
+  to the real 42-block boundary specifically (only BOT, position 0, is confirmed to assert
+  BET — milestone 9 finding "tape at BOT on insert"). **Needs a build-side answer:** does
+  `MiniTape` stop CSAVE at a real per-side capacity (tape-full / BET-at-42-blocks), or does it
+  simply run out whenever its (oversized, ~1 MB) buffer physically ends? If the latter, CSAVE
+  can silently exceed real hardware capacity — not period-accurate, and worth a deliberate
+  decision (enforce the real limit, or explicitly accept the simplification) rather than
+  leaving it as an accident of buffer sizing.
 
 ---
 

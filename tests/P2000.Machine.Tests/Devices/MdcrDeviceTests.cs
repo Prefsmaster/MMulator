@@ -93,6 +93,91 @@ public class MdcrDeviceTests
         Assert.Equal(0x00, mdcr.ReadStatus() & 0x08);
     }
 
+    // ---- InsertBlankTape (P2000.Machine CLAUDE.md §17, 2026-07-14) --------------
+
+    [Fact]
+    public void InsertBlankTape_ClearsCip_LikeInsertTape()
+    {
+        var (mdcr, _) = Create();
+        mdcr.InsertBlankTape();
+        Assert.Equal(0x00, mdcr.ReadStatus() & 0x10); // CIP clear = cassette present
+    }
+
+    [Fact]
+    public void InsertBlankTape_HasTape_True()
+    {
+        var (mdcr, _) = Create();
+        mdcr.InsertBlankTape();
+        Assert.True(mdcr.HasTape);
+    }
+
+    [Fact]
+    public void InsertBlankTape_NotWriteProtected()
+    {
+        var (mdcr, _) = Create();
+        mdcr.InsertBlankTape();
+        Assert.False(mdcr.IsWriteProtected);
+        Assert.Equal(0x00, mdcr.ReadStatus() & 0x08); // WEN clear = writable
+    }
+
+    [Fact]
+    public void InsertBlankTape_ImmediatelyWritable_WriteBlockAtHeadSucceeds()
+    {
+        // "No format step" (project CLAUDE.md §14.13): CSAVE appends at the head position
+        // (BOT on a fresh tape) with no prior formatting action.
+        var (mdcr, _) = Create();
+        mdcr.InsertBlankTape();
+
+        var header = new byte[32];
+        var data = new byte[1024];
+        for (var i = 0; i < data.Length; i++) data[i] = (byte)i;
+
+        Assert.True(mdcr.WriteBlockAtHead(header, data));
+    }
+
+    [Fact]
+    public void InsertBlankTape_CsaveThenSaveTape_RoundTripsByteIdentical()
+    {
+        // The blank-tape → CSAVE → Save-as-.cas → reload round trip (UI milestone 13's
+        // motivating case), exercised at the machine layer where it's actually testable
+        // (the file-dialog half is UI-only and not unit-tested — see P2000.UI.Tests).
+        var (mdcr, _) = Create();
+        mdcr.InsertBlankTape();
+
+        var header = new byte[32];
+        for (var i = 0; i < header.Length; i++) header[i] = (byte)(0xA0 + i);
+        var data = new byte[1024];
+        for (var i = 0; i < data.Length; i++) data[i] = (byte)i;
+
+        Assert.True(mdcr.WriteBlockAtHead(header, data));
+
+        var savedCas = mdcr.SaveTape();
+        Assert.NotNull(savedCas);
+        Assert.Equal(1280, savedCas!.Length);
+
+        // Reload the saved .cas onto a fresh mount and confirm the decoded block matches.
+        var (reloaded, _) = Create();
+        reloaded.InsertTape(savedCas);
+        Assert.True(reloaded.TryReadBlockAtHead(out var reloadedHeader, out var reloadedData));
+        Assert.Equal(header, reloadedHeader);
+        Assert.Equal(data, reloadedData);
+    }
+
+    [Fact]
+    public void InsertBlankTape_OverAlreadyMountedTape_NeverObservesAbsentInBetween()
+    {
+        // "One CIP transition, not two" (project CLAUDE.md §14.13 test (e)): swapping directly
+        // from one mounted tape to a blank one must never pass through the "no cassette" state.
+        var (mdcr, _) = Create();
+        mdcr.InsertTape(OneCasRecord());
+        Assert.Equal(0x00, mdcr.ReadStatus() & 0x10); // present
+
+        mdcr.InsertBlankTape();
+
+        Assert.Equal(0x00, mdcr.ReadStatus() & 0x10); // still present, never observed absent
+        Assert.True(mdcr.HasTape);
+    }
+
     // ---- Motor / no-tick without motor ------------------------------------------
 
     [Fact]

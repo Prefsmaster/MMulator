@@ -114,6 +114,21 @@ public sealed class MdcrDevice : IDevice
         UpdateStatusFromTape();
     }
 
+    /// <summary>Mounts a fresh, empty, unbacked tape at runtime — same live CIP-flip mount
+    /// path as <see cref="InsertTape"/>, skipping the <c>.cas</c> parse step (project CLAUDE.md
+    /// §17, 2026-07-14 "DECIDED (not yet implemented)"). <see cref="MiniTape"/>'s own
+    /// constructor already produces exactly the required state (BOT, unprotected, zero
+    /// blocks) — no separate blank-construction path is needed. Because <see cref="_tape"/>
+    /// is swapped directly (never set to null in between), mounting a blank tape over an
+    /// already-mounted one is a SINGLE CIP transition (stays "present" throughout), not an
+    /// observable eject-then-insert.</summary>
+    public void InsertBlankTape()
+    {
+        _tape = new MiniTape();
+        ResetPll();
+        UpdateStatusFromTape();
+    }
+
     /// <summary>Eject the current cassette at runtime. CIP flips live.</summary>
     public void EjectTape()
     {

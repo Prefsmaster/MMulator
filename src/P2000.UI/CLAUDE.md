@@ -81,9 +81,14 @@ snapshots, and it submits input + commands.** Keep every window on this side of 
   config-JSON length + config JSON + device stream. Restore = `new Machine(embeddedConfig)`
   then `LoadState`. State is only valid at `AtInstructionBoundary`.
 - **Cassette runtime actions.** Mount (`.cas`/`.p2000t`) flips CIP present live; eject flips it
-  absent. The host-side `.cas` API (mount/eject/save-as/directory/write-protect) is always-fast
-  and independent of `TimingPolicy` (authentic vs turbo). "Save as `.cas`" write-back exists
-  (machine milestone 9a).
+  absent. The host-side `.cas` API (mount/eject/save-as/**create-blank**/rewind/directory/
+  write-protect — reference doc §5b) is always-fast and independent of `TimingPolicy`
+  (authentic vs turbo). "Save as `.cas`" write-back exists at the machine layer (milestone 9a)
+  but has **no UI caller yet**; **create-blank likewise has no confirmed live-mount entry point
+  at the machine layer** (the ms.9a evidence is a blank in-memory `MiniTape` unit test, not
+  necessarily a CIP-flip-live mount path) — **both are wired up in UI milestone 13**, which also
+  notes the possible small machine-layer gap for create-blank. Rewind and write-protect remain
+  decided-but-unbuilt on both layers; not in scope for milestone 13.
 - **Panning.** `Video.PanX` (0–40) — the special VRAM window's viewport rectangle reads this.
 - **Contention overlay hook.** The machine exposes the set of character cells corrupted this
   frame (machine §10). Both the display "show glitches" overlay and the debugger's VRAM window
@@ -180,7 +185,11 @@ snapshot / the framebuffer view. None mutate the core except by enqueuing comman
    reading; WCD/WDA driven = writing — same source as the status-bar activity LED), optional
    **tape position + program directory** (host-side `.cas` API). **Eject** unmounts and flips CIP
    absent; insertion is file-dialog/drag-drop. Authentic/turbo speed is a **config setting**
-   (mechanism speed), NOT a deck button.
+   (mechanism speed), NOT a deck button. **New (blank) tape** and **Save / Save as `.cas`…**
+   (§14 milestone 13) are additional deck actions, host-side container operations like
+   mount/eject — neither is a "physical control" in the real-MDCR sense (no such buttons existed
+   on the deck); they're the emulator's equivalent of taking a fresh tape out of its shrink-wrap
+   and putting a written one back on the shelf.
 
 ---
 
@@ -281,12 +290,17 @@ shared **`Z80Tables`** (root rule) so the debugger decodes exactly what the core
 - **Full register file:** AF/BC/DE/HL + primes, IX/IY, SP, PC, I, R, **WZ/MEMPTR**, IFF1/2, IM,
   flags broken out (incl. YF/XF).
 - **Memory watch windows (MULTIPLE, independent):** each an observer over the snapshot with its
-  own range; freely spawnable. Live hex + ASCII, refreshed per frame/step; **highlight bytes
-  changed since last refresh** (colour flash). Optional **follow a register pair** (HL/SP).
-  **Read-only** for live cell editing (still true — this is not a hex editor). **Export/import
-  the whole configured range as a file IS supported** (§14 milestone 12: "Save range to file" /
-  "Load file to address" toolbar actions) — a bulk file operation over the range, distinct from
-  editing individual cells in place.
+  own range; freely spawnable. **Range is explicitly configurable, not fixed at spawn** — a
+  "Length" field alongside "Base" (as-built, milestone 12 follow-up, §18 2026-07-14): setting
+  either resizes the window to `ceil(length/16)` rows, clamped to `[1, 0x10000]` bytes. Live hex
+  + ASCII, refreshed per frame/step; **highlight bytes changed since last refresh** (colour
+  flash). Optional **follow a register pair** (HL/SP). **Read-only** for live cell editing (still
+  true — this is not a hex editor). **Export/import the whole configured range as a file IS
+  supported** (§14 milestone 12: "Save range to file" / "Load file to address" toolbar actions)
+  — a bulk file operation over the range, distinct from editing individual cells in place.
+  **"Save range to file…" prompts for its own start+length at save time** (as-built; defaults to
+  the window's current Base/Length but independently editable), so a one-off export doesn't
+  require changing what the window is currently watching.
 - **Special VRAM / pan window:** the **80×24** screen buffer (0x5000–0x577F) laid out spatially
   (address = `0x5000 + col + 80*row`), each cell toggleable glyph/hex, with a **rectangle marking
   the visible 40-column viewport** positioned by `Video.PanX`, sliding live as the program pans.
@@ -470,6 +484,60 @@ builds did. Do not advance while the current milestone is red. Record spec corre
       a silent wrap/crash; (d) importing a file larger than the watch window's own configured
       length is allowed (target address is independent of the window's range) — only the RAM-size
       bound in (c) applies. → commit.
+13. **Cassette deck — New (blank) tape + Save/Save-as wiring.** Closes the gap between what
+    reference doc §5b already decided for the host-side `.cas` API (create-blank, save-as, among
+    others) and what's actually reachable from the UI today (only mount/eject/directory). Two
+    new deck actions (§5), same host-side-container-operation category as mount/eject (§3.1) —
+    always fast, independent of `TimingPolicy`.
+    - **"New (blank) tape."** Mounts a fresh, empty, **unbacked** tape (no file path) live — the
+      same CIP-flip-live runtime exception a file-dialog mount already uses (§3.1/§7: cassette
+      is the one reset-to-apply exception). If a tape is already mounted, this behaves like
+      eject-then-insert-blank as **one** live CIP transition, not two — swapping to a blank tape
+      is a legitimate live operation on real hardware (pull one cassette, push in another), not
+      a topology change.
+    - **Machine-layer check — flag, don't assume (unlike milestone 12's clean two-sided
+      answer):** confirm `MdcrDevice`'s current mount entry point before wiring this. The only
+      sourced evidence for "blank tape" so far is `MiniTape`'s ms.9a unit test (a blank
+      in-memory tape written to via CSAVE, then serialized) — that is NOT the same claim as "a
+      host-triggered live CIP-mount from nothing, bypassing `LoadCasImage`, already exists." If
+      the current mount entry point requires an actual `.cas` byte stream to parse,
+      create-blank needs a small additive machine-layer entry point (e.g.
+      `Mount(MiniTape.CreateBlank())` or a `MountBlank()` overload) that skips parsing and
+      starts the tape at BOT with zero blocks — same shape as the existing mount, not a new
+      subsystem. Per §17 this touches `P2000.Machine`'s canonical contract: **report it back
+      rather than adding it to the machine layer from here.**
+    - **No format step — confirmed with the owner (2026-07-14).** Unlike disk, the P2000
+      cassette has no distinct format/init command. A blank tape is immediately writable: CSAVE
+      appends at the head position (BOT on a fresh tape), matching the already-documented
+      "append on blank tape" behavior (reference doc §5b "Replace vs append"). Do not build a
+      "format tape" affordance — there is nothing for it to do.
+    - **"Save" / "Save as `.cas`…"** — write back the currently-mounted tape's content via the
+      machine's existing serializer (ms.9a, `MiniTape.Save`/`MdcrDevice.SaveTape`; **no machine
+      change needed here** — this half of the gap is UI-only, the mirror image of "New (blank)
+      tape"'s uncertain half). **"Save"** reuses the tape's existing backing path if it has one
+      (loaded via file dialog/drag-drop, or a prior save-as); behaves like **"Save as…"** only
+      when the tape is unbacked (e.g. fresh off "New (blank) tape"). Available any time a tape
+      is mounted, live, independent of run/pause state.
+    - **Erase tape — confirmed real by the owner, NOT modeled here.** A separate ROM/BASIC-level
+      command distinct from host-side create-blank (it wipes/reuses an *already-mounted* tape
+      from within a running program, rather than mounting a fresh one from the host side).
+      Mechanism (BASIC keyword / ROM entry point) is **not yet sourced** — flagged as an open
+      item, needs disassembly or a manual before it can be modeled beyond what "Replace vs
+      append" already implies. **Decided: no dedicated UI for it.** It's a program the user runs
+      like any other (keyboard/BASIC); the existing activity LED + directory view already
+      surface it happening. Do not add an "Erase" button.
+    - **Still open, decided-but-unbuilt, out of scope here:** rewind (reference doc §5b lists it
+      in the host API; no UI or confirmed machine entry point) and write-protect toggle (§3.1
+      lists it in the API parenthetical; not wired at either layer). Noted so they aren't
+      silently lost, not pulled into this milestone's deliverable.
+    - **Tests:** (a) "New (blank) tape" flips CIP present live with no reset, machine keeps
+      running; (b) CSAVE a program from BASIC onto a freshly-blanked tape, directory shows it;
+      (c) "Save as `.cas`…" on that tape, then "New (blank) tape" again + file-dialog-load the
+      saved file + CLOAD reproduces the program byte-identical (end-to-end UI round-trip of the
+      ms.9a machine-level test); (d) "Save" (not save-as) on a tape loaded from an existing file
+      overwrites that same path without re-prompting; (e) "New (blank) tape" while a different
+      tape is already mounted performs exactly one CIP transition, not an observable
+      eject-then-insert flicker. → commit.
 
 ---
 
@@ -898,7 +966,73 @@ project.
   `PromptRangeAsync`),
   `tests/P2000.UI.Tests/ViewModels/MemoryWatchVmTests.cs` (range tests added; export tests
   reworked around `Machine.Memory.Read`/`Write` instead of the old fixed-buffer helper).
-- **Synced:** no (implementation-only UI scope correction, no hardware/spec content to sync).
+- **Synced:** yes (2026-07-14, this merge pass — folded into §10's memory watch bullet: range is
+  now explicitly configurable via a Length field, and "Save range to file…" prompts for its own
+  independently-editable start+length rather than always matching the window's live display
+  range. Also synced (2026-07-14, follow-up pass) into `docs/P2000T-reference.md` §3a's
+  "Memory watch windows" bullet — the canonical home for this per this file's own header — which
+  additionally needed its stale "Read-only; never touches the live core" claim CORRECTED: export
+  is read-only, but import is a real (queued, boundary-safe) RAM write, not an exemption from the
+  "every mutation is a queued command" rule. That bullet had never been synced for milestone 12
+  at all until now — this pass covers both the original export/import addition and this
+  range-configurable follow-up in one go.).
+
+### 2026-07-14 — Milestone 13: cassette deck — New (blank) tape + Save/Save-as wiring
+- **Assumed:** per the milestone's own "verify, don't assume" instruction — that
+  `MdcrDevice` might already have a live blank-mount entry point equivalent to `InsertTape()`.
+  Confirmed it did not: `InsertTape(byte[] casImage, ...)` is the only mount path and always
+  parses a real `.cas` byte stream via `MiniTape.LoadCasImage`.
+- **Found (reported back, then authorized and implemented — see `P2000.Machine/CLAUDE.md`
+  §17, 2026-07-14 "DECIDED"/"IMPLEMENTED" pair):** `MdcrDevice.InsertBlankTape()` added.
+  Turned out to need NO `MiniTape` change at all — its existing parameterless constructor
+  already produces exactly the required blank state (BOT, unprotected, zero blocks,
+  pseudo-noise-filled). `InsertBlankTape()` is a two-line method that swaps `_tape` directly
+  (never through `null`), which is also what gives "one CIP transition, not two" for free —
+  no eject-then-insert logic needed.
+- **Found (Save-vs-Save-as backing tracked as `IStorageFile?`, not a raw path string):**
+  `CassetteDeckVm` now holds `_backingFile` (Avalonia's `IStorageFile`, not a `string` path) —
+  the same object returned by `OpenFilePickerAsync`/`SaveFilePickerAsync`/drag-drop, reusable
+  directly for `OpenWriteAsync()` on a plain "Save" without re-resolving a path. Null after
+  `NewBlankTape()`; set on file-dialog mount, drag-drop mount, and after a successful
+  "Save as…". `MountBytes` gained an optional `IStorageFile? backingFile` parameter (default
+  null preserves old callers); `DisplayWindow.axaml.cs`'s drag-drop handler now passes the
+  dropped `IStorageFile` through instead of just its bytes+name.
+- **Found (Save/SaveAs `CanExecute` reuses the `nameof(HasTape)` pattern):** same shape as
+  `DebuggerWindowVm`'s `[RelayCommand(CanExecute = nameof(IsPaused))]` — `HasTape` is already
+  an `[ObservableProperty]` bool, so `SaveCommand`/`SaveAsCommand` gate on it directly with no
+  separate predicate method, and `OnHasTapeChanged` (already existed, extended) keeps both in
+  sync alongside the existing `EjectCommand` notify.
+- **Found (`SaveTape()` needed no machine change — the milestone's own "clean" half):**
+  `MdcrDevice.SaveTape()`/`MiniTape.Save()` already existed from ms.9a and are host-side/
+  always-fast/independent of `TimingPolicy`, exactly as the spec assumed — pure UI wiring
+  (`WriteTapeToFileAsync`) on top.
+- **Found (StorageProvider dialogs remain untested at the unit level — same limitation as
+  milestone 12):** `CassetteDeckVmTests` (new) covers state transitions
+  (`HasTape`/`TapeLabel`/`IsWriteProtected`/`Programs`), the Save/SaveAs `CanExecute` wiring,
+  and — via the real `MdcrDevice` the VM drives — that mounting a blank tape over an
+  already-mounted one never observes CIP go absent. The actual file-picker halves of
+  `MountAsync`/`SaveAsync`/`SaveAsAsync` are not unit-tested (no real desktop `TopLevel` in a
+  headless run); the byte-identical blank→CSAVE→Save→reload round trip is instead tested at
+  the machine layer (`MdcrDeviceTests`, new — exercises `WriteBlockAtHead`/`SaveTape`/
+  `InsertTape`/`TryReadBlockAtHead` directly), which is where it's actually testable.
+- **Not built (per the milestone's own explicit scope):** no "format tape" affordance (blank
+  tape is immediately writable, confirmed no format step exists); no dedicated "Erase" UI
+  (a running program's own erase is indistinguishable from any other CSAVE, already visible
+  via the activity LED + directory); rewind and write-protect toggle remain
+  decided-but-unbuilt, untouched here.
+- **Applies to:** project CLAUDE.md §14.13 / `P2000.Machine/CLAUDE.md` §17 (the
+  `InsertBlankTape` decision + implementation entries) /
+  `src/P2000.Machine/Devices/Cassette/MdcrDevice.cs` (`InsertBlankTape`),
+  `src/P2000.UI/ViewModels/CassetteDeckVm.cs` (`NewBlankTape`, `SaveAsync`, `SaveAsAsync`,
+  `WriteTapeToFileAsync`, `_backingFile`, `MountBytes` signature, `ShowMessageRequested`),
+  `src/P2000.UI/Views/CassetteDeckWindow.axaml` (New/Save/Save-as buttons),
+  `src/P2000.UI/Views/CassetteDeckWindow.axaml.cs` (`ShowErrorDialog`),
+  `src/P2000.UI/Views/DisplayWindow.axaml.cs` (drag-drop passes `IStorageFile` through),
+  `tests/P2000.Machine.Tests/Devices/MdcrDeviceTests.cs` (+6 tests),
+  `tests/P2000.UI.Tests/ViewModels/CassetteDeckVmTests.cs` (new — 8 tests).
+- **Synced:** no (implementation-only UI/machine wiring; the one hardware-adjacent fact —
+  "no format step, blank tape immediately writable" — was already confirmed with the owner
+  and recorded in the milestone spec itself, nothing new to sync).
 
 ### 2026-07-09 — Integer scaling: physical vs logical pixels
 - **Assumed:** computing the integer multiplier `n` from `Bounds.Width / Video.Width` (logical

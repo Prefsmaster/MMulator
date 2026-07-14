@@ -92,3 +92,28 @@ public sealed class ZeroToBoolConverter : IValueConverter
     public object? ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture)
         => throw new NotSupportedException();
 }
+
+/// <summary>Cassette deck write-protect toggle: closed padlock when protected, open padlock
+/// when writable — a single glyph carries the whole signal, no separate checkmark.</summary>
+public sealed class BoolToPadlockIconConverter : IValueConverter
+{
+    public static readonly BoolToPadlockIconConverter Instance = new();
+
+    public object? Convert(object? value, Type targetType, object? parameter, CultureInfo culture)
+        => value is true ? "🔒" : "🔓";
+
+    public object? ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture)
+        => throw new NotSupportedException();
+}
+
+/// <summary>Label text paired with <see cref="BoolToPadlockIconConverter"/>.</summary>
+public sealed class BoolToWriteProtectLabelConverter : IValueConverter
+{
+    public static readonly BoolToWriteProtectLabelConverter Instance = new();
+
+    public object? Convert(object? value, Type targetType, object? parameter, CultureInfo culture)
+        => value is true ? "Write protected" : "Write enabled";
+
+    public object? ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture)
+        => throw new NotSupportedException();
+}

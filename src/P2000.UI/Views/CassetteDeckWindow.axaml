@@ -33,10 +33,21 @@
                                  Fill="{Binding IsActive, Converter={x:Static local:BoolToLedBrushConverter.Instance}}" />
                         <TextBlock Text="R/W" FontSize="10" Foreground="#777" VerticalAlignment="Center" />
                     </StackPanel>
-                    <TextBlock Text="🔒" FontSize="11" VerticalAlignment="Center"
-                               IsVisible="{Binding IsWriteProtected}"
-                               ToolTip.Tip="Write-protected" />
                 </StackPanel>
+                <!-- Write-protect: one clickable padlock, glyph + label always agree -->
+                <Button Command="{Binding ToggleWriteProtectCommand}"
+                        IsEnabled="{Binding HasTape}"
+                        Background="Transparent" BorderThickness="0"
+                        Padding="2" Margin="-2,0,0,0"
+                        HorizontalAlignment="Left" HorizontalContentAlignment="Left"
+                        ToolTip.Tip="Click to toggle write-protect — a host-side control, like snapping out a real cassette's tab">
+                    <StackPanel Orientation="Horizontal" Spacing="6">
+                        <TextBlock Text="{Binding IsWriteProtected, Converter={x:Static local:BoolToPadlockIconConverter.Instance}}"
+                                   FontSize="22" VerticalAlignment="Center" />
+                        <TextBlock Text="{Binding IsWriteProtected, Converter={x:Static local:BoolToWriteProtectLabelConverter.Instance}}"
+                                   FontSize="12" Foreground="#bbb" VerticalAlignment="Center" />
+                    </StackPanel>
+                </Button>
             </StackPanel>
         </Border>
 

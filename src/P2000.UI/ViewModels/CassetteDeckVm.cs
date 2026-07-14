@@ -18,6 +18,7 @@ public sealed partial class CassetteDeckVm : ObservableObject
     private readonly EmulationRunner _runner;
     private byte[]? _casBytes;
     private int _frameTick;
+    private bool _wasActive;
 
     /// <summary>The file this tape was loaded from or last saved to; null when the mounted
     /// tape is unbacked (fresh off "New (blank) tape"). Drives "Save" vs "Save as…" (§14
@@ -28,7 +29,14 @@ public sealed partial class CassetteDeckVm : ObservableObject
     [ObservableProperty] private string _tapeLabel = "No cassette";
     [ObservableProperty] private bool _isActive;
     [ObservableProperty] private string _directionText = "— Stopped";
+
+    /// <summary>The mounted tape's write-protect state — a live, host-side "physical tab"
+    /// control (§14 milestone 13a), two-way bound to a toggle in the deck window. Reflects
+    /// the machine's WEN bit; setting it (from the UI or internally after mount/new/eject)
+    /// pushes to <c>MdcrDevice.SetWriteProtected</c> via <see cref="OnIsWriteProtectedChanged"/>.
+    /// Meaningless with no tape mounted — the toggle is disabled via <c>HasTape</c> binding.</summary>
     [ObservableProperty] private bool _isWriteProtected;
+
     [ObservableProperty] private IReadOnlyList<string> _programs = [];
 
     /// <summary>Fixed header row aligned to the formatted program entries below it.</summary>
@@ -53,10 +61,29 @@ public sealed partial class CassetteDeckVm : ObservableObject
         IsActive = fwd || rev;
         DirectionText = fwd ? "▶ Forward" : rev ? "◀ Reverse" : "— Stopped";
 
+        // A live CSAVE (typed in BASIC) mutates the tape's bitstream directly through the
+        // ROM/MdcrDevice — the directory list built at mount time has no way to know that
+        // happened. Re-derive it from the live tape on the falling edge of activity (motor
+        // just stopped), which covers both CLOAD and CSAVE finishing.
+        if (_wasActive && !IsActive && HasTape)
+            RefreshDirectoryFromLiveTape();
+        _wasActive = IsActive;
+
         // HasTape only changes on Mount/Eject, but re-sync at ~5 Hz to stay consistent.
         if (++_frameTick < 10) return;
         _frameTick = 0;
         HasTape = _runner.Machine.Mdcr.HasTape;
+    }
+
+    /// <summary>Re-decodes the mounted tape's current phase bitstream (<c>SaveTape</c> — the
+    /// same host-side, always-fast serializer "Save"/"Save as…" use) and refreshes
+    /// <see cref="Programs"/> from it, so the directory reflects a CSAVE that just ran on the
+    /// live machine rather than a stale mount-time snapshot.</summary>
+    private void RefreshDirectoryFromLiveTape()
+    {
+        var casImage = _runner.Machine.Mdcr.SaveTape();
+        if (casImage is not null)
+            Programs = ParseDirectory(casImage);
     }
 
     // ── Commands ────────────────────────────────────────────────────────────────────────────
@@ -103,6 +130,12 @@ public sealed partial class CassetteDeckVm : ObservableObject
     }
 
     private bool CanEject() => HasTape;
+
+    /// <summary>Flips the mounted tape's write-protect state (the clickable padlock, §14
+    /// milestone 13a). Setting <see cref="IsWriteProtected"/> is itself what pushes to the
+    /// live machine via <see cref="OnIsWriteProtectedChanged"/> — this command just flips it.</summary>
+    [RelayCommand(CanExecute = nameof(HasTape))]
+    private void ToggleWriteProtect() => IsWriteProtected = !IsWriteProtected;
 
     /// <summary>"New (blank) tape" (§14 milestone 13): mounts a fresh, empty, unbacked tape
     /// live. Mounting straight over an already-mounted tape is a single CIP transition (the
@@ -204,11 +237,14 @@ public sealed partial class CassetteDeckVm : ObservableObject
     /// an unbacked mount.</summary>
     public void MountBytes(byte[] casImage, string filename, IStorageFile? backingFile = null)
     {
-        _runner.Machine.Mdcr.InsertTape(casImage, writeProtect: true);
+        // Write-protect is read from the file itself (record offset 0x50, bit 0 — machine
+        // CLAUDE.md §17, 2026-07-14); an unset/absent bit defaults writable. Read it back
+        // from the machine rather than assuming — do NOT hardcode true here.
+        _runner.Machine.Mdcr.InsertTape(casImage);
         _casBytes = casImage;
         _backingFile = backingFile;
         HasTape = true;
-        IsWriteProtected = true;
+        IsWriteProtected = _runner.Machine.Mdcr.IsWriteProtected;
         TapeLabel = filename;
         Programs = ParseDirectory(casImage);
         EjectCommand.NotifyCanExecuteChanged();
@@ -223,6 +259,16 @@ public sealed partial class CassetteDeckVm : ObservableObject
         EjectCommand.NotifyCanExecuteChanged();
         SaveCommand.NotifyCanExecuteChanged();
         SaveAsCommand.NotifyCanExecuteChanged();
+        ToggleWriteProtectCommand.NotifyCanExecuteChanged();
+    }
+
+    /// <summary>Pushes a write-protect change (from the UI toggle, or our own post-mount
+    /// sync) to the live machine. Guarded by <see cref="HasTape"/> so the initial
+    /// property-init/Eject transitions never call into a null tape (harmless either way —
+    /// <c>SetWriteProtected</c> no-ops with no tape mounted — but this keeps intent explicit).</summary>
+    partial void OnIsWriteProtectedChanged(bool value)
+    {
+        if (HasTape) _runner.Machine.Mdcr.SetWriteProtected(value);
     }
 
     // ── Directory parsing ────────────────────────────────────────────────────────────────────
@@ -230,7 +276,12 @@ public sealed partial class CassetteDeckVm : ObservableObject
     /// <summary>Returns formatted directory entries from a <c>.cas</c> image.
     /// Each 1280-byte block has a 32-byte header at offset 0x30:
     ///   bytes 06-0D: first 8 chars of filename · 0E-10: extension (3) · 11: creator ID ·
-    ///   17-1E: last 8 chars of filename · 1F: block counter · 04-05: file size (word LE).
+    ///   17-1E: last 8 chars of filename · 02-03: space occupied on tape · 04-05: file size
+    ///   (word LE). Byte 1F ("block counter") is NOT usable — confirmed empirically
+    ///   (2026-07-14, owner inspection of a real .cas file) to be always zero; likely the
+    ///   write-time `block_counter` RAM variable (Cassette.asm) captured at whatever transient
+    ///   state it lands in, not a meaningful per-file total. Block count is derived from the
+    ///   occupied-bytes field instead (ceiling division — see below).
     /// Multi-block programs share the same header — de-duplicated, block count summed.</summary>
     private static IReadOnlyList<string> ParseDirectory(byte[] casImage)
     {
@@ -254,9 +305,12 @@ public sealed partial class CassetteDeckVm : ObservableObject
             var creator = (char)casImage[hdr + 17];
             var size    = casImage[hdr + 4] | (casImage[hdr + 5] << 8);
             // Bytes 02-03: space occupied on tape (may be larger than file if a shorter file
-            // was written over a larger one). Divide by 1024 to get blocks occupied.
+            // was written over a larger one — confirmed expected/authentic behavior, not a
+            // bug). Block count is a CEILING division, not floor — matches the ROM's own
+            // get_length_blocks (Cassette.asm): occupied isn't always an exact multiple of
+            // 1024, and a partial trailing block still counts as one whole block.
             var occupied = casImage[hdr + 2] | (casImage[hdr + 3] << 8);
-            var blocks   = occupied / 1024;
+            var blocks   = (occupied + 1023) / 1024;
 
             var displayName = fullName.Length > 16 ? fullName[..16] : fullName;
             var dotExt = $".{ext}";

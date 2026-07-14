@@ -103,52 +103,42 @@ public class MiniTapeTests
     [Fact]
     public void Write_WhenProtected_IsIgnored()
     {
+        // Build a protected tape: protect byte (offset 0x50, bit 0) set in the record itself
+        // (machine CLAUDE.md §17, 2026-07-14 — protect is read from the file, not a param).
+        var cas = new byte[1280];
+        cas[0x50] |= 0x01;
         var tape = new MiniTape();
-        tape.SeekTo(1000, 0); // middle of noise
-        var before = tape.Read();
+        tape.LoadCasImage(cas);
 
-        // Build a protected tape (LoadCasImage sets protection)
-        tape.LoadCasImage(new byte[1280], writeProtect: true);
         tape.SeekTo(1000, 0);
+        var before = tape.Read();
         tape.Write(!before); // attempt flip
         tape.SeekTo(1000, 0);
-
-        Assert.NotEqual(before, tape.Read()); // value changed by LoadCasImage encoding, not our Write
-        // The important thing: Write() must be no-op when protected:
-        var afterLoad = tape.Read();
-        tape.Write(!afterLoad);
-        tape.SeekTo(1000, 0);
-        Assert.Equal(afterLoad, tape.Read()); // Write was blocked
+        Assert.Equal(before, tape.Read()); // Write must be a no-op when protected
     }
 
-    // ---- Deterministic noise fill -----------------------------------------------
+    // ---- Blank tape = silence (CORRECTED 2026-07-14, machine CLAUDE.md §17) -----
 
     [Fact]
-    public void NewTape_SameSeed_SameContent()
+    public void NewTape_IsSilent_AcrossBothSides()
     {
-        var t1 = new MiniTape(seed: 7);
-        var t2 = new MiniTape(seed: 7);
-
-        t1.SeekTo(500_000, 0);
-        t2.SeekTo(500_000, 0);
-        Assert.Equal(t1.Read(), t2.Read());
-    }
-
-    [Fact]
-    public void NewTape_DifferentSeeds_DifferentContent()
-    {
-        var t1 = new MiniTape(seed: 1);
-        var t2 = new MiniTape(seed: 2);
-
-        // Sample many positions; at least one must differ
-        var differ = false;
-        for (var i = 1; i < 10000; i++)
+        // Matches BASIC's own "Tape init" (writes silence so the wait-for-first-marker
+        // times out) and a genuinely erased cassette (no flux transitions). An earlier
+        // design used deterministic pseudo-noise instead; that broke cas_Write's own
+        // forward scan (noise never presents the "nothing recorded here" signal the ROM
+        // looks for, so the scan ran to the physical end of the tape before giving up).
+        var tape = new MiniTape();
+        for (var side = 0; side < MiniTape.Sides; side++)
         {
-            t1.SeekTo(i, 0);
-            t2.SeekTo(i, 0);
-            if (t1.Read() != t2.Read()) { differ = true; break; }
+            tape.SeekTo(0, side);
+            for (var i = 0; i < 1000; i++)
+            {
+                tape.SeekTo(i, side);
+                Assert.False(tape.Read());
+            }
+            tape.SeekTo(MiniTape.PhasesPerSide - 1, side);
+            Assert.False(tape.Read());
         }
-        Assert.True(differ);
     }
 
     // ---- LoadCasImage -----------------------------------------------------------
@@ -165,18 +155,48 @@ public class MiniTapeTests
     }
 
     [Fact]
-    public void LoadCasImage_SetsProtection()
+    public void LoadCasImage_ProtectByteSet_IsProtected()
     {
+        var cas = new byte[1280];
+        cas[0x50] |= 0x01;
         var tape = new MiniTape();
-        tape.LoadCasImage(new byte[1280], writeProtect: true);
+        tape.LoadCasImage(cas);
         Assert.True(tape.IsProtected);
     }
 
     [Fact]
-    public void LoadCasImage_WithWriteProtectFalse_NotProtected()
+    public void LoadCasImage_NoProtectByte_NotProtected()
+    {
+        // Default writable for any file that never sets the protect byte (new saves, older
+        // saves, or files from other tools) — machine CLAUDE.md §17, 2026-07-14.
+        var tape = new MiniTape();
+        tape.LoadCasImage(new byte[1280]);
+        Assert.False(tape.IsProtected);
+    }
+
+    [Fact]
+    public void LoadCasImage_ProtectBitOnlyReadFromFirstRecord()
+    {
+        // The protect byte lives in the FIRST 1280-byte record only; setting it in a later
+        // record must have no effect.
+        var cas = new byte[2 * 1280];
+        cas[1280 + 0x50] |= 0x01; // second record's would-be protect byte
+        var tape = new MiniTape();
+        tape.LoadCasImage(cas);
+        Assert.False(tape.IsProtected);
+    }
+
+    [Fact]
+    public void SetProtected_TogglesLive()
     {
         var tape = new MiniTape();
-        tape.LoadCasImage(new byte[1280], writeProtect: false);
+        tape.LoadCasImage(new byte[1280]);
+        Assert.False(tape.IsProtected);
+
+        tape.SetProtected(true);
+        Assert.True(tape.IsProtected);
+
+        tape.SetProtected(false);
         Assert.False(tape.IsProtected);
     }
 
@@ -192,8 +212,8 @@ public class MiniTapeTests
     [Fact]
     public void Save_BlankTape_ReturnsNull()
     {
-        // Random noise has no valid framed blocks
-        var tape = new MiniTape(seed: 42);
+        // Silence has no valid framed blocks
+        var tape = new MiniTape();
         Assert.Null(tape.Save());
     }
 
@@ -210,7 +230,7 @@ public class MiniTapeTests
     {
         var original = new byte[1280]; // header at +0x30 and data at +0x100 are all zeros
         var tape = new MiniTape();
-        tape.LoadCasImage(original, writeProtect: false);
+        tape.LoadCasImage(original);
 
         var saved = tape.Save();
 
@@ -228,7 +248,7 @@ public class MiniTapeTests
         for (var i = 0; i < 1024; i++) original[0x100 + i] = (byte)(i & 0xFF);
 
         var tape = new MiniTape();
-        tape.LoadCasImage(original, writeProtect: false);
+        tape.LoadCasImage(original);
 
         var saved = tape.Save();
 
@@ -249,7 +269,7 @@ public class MiniTapeTests
         }
 
         var tape = new MiniTape();
-        tape.LoadCasImage(original, writeProtect: false);
+        tape.LoadCasImage(original);
 
         var saved = tape.Save();
 
@@ -271,7 +291,7 @@ public class MiniTapeTests
     {
         var original = new byte[1280];
         var tape = new MiniTape();
-        tape.LoadCasImage(original, writeProtect: false); // positions at 1
+        tape.LoadCasImage(original); // positions at 1
 
         var positionBeforeSave = tape.Position;
         tape.Save();

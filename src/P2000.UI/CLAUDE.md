@@ -81,14 +81,13 @@ snapshots, and it submits input + commands.** Keep every window on this side of 
   config-JSON length + config JSON + device stream. Restore = `new Machine(embeddedConfig)`
   then `LoadState`. State is only valid at `AtInstructionBoundary`.
 - **Cassette runtime actions.** Mount (`.cas`/`.p2000t`) flips CIP present live; eject flips it
-  absent. The host-side `.cas` API (mount/eject/save-as/**create-blank**/rewind/directory/
-  write-protect — reference doc §5b) is always-fast and independent of `TimingPolicy`
-  (authentic vs turbo). "Save as `.cas`" write-back exists at the machine layer (milestone 9a)
-  but has **no UI caller yet**; **create-blank likewise has no confirmed live-mount entry point
-  at the machine layer** (the ms.9a evidence is a blank in-memory `MiniTape` unit test, not
-  necessarily a CIP-flip-live mount path) — **both are wired up in UI milestone 13**, which also
-  notes the possible small machine-layer gap for create-blank. Rewind and write-protect remain
-  decided-but-unbuilt on both layers; not in scope for milestone 13.
+  absent. The host-side `.cas` API (mount/eject/save-as/**create-blank**/directory/write-protect
+  — reference doc §5b) is always-fast and independent of `TimingPolicy` (authentic vs turbo).
+  "Save as `.cas`" write-back and **create-blank are both now BUILT** (UI milestone 13 — see
+  §14.13 and its §18 findings). **Write-protect toggle remains decided-but-unbuilt on both
+  layers** — genuinely deferred, see §14.13a. **"Rewind" is NOT a deferred item** (CORRECTED
+  2026-07-14): the real MDCR has no rewind button, only Eject — see reference doc §5b, which
+  no longer lists rewind as a peer of the other host-API entries.
 - **Panning.** `Video.PanX` (0–40) — the special VRAM window's viewport rectangle reads this.
 - **Contention overlay hook.** The machine exposes the set of character cells corrupted this
   frame (machine §10). Both the display "show glitches" overlay and the debugger's VRAM window
@@ -526,10 +525,17 @@ builds did. Do not advance while the current milestone is red. Record spec corre
       append" already implies. **Decided: no dedicated UI for it.** It's a program the user runs
       like any other (keyboard/BASIC); the existing activity LED + directory view already
       surface it happening. Do not add an "Erase" button.
-    - **Still open, decided-but-unbuilt, out of scope here:** rewind (reference doc §5b lists it
-      in the host API; no UI or confirmed machine entry point) and write-protect toggle (§3.1
-      lists it in the API parenthetical; not wired at either layer). Noted so they aren't
-      silently lost, not pulled into this milestone's deliverable.
+    - **Write-protect toggle: still open, decided-but-unbuilt, out of scope here** (§3.1 lists
+      it in the API parenthetical; not wired at either layer) — genuinely deferred, not pulled
+      into this milestone's deliverable.
+    - **Rewind: RECLASSIFIED (2026-07-14), not a peer of write-protect above.** The real MDCR
+      has **no rewind button, only Eject** (owner-confirmed; matches §5's "NO play/stop/rewind"
+      note) — tape position only resets via ROM-driven REV over CPOUT (software, already
+      modeled) or implicitly at the host level, since both mount paths already start the tape
+      at BOT (eject-then-reinsert already gets this for free). Unlike write-protect, there is
+      no physical control being deferred here — reference doc §5b's host-API list corrected
+      to stop listing "rewind" as a peer entry. Not scoped anywhere; if ever wanted, it'd be a
+      pure convenience shortcut (skip the ROM's own rewind), not a gap to close.
     - **Tests:** (a) "New (blank) tape" flips CIP present live with no reset, machine keeps
       running; (b) CSAVE a program from BASIC onto a freshly-blanked tape, directory shows it;
       (c) "Save as `.cas`…" on that tape, then "New (blank) tape" again + file-dialog-load the
@@ -538,6 +544,47 @@ builds did. Do not advance while the current milestone is red. Record spec corre
       overwrites that same path without re-prompting; (e) "New (blank) tape" while a different
       tape is already mounted performs exactly one CIP transition, not an observable
       eject-then-insert flicker. → commit.
+13a. **Cassette deck — write-protect toggle** (fast-follow, same "milestone + a" pattern as
+    ms.9a for the cassette write path — discovered as a near-blocker while exercising
+    milestone 13, not scoped as part of it). Reference doc §5b/§5f already frame write-protect
+    as a **host-side, physical-tab-style concept** — not derived from the `.cas` file, not a
+    property of the data, purely something the owner controls, exactly like snapping the tab
+    out of a real cassette. That control was decided but never built on either layer.
+    - **Reported symptom (owner, 2026-07-14):** the cassette reads as always write-protected,
+      with no UI to change it. **This does NOT match milestone 13's own test evidence** — its
+      `MdcrDeviceTests` confirm a freshly-`InsertBlankTape()`'d tape is unprotected (WEN clear)
+      and immediately writable. So the symptom is likely specific to the **file-loaded path**
+      (`InsertTape()`/`MiniTape.LoadCasImage`) or is purely a missing-control issue (nothing is
+      ever protected OR unprotected because nothing can set it either way, and whatever the
+      constructor-default happens to be is all anyone ever sees) — **root cause not confirmed
+      from this side; Claude Code should check `InsertTape()`'s `IsProtected` handling
+      specifically before assuming it matches `InsertBlankTape()`'s (already-correct) default.**
+    - **Decision:** `IsProtected` defaults to `false` (writable) on **every** mount path, file-
+      loaded or blank alike — matches "a fresh/found cassette is writable until someone
+      protects it," the same default `InsertBlankTape()` already has. `MdcrDevice` gets a live
+      setter (`SetWriteProtected(bool)` or equivalent) — host-side, always-fast, independent of
+      `TimingPolicy`, same category as mount/eject/create-blank/save-as.
+    - **Persistence — RESOLVED (owner proposal, 2026-07-14 — full detail in
+      `P2000.Machine/CLAUDE.md` §17):** protect state now DOES round-trip through a saved
+      `.cas` file, using previously-unspecified padding in the record container (offset `0x50`,
+      bit 0 — never the on-tape phase encoding, so no hardware/CRC impact). An unset or absent
+      bit reads as writable for any file, old or new, from this emulator or elsewhere — fully
+      backward-compatible by construction. UI-side implication: the write-protect toggle's
+      state is whatever `IsProtected` reads on the live `MiniTape`, which now survives a
+      Save → reload round-trip rather than resetting every mount — no separate UI-layer
+      persistence logic needed, it falls out of the machine-layer fix.
+    - **UI:** a write-protect toggle on the cassette deck window (§5), reflecting/controlling
+      the mounted tape's WEN state live. Meaningless/disabled with no tape mounted (matches the
+      existing bare-machine CPRIN default, where WEN is don't-care at CIP-absent).
+    - **Tests:** (a) a freshly file-dialog-mounted tape with no protect byte set (any
+      pre-existing/foreign `.cas`) defaults writable (the regression check for the reported
+      symptom); (b) toggling protect live flips WEN without touching CIP/BET; (c) CSAVE onto a
+      protected tape is rejected via the ROM's own already-modeled WEN check — confirms the
+      toggle actually gates writes, not just a cosmetic status bit; (d) **protect state now
+      correctly persists, not resets:** protect a tape → Save as `.cas` → reload → still
+      protected (record offset `0x50` bit 0 round-trips); (e) mounting a genuinely fresh blank
+      tape (`InsertBlankTape()`) is unaffected — still defaults writable, since there's no prior
+      saved state to read. → commit.
 
 ---
 
@@ -1033,6 +1080,182 @@ project.
 - **Synced:** no (implementation-only UI/machine wiring; the one hardware-adjacent fact —
   "no format step, blank tape immediately writable" — was already confirmed with the owner
   and recorded in the milestone spec itself, nothing new to sync).
+
+### 2026-07-14 — Milestone 13a: cassette deck — write-protect toggle
+- **Reported symptom (owner):** the cassette always reads as write-protected, no UI to change
+  it. **Root cause confirmed by inspection, exactly as milestone 13's own reported-symptom
+  matched the machine CLAUDE.md §17 "DECIDED" entry predicted:** `CassetteDeckVm.MountBytes`
+  hardcoded `_runner.Machine.Mdcr.InsertTape(casImage, writeProtect: true)` on every
+  file-loaded mount — `InsertBlankTape()` was correctly unprotected (as ms.13's own tests
+  already showed) because it never took the parameter at all. Nothing was "stuck" by tape
+  content; the one caller simply never asked for anything else.
+- **Fix (breaking API change, authorized in `P2000.Machine/CLAUDE.md` §17):**
+  `MdcrDevice.InsertTape`/`MiniTape.LoadCasImage` no longer take a `writeProtect` parameter —
+  protection is now read from the `.cas` file itself (record offset `0x50`, bit 0 — see the
+  machine-layer entry for the full container-format decision) and round-trips through
+  `Save()`. `CassetteDeckVm.MountBytes` reads `IsWriteProtected` back FROM the machine after
+  mount instead of assuming a value.
+- **Found (live toggle needed no new plumbing beyond the setter itself):** made
+  `CassetteDeckVm.IsWriteProtected`'s existing `[ObservableProperty]` two-way bindable (a
+  `CheckBox` in the deck window replacing the old passive 🔒 `TextBlock`) and added
+  `OnIsWriteProtectedChanged` pushing to the new `MdcrDevice.SetWriteProtected(bool)` whenever
+  `HasTape` — no separate `[RelayCommand]` needed since the property setter IS the command
+  here (CommunityToolkit's changed-hook fires on both user interaction and our own internal
+  post-mount sync, and re-pushing the same value is harmless/idempotent).
+- **Found ("Rewind" reclassified, not a peer of write-protect):** while investigating this
+  symptom the owner confirmed the real MDCR has no rewind button at all (only Eject) — a
+  correction to §3.1's earlier phrasing, which had listed "rewind" alongside write-protect as
+  a peer decided-but-unbuilt item. It isn't a deferred control; there's nothing to build.
+- **Tests:** `MdcrDeviceTests`/`MiniTapeTests` (machine layer, see `P2000.Machine/CLAUDE.md`
+  §17 for the full list) plus `CassetteDeckVmTests` (+4 at the VM level): the regression check
+  (a plain record with no protect byte defaults writable), a protect-byte-set record mounts
+  protected, the live toggle flips the real `MdcrDevice`'s WEN without touching CIP, and
+  toggling with no tape mounted doesn't throw.
+- **Applies to:** project CLAUDE.md §14.13a / `P2000.Machine/CLAUDE.md` §17 (the
+  write-protect DECIDED/IMPLEMENTED pair — full container-format detail lives there) /
+  `src/P2000.UI/ViewModels/CassetteDeckVm.cs` (`MountBytes`, `OnIsWriteProtectedChanged`),
+  `src/P2000.UI/Views/CassetteDeckWindow.axaml` (write-protect `CheckBox`),
+  `tests/P2000.UI.Tests/ViewModels/CassetteDeckVmTests.cs` (+4 tests).
+- **Synced:** no (implementation-only; the "rewind has no physical control" correction is a
+  UI-doc-only wording fix, not new hardware content — reference doc §5b already only
+  describes rewind as a host-API convenience, not a physical button).
+
+### 2026-07-14 — Milestone 13a follow-up: padlock click-to-toggle (owner feedback)
+- **Reported:** the `CheckBox` toggle gave mixed signals — a checkmark AND a lock glyph AND
+  text, three signals not obviously in sync at a glance.
+- **Fix:** replaced the `CheckBox` with a borderless, transparent-background `Button` whose
+  content is one bigger padlock glyph (22px, was 11px inline) + a label, both driven by the
+  SAME `IsWriteProtected` bool via two new converters — `BoolToPadlockIconConverter` (🔒/🔓)
+  and `BoolToWriteProtectLabelConverter` ("Write protected"/"Write enabled") — so there is
+  exactly one signal (open vs. closed padlock) reinforced by matching text, no separate
+  checkmark to contradict it.
+- **Found (no new VM plumbing needed):** added `ToggleWriteProtectCommand`
+  (`IsWriteProtected = !IsWriteProtected`) purely so the Button has something to bind
+  `Command` to — the actual machine push still happens through the existing
+  `OnIsWriteProtectedChanged` hook (§14.13a above), unchanged. Considered `ToggleButton`
+  first but a plain `Button` + command avoids fighting the Fluent theme's own checked-state
+  chrome (which would have reintroduced a second, competing visual signal).
+- **Tests:** `CassetteDeckVmTests` (+2) — command disabled with no tape, enabled once mounted;
+  executing it flips both `IsWriteProtected` and the live `MdcrDevice` state back and forth.
+- **Applies to:** `src/P2000.UI/Views/StatusConverters.cs` (`BoolToPadlockIconConverter`,
+  `BoolToWriteProtectLabelConverter`), `src/P2000.UI/Views/CassetteDeckWindow.axaml` (padlock
+  `Button` replacing the `CheckBox`), `src/P2000.UI/ViewModels/CassetteDeckVm.cs`
+  (`ToggleWriteProtectCommand`), `tests/P2000.UI.Tests/ViewModels/CassetteDeckVmTests.cs`
+  (+2 tests).
+- **Synced:** no (pure UI/UX polish, no hardware or architectural content).
+
+### 2026-07-14 — CSAVE bug fix confirmed live; directory list didn't refresh after CSAVE
+- **Owner-confirmed (live app, after the `P2000.Machine/CLAUDE.md` §17 blank-tape-silence
+  fix):** the reported "Cassette fout N" CSAVE failure is resolved. Full round trip tested
+  live: CLOAD from a real tape → eject → insert blank → CSAVE → save `.cas` → mount → CLOAD
+  again — success. A second CSAVE (different name) onto the tape just loaded from also
+  succeeded (search, rewind, save, rewind, search, validate). Replace (same name) and
+  tape-full scenarios not yet tested by the owner.
+- **Owner-supplied ROM source (`Cassette.asm`, the monitor's cassette driver) reviewed —
+  important correction to earlier speculation:** the replace-vs-append decision in
+  `cas_block_write` is driven entirely by two `cassette_status` RAM bits (`CST_NOMARK`,
+  `CST_WCDON`) carried over from whatever cassette operation ran immediately before
+  `cas_Write` — there is **no filename comparison inside `Cassette.asm` at all**. The
+  "search for a file starting with the same letter, check it fits in the allocated block
+  count" policy the owner described must live in BASIC's own save routine (which positions
+  the tape and primes these bits before calling into this low-level ROM driver) — a
+  different, higher-level source this project does not have. This means the earlier
+  session's `AuthenticCassetteWriteTests` (all constructed as fresh `Machine()`s, so
+  `cassette_status` = 0 = `CST_NOMARK` clear) likely exercised the **replace** path on their
+  first `cas_Write` call — i.e. probably overwrote the target tape's first found block rather
+  than genuinely appending a new file — even though every test only asserted `A==0`
+  (success) and never checked *where* the write landed. Flagging honestly rather than
+  claiming those tests validated "append" behavior they may not have. Confirmed-good gap
+  understanding, not a machine bug: `Cassette.asm` is the low-level tape mechanic only;
+  BASIC's file-management policy on top of it is out of scope without that source.
+- **Found (owner-reported UI gap, fixed):** the cassette deck's program/directory list never
+  refreshed after a live CSAVE (typed in BASIC) — it was only ever built once, from the bytes
+  passed to `MountBytes` at mount time. A CSAVE mutates the tape's live bitstream directly
+  through `MdcrDevice`/`MiniTape`; the VM had no way to know. Fixed by re-deriving the
+  directory on the falling edge of `IsActive` (motor just stopped — covers both CLOAD and
+  CSAVE finishing) via `_runner.Machine.Mdcr.SaveTape()` (the same host-side serializer
+  "Save"/"Save as…" already use) → `ParseDirectory`, instead of relying on the mount-time
+  snapshot.
+- **Found (not unit-tested, documented rather than silently skipped):** verifying this
+  specific fix needs a genuine "motor on then off" transition on a *live, running* `Machine`.
+  A live machine actively runs the embedded ROM, which drives CPOUT itself (keyboard scan,
+  its own CIP-triggered auto-load attempt on a freshly-mounted tape) — any CPOUT value a test
+  forces gets overwritten by ordinary ROM execution within the same field, independent of
+  which thread calls `Tick()`/`RunField()` (this isn't a threading race, it's the ROM's own
+  deterministic execution), and `Machine.Tick()` fully no-ops while paused so pausing first
+  doesn't help either. No clean way to synthesize this edge without driving a real CSAVE/
+  CLOAD through BASIC. Same gap already existed for this class's `HasTape` 5 Hz resync,
+  which was never unit-tested either. Verified instead by the owner's live-app test above.
+- **Applies to:** `src/P2000.UI/ViewModels/CassetteDeckVm.cs` (`RefreshDirectoryFromLiveTape`,
+  `_wasActive`, `OnFrameReady`), `tests/P2000.UI.Tests/ViewModels/CassetteDeckVmTests.cs`
+  (documented the untested gap rather than shipping a flaky test).
+- **Synced:** no (implementation-only UI fix; the `Cassette.asm` replace/append mechanism
+  finding is useful context for future cassette work but describes BASIC-level policy this
+  project doesn't implement, not machine hardware — nothing to sync into the reference doc).
+
+### 2026-07-14 — Directory list block count off by one (floor vs ceiling division)
+- **Owner-reported (live app, replace-scenario testing):** the "Blk" column undercounted —
+  5673 occupied bytes showed 5 blocks (should be 6); 40 occupied bytes showed 0 blocks
+  (should be 1).
+- **Root cause:** `ParseDirectory`'s `blocks = occupied / 1024` was a floor division. The
+  milestone-4 finding that documented this field ("space occupied on tape... divide by 1024
+  to get blocks occupied") never established that `occupied` is always exactly
+  block-aligned — and per the owner-supplied `Cassette.asm`'s own `get_length_blocks`
+  routine, it correctly is NOT: block count is always a ceiling of byte-length/1024 with a
+  minimum of one block for any nonzero length (a partial trailing block still counts as a
+  whole reserved block). Floor division silently undercounted by one whenever `occupied`
+  wasn't an exact multiple of 1024.
+- **Fix:** `blocks = (occupied + 1023) / 1024` — ceiling division, matching the ROM's own
+  arithmetic. Exact multiples of 1024 are unaffected (verified by a dedicated test) since
+  ceiling and floor agree there.
+- **Distinct from, and does not change, the already-confirmed "block count doesn't shrink on
+  a replace-with-shorter-file" behavior** (milestone-4 finding, re-confirmed live by the
+  owner this session) — that's about what value `occupied` legitimately holds (the ORIGINAL
+  allocation, preserved across a replace); this fix is purely about correctly converting
+  whatever that byte value is into a block count for display.
+- **Tests:** `CassetteDeckVmTests` (+2) — the owner's exact reported numbers (5673→6, 40→1)
+  via a new `BuildDirectoryEntry` header-construction helper; a block-aligned case (1024→1)
+  confirms the fix doesn't regress the already-correct exact-multiple path.
+- **Applies to:** `src/P2000.UI/ViewModels/CassetteDeckVm.cs` (`ParseDirectory`),
+  `tests/P2000.UI.Tests/ViewModels/CassetteDeckVmTests.cs` (+2 tests).
+- **Synced:** no (implementation-only UI display fix; the underlying `Cassette.asm`
+  `get_length_blocks` ceiling-division fact is machine-adjacent context, already noted in
+  the entry above, not new hardware content).
+
+### 2026-07-14 — Block count follow-up: byte 0x1F tried and ruled out empirically
+- **Owner instruction:** block count should come straight from the header's own block-counter
+  field (offset 0x1F, per the class doc comment's own long-standing "1F: block counter" note)
+  rather than be derived arithmetically from the occupied-bytes field.
+- **Tried:** switched `ParseDirectory` to `blocks = casImage[hdr + 0x1F]` directly.
+- **Reverted — owner empirically confirmed byte 0x1F is unusable:** inspecting a real `.cas`
+  file, that byte is always zero. Likely explanation (ties back to the milestone-4 finding
+  this session already had on record but under-weighted: "byte 1F ('blocks remaining') is a
+  write-time counter, not used"): `Cassette.asm`'s `block_counter` RAM variable counts DOWN
+  during a multi-block transfer and is only meaningfully non-zero mid-transfer — whatever
+  ends up in the on-tape header's copy of it is a transient snapshot, not a stable per-file
+  total, and evidently lands on zero in practice. Reverted to the ceiling-division-on-
+  occupied-bytes approach from the entry above (already validated against the owner's exact
+  reported numbers), updating the class doc comment to explicitly rule out 0x1F with the
+  empirical reason, so this isn't re-attempted without new evidence.
+- **Tests:** reverted `CassetteDeckVmTests`' block-count tests back to the occupied-bytes
+  `BuildDirectoryEntry` helper (ceiling-division assertions), matching the entry above.
+- **Follow-up — mechanism now understood, confirms the revert was correct (owner, same day):**
+  the "always zero" file was created by a different tool, not this emulator — files this
+  emulator's own CSAVE writes DO show a live decrementing value at byte 0x1F across a
+  multi-block file (6, 5, 4, 3, 2, 1 for a 6-block file), because the header transfer is
+  literally "32 consecutive bytes from memory" (`des_length`=0x20 from a fixed RAM address,
+  Cassette.asm) — whatever `block_counter`'s live value happens to be at that moment rides
+  along incidentally, it isn't a deliberate per-file field. Per the owner's own reasoning
+  (not yet source-confirmed against BASIC, which this project doesn't have): **reading**
+  derives the block count fresh from a size-bearing field via arithmetic and ignores the
+  stored byte entirely — i.e. the same shape as the current `ParseDirectory` fix. Different
+  tools populate that incidental byte differently (explains the contradiction with the
+  externally-created file), so it was correctly ruled out either way. No further code change
+  from this follow-up — recorded so the byte-0x1F idea isn't revisited without new evidence.
+- **Applies to:** `src/P2000.UI/ViewModels/CassetteDeckVm.cs` (`ParseDirectory` doc comment
+  and `blocks` calculation), `tests/P2000.UI.Tests/ViewModels/CassetteDeckVmTests.cs`.
+- **Synced:** no (implementation-only UI fix; documents a ruled-out approach for future
+  reference, no new hardware content beyond what's already flagged above).
 
 ### 2026-07-09 — Integer scaling: physical vs logical pixels
 - **Assumed:** computing the integer multiplier `n` from `Bounds.Width / Video.Width` (logical

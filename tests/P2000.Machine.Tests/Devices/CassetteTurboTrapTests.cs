@@ -161,7 +161,10 @@ public class CassetteTurboTrapTests
     {
         var machine = new Machine();
         machine.Mdcr.Policy = policy;
-        machine.Mdcr.InsertTape(cas, writeProtect);
+        machine.Mdcr.InsertTape(cas);
+        // Write-protect now defaults from the file itself (unset → writable); set it live
+        // via the same host-side control the UI's toggle uses (machine CLAUDE.md §17).
+        machine.Mdcr.SetWriteProtected(writeProtect);
         return machine;
     }
 

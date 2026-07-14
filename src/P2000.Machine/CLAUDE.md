@@ -1554,3 +1554,200 @@ Two bugs were masking CLOAD success; both confirmed by tracing `Cassette.asm` li
   `tests/P2000.Machine.Tests/Devices/MdcrDeviceTests.cs` (+6 tests).
 - **Synced:** no (implementation-only, closes the internal API decision above — no
   hardware/reference-doc content).
+
+### 2026-07-14 — DECIDED (not yet implemented): live write-protect control on MdcrDevice
+- **Reported by owner:** the cassette reads as always write-protected, with no UI to change
+  it — reported as a general symptom, not scoped to any one mount path.
+- **Does not match the `InsertBlankTape()` evidence above:** that entry's own tests confirm a
+  freshly-blanked tape is unprotected (WEN clear) and immediately writable. So either (a) the
+  **file-loaded path** (`InsertTape()` → `MiniTape.LoadCasImage`) sets or defaults `IsProtected`
+  differently than the blank path, or (b) nothing is actually stuck "protected" — there's just
+  no way to ever set it either way, and whatever a given constructor happens to default to is
+  all anyone can observe. **Not resolved here — Claude Code should check `InsertTape()`'s
+  `IsProtected` handling specifically (does it read/derive from anything, or just inherit
+  whatever `MiniTape`'s general default is?) before implementing the fix below**, same
+  "verify, don't assume" discipline as the `InsertBlankTape()` entry above.
+- **Decision (this entry IS the authorization to implement):**
+  - `IsProtected` defaults to `false` (writable) on **every** mount path — file-loaded and
+    blank alike. Matches reference doc §5b/§5f: write-protect is a **host-side, physical-tab
+    concept**, not derived from the `.cas` file (the format has no such flag) and not a
+    property of the loaded data. A found/mounted tape is writable until someone protects it,
+    same as a real cassette until its tab is snapped out.
+  - Add a live setter — `MdcrDevice.SetWriteProtected(bool)` or equivalent — host-side,
+    always-fast, independent of `TimingPolicy`, same category as the existing mount/eject/
+    create-blank/save-as surface.
+  - **Persistence — RESOLVED (owner proposal, 2026-07-14):** protect state DOES persist,
+    using previously-unspecified padding in the `.cas` **record container** — never the
+    on-tape phase encoding, so this has zero real-hardware/CRC/ROM-visibility impact (the ROM
+    only ever sees the phase bitstream extracted from the header/data fields, never the raw
+    `.cas` file). The 32-byte header sits at record offset `0x30`–`0x4F`; data starts at
+    `0x100`; that leaves 224 bytes genuinely unspecified (`0x00`–`0x2F` and `0x50`–`0xFF`) in
+    the first 256-byte record — confirmed by the owner against the already-sourced offsets
+    above. **Use record offset `0x50`** (the byte immediately after the header, in the later
+    gap rather than the earlier one before the header, which may be some other tool's reserved
+    space) — **bit 0**, matching WEN's own convention: `1` = protected, `0` = writable.
+    `LoadCasImage()` treats an **unset or absent bit as writable** for ANY file (new saves,
+    older saves, files from other `.cas`-producing tools that never touch this byte) — keeps
+    the "default writable" decision intact and makes this fully backward-compatible by
+    construction, since only files this emulator explicitly saved as protected will ever have
+    the bit set. `Save()` writes the live `IsProtected` value into that bit; the rest of the
+    byte and all other padding stay reserved/zero. **This is a minimal but real extension of
+    the `.cas` container** (a previously-unspecified byte now has emulator-assigned meaning) —
+    not a change to any documented field, but not literally "no format touch" either; flag
+    this honestly rather than claim zero impact. The one open risk is forward-compatibility
+    with other `.cas`-reading tools that might independently want this same space — accepted,
+    since `.cas` has no single upstream format authority here (this project + M2000 are the
+    closest thing to one).
+- **Applies to:** `src/P2000.Machine/Devices/Cassette/MdcrDevice.cs` (`InsertTape`'s current
+  `IsProtected` handling — to inspect; new `SetWriteProtected`), `MiniTape.cs` (`IsProtected`
+  default) / `src/P2000.UI/CLAUDE.md` §14.13a (the consumer — cassette deck write-protect
+  toggle) — reference doc §5b/§5f (host-side `.cas` API "write-protect" entry, WEN semantics —
+  no hardware content changes, this is software-architecture only).
+- **Synced:** no (internal API decision, not a hardware/reference-doc fact — stays local to
+  this file).
+
+### 2026-07-14 — IMPLEMENTED: live write-protect control on MdcrDevice (closes the entry above)
+- **Root cause confirmed (the "verify, don't assume" check the entry above asked for):**
+  `MdcrDevice.InsertTape(byte[] casImage, bool writeProtect = true)` took an external bool
+  parameter, and its ONLY caller — `CassetteDeckVm.MountBytes` — hardcoded
+  `writeProtect: true` on every file-loaded mount. So it was (b) from the entry above: nothing
+  was ever "stuck" protected by tape content — there was simply no way to ever mount a
+  file-loaded tape unprotected, because the one caller never asked for it. `InsertBlankTape()`
+  was unaffected because it never took the parameter at all. Confirms the previous entry's own
+  test evidence (blank tapes unprotected) was correct and the bug was entirely in the
+  file-loaded path + its single caller, exactly as suspected.
+- **API change (breaking, deliberate):** removed the `writeProtect` parameter from BOTH
+  `MdcrDevice.InsertTape(byte[])` and `MiniTape.LoadCasImage(byte[])` — protection is no longer
+  a caller-supplied flag, it's read from the file itself (see next bullet) or set live via the
+  new setters. All call sites updated (`CassetteDeckVm.MountBytes`,
+  `CassetteTurboTrapTests.NewMachineWithTape` — now calls `InsertTape` then
+  `SetWriteProtected(writeProtect)` explicitly, `MdcrDeviceTests`, `MiniTapeTests`).
+- **Implemented exactly as decided — persistence via record offset `0x50` bit 0:**
+  `MiniTape.LoadCasImage` reads `casImage[0x50] & 0x01` (only when `blocks > 0` and the array
+  is long enough — always true for any real record) to set `_protected[_side]`; unset/absent
+  → writable. `MiniTape.Save()` writes the live `_protected[_side]` value into that bit of the
+  first record (array is zero-initialized, so unprotected tapes need no write at all). Only
+  the FIRST record's offset 0x50 is read/written — a confirmed-by-test detail (a protect bit
+  set in a LATER record's would-be offset has no effect), since protection is a per-side
+  property, not per-block.
+- **New live setters (both layers), exactly as decided:** `MiniTape.SetProtected(bool)` (sets
+  `_protected[_side]` directly, no position/content change) and
+  `MdcrDevice.SetWriteProtected(bool)` (delegates to the tape, then calls the existing
+  `UpdateStatusFromTape()` — which was already side-effect-free for CIP/BET when only
+  protection changes, so no new logic was needed there to guarantee "toggling protect doesn't
+  touch CIP/BET," it fell out of reusing the existing recompute).
+- **UI wiring (`P2000.UI/CLAUDE.md` §14.13a):** `CassetteDeckVm.IsWriteProtected` is now a
+  live two-way toggle (`CheckBox` in the deck window) — its `OnIsWriteProtectedChanged` hook
+  pushes to `MdcrDevice.SetWriteProtected` whenever `HasTape`. `MountBytes` reads
+  `IsWriteProtected` back FROM the machine after `InsertTape` rather than assuming a value.
+- **Tests:** machine layer (`MdcrDeviceTests`, `MiniTapeTests`) — protect-byte-set → protected;
+  no protect byte → writable (the regression check); `SetProtected`/`SetWriteProtected` toggle
+  live without touching CIP/BET; a protected tape rejects `WriteBlockAtHead`; a full
+  blank→write→protect→`SaveTape()`→reload round-trip stays protected; `InsertBlankTape()`
+  still defaults writable (no prior saved state to read). UI layer (`CassetteDeckVmTests`) —
+  same regression check at the VM level, plus the live-toggle round trip via the real
+  `MdcrDevice` the VM drives.
+- **Applies to:** `src/P2000.Machine/Devices/Cassette/MdcrDevice.cs` (`InsertTape`,
+  `SetWriteProtected`), `MiniTape.cs` (`LoadCasImage`, `Save`, `SetProtected`,
+  `ProtectByteOffset`/`ProtectBit`), `tests/P2000.Machine.Tests/Devices/MdcrDeviceTests.cs`
+  (+6), `tests/P2000.Machine.Tests/Devices/MiniTapeTests.cs` (+3 new, several reworked),
+  `tests/P2000.Machine.Tests/Devices/CassetteTurboTrapTests.cs` (`NewMachineWithTape` helper) /
+  `src/P2000.UI/CLAUDE.md` §14.13a.
+- **Synced:** no (implementation-only, closes the internal API decision above — no
+  hardware/reference-doc content beyond what the decision entry already flagged as a
+  container-format extension).
+
+### 2026-07-14 — FIXED: blank tape is silence, not noise (live-app CSAVE bug: "Cassette fout N")
+- **Reported by owner (live app):** CSAVE consistently fails with `'N'` (program not found),
+  reproduced on multiple scenarios (adding a file to a tape, overwriting a file with itself,
+  overwriting with a different program) — same result every time.
+- **Owner-supplied key fact that cracked this:** BASIC has a "Tape init" command that preps a
+  tape by writing enough silence that the ROM's wait-for-first-marker times out. This is what a
+  real erased/blank cassette reads back as — no flux transitions — and it's what the emulator's
+  "blank tape" needed to match.
+- **Root cause confirmed by driving the real ROM entry points directly** (new
+  `tests/P2000.Machine.Tests/Devices/AuthenticCassetteWriteTests.cs`, bypassing BASIC's own
+  command parsing — same bootstrap pattern as `CassetteTurboTrapTests`): `MiniTape`'s blank-tape
+  fill was deterministic pseudo-noise (milestone 9 decision, "so the ROM's block search finds
+  garbage until real data"). `cas_Write` (0x057A) does its own internal forward scan/settle
+  check before writing — real leading silence (which `LoadCasImage` always writes via
+  `WriteGap(BotGap)`) satisfies it almost immediately; a `InsertBlankTape()` tape had NO such
+  gap, pure noise from position 0, so the scan never found the "nothing here" signal it needed
+  and ran to the physical end of the tape (traced: 227,813,658 ticks, matching one
+  `PhasesPerSide` sweep at 209 cycles/phase almost exactly) before giving up with error `'E'`
+  (removed/EOT) — not the reported `'N'`, but the same underlying mechanism.
+- **Fix:** `MiniTape`'s blank fill is now silence — literally nothing to do, since a
+  freshly-allocated `bool[]` already defaults to `false`. Removed the `seed`
+  parameter/`Random`-based fill entirely (no longer meaningful with no randomness). Updated
+  `MiniTapeTests` accordingly (`NewTape_SameSeed_SameContent`/`NewTape_DifferentSeeds_
+  DifferentContent` — tested a feature that no longer exists — replaced with
+  `NewTape_IsSilent_AcrossBothSides`; `Save_BlankTape_ReturnsNull`'s comment updated; a
+  `Write_WhenProtected_IsIgnored` assumption that position 1000 would differ after
+  `LoadCasImage` no longer held once both "before" and "after" landed in the same silent
+  leading gap — simplified to not depend on tape content changing at all).
+- **Found (real, valuable side-discovery — `cas_Write` does its own write+verify):** a
+  successful write onto a fresh blank tape left the head at phase position ~53,481 — roughly
+  TWICE one block's on-tape width (~26,010 phases: `BobGap`+MARK+`MarkDataGap`+DATA-BLOCK+
+  `EobGap`). This means `cas_Write` writes the block, then reads it back itself (an internal
+  verify) before returning — not just a write. Confirmed by writing `MiniTapeTests`/
+  `AuthenticCassetteWriteTests` round-trip tests: a same-machine cas_Read immediately after
+  cas_Write, from wherever the head ended up, correctly finds nothing (there's genuinely
+  nothing recorded past the just-verified block) — this is NOT a bug, it's exactly what real
+  tape would do; a real "read it back" check needs a rewind (eject/reinsert, or a fresh mount
+  of the saved `.cas`) first, which the fixed round-trip test now does.
+- **Found (test-harness bug, unrelated to the tape-content fix but blocking investigation of
+  it): reusing a `HALT`-based "done" sentinel across two `StartCassetteEntry` calls on the
+  same `Machine` hangs.** `HALT` sets the Z80 core's internal `_halted` flag, which (per
+  Z80.Core CLAUDE.md §6) only clears on a real NMI/INT — directly overwriting `Cpu.Reg.PC`
+  does NOT un-halt it, so a second bootstrap silently never runs. Fixed by using a `JR -2`
+  spin sentinel instead (the established pattern already used elsewhere per the milestone-17
+  finding above) — any test that calls a cassette ROM entry point more than once on the same
+  machine must use this, not `HALT`.
+- **Found (still open — NOT resolved by this fix, flagging honestly): reusing the SAME
+  machine for a `cas_Write` immediately followed by an unrelated `cas_Read` call (bypassing
+  BASIC's own "cassette" jump-table dispatcher) can leave some ROM working-RAM state that
+  confuses the read (observed: an immediate, ~600-tick failure with error `'M'`, not seen when
+  the read runs on a freshly-constructed machine with the same saved tape).** This may be an
+  artifact of skipping the real dispatcher's own setup/reset (which a live BASIC session
+  always goes through) rather than a genuine bug — not confirmed either way without ROM
+  source. Worth remembering if the owner's original "mounted, non-blank tape" CSAVE failure
+  persists after this fix in live testing: check whether real BASIC's CSAVE-then-CLOAD (same
+  running session, same machine) hits this same state, since my direct-entry-point tests
+  could not reproduce that exact original failure (every isolated scenario I could construct —
+  single existing block, the real 41-block asset, CLOAD-then-CSAVE-same-session — succeeded).
+- **Applies to:** `src/P2000.Machine/Devices/Cassette/MiniTape.cs` (constructor — removed
+  noise fill and `seed` parameter), `tests/P2000.Machine.Tests/Devices/MiniTapeTests.cs`
+  (constructor tests reworked), `tests/P2000.Machine.Tests/Devices/AuthenticCassetteWriteTests.cs`
+  (new — 6 tests exercising the real ROM entry points end to end).
+- **Synced:** no (this project's own convention is the human syncs §17 into the reference doc
+  separately — flagging for that pass: reference doc §5b should note blank tape is silence,
+  matching BASIC's "Tape init", superseding the earlier pseudo-noise design).
+
+### 2026-07-14 — Fix confirmed live; owner-supplied `Cassette.asm` corrects a claim in the entry above
+- **Owner confirmed in the live app:** the blank-tape-silence fix resolves the reported CSAVE
+  failure. Full round trip (CLOAD from a real tape → eject → insert blank → CSAVE → save
+  `.cas` → mount → CLOAD again) succeeded, as did a second CSAVE with a different name onto
+  the tape just loaded from. Replace (same name) and tape-full scenarios not yet tested.
+- **Owner supplied the actual monitor ROM cassette driver source (`Cassette.asm`) — this
+  corrects a claim in the entry above.** `cas_block_write`'s replace-vs-append choice is
+  driven entirely by two `cassette_status` RAM bits (`CST_NOMARK`, `CST_WCDON`) left over
+  from whatever cassette operation ran immediately before `cas_Write` — there is **no
+  filename comparison anywhere in this ROM driver**. The "search for a file by first letter,
+  check it fits the allocated block count" policy is BASIC's own save routine, layered on top
+  of this driver, which this project does not have source for.
+- **Correction to this entry's own `AuthenticCassetteWriteTests`:** every test there
+  constructs a fresh `Machine()`, so `cassette_status` starts at 0 (`CST_NOMARK` clear) —
+  per the ROM source, that makes `cas_block_write` try **replace** on its first call, not
+  append. So `AuthenticWrite_AppendOntoMountedTape_Succeeds`/
+  `AuthenticWrite_AppendOntoRealMultiBlockAsset_Succeeds` almost certainly exercised
+  "overwrite the first block found" rather than "append a new file" — they only asserted
+  `A==0` (ROM success code) and never checked *where* the write landed on the tape. The tests
+  still have real value (they prove the authentic write path completes successfully against
+  real, previously-recorded content instead of hanging/erroring), but their names overstate
+  what they verified — worth a rename/re-scoping pass if this area gets touched again,
+  rather than treating them as append-path regression coverage.
+- **Applies to:** `tests/P2000.Machine.Tests/Devices/AuthenticCassetteWriteTests.cs` (test
+  naming/scope caveat, not a code change) / `src/P2000.UI/CLAUDE.md` (parallel entry with the
+  live-app confirmation and the UI-side directory-refresh fix this same feedback prompted).
+- **Synced:** no (the replace/append mechanism is BASIC-level policy, not machine hardware —
+  nothing new for the reference doc beyond the blank-tape-silence fact already flagged above).

@@ -105,12 +105,24 @@ public sealed class MdcrDevice : IDevice
     public byte[]? SaveTape() => _tape?.Save();
 
     /// <summary>Insert a loaded <c>.cas</c> image at runtime (CIP flips live — the ROM's
-    /// busy-wait loop sees the cassette appear without a machine reset).</summary>
-    public void InsertTape(byte[] casImage, bool writeProtect = true)
+    /// busy-wait loop sees the cassette appear without a machine reset). Write-protect is
+    /// read from the file itself (see <see cref="MiniTape.LoadCasImage"/>) — defaults writable
+    /// for any file that never set the protect byte (machine CLAUDE.md §17, 2026-07-14).</summary>
+    public void InsertTape(byte[] casImage)
     {
         _tape = new MiniTape();
-        _tape.LoadCasImage(casImage, writeProtect);
+        _tape.LoadCasImage(casImage);
         ResetPll();
+        UpdateStatusFromTape();
+    }
+
+    /// <summary>Sets write-protect on the mounted tape live — the host-side "physical tab"
+    /// control (machine CLAUDE.md §17, 2026-07-14), always fast, independent of
+    /// <see cref="TimingPolicy"/>, same category as mount/eject/create-blank/save-as. No-op
+    /// when no tape is mounted. Only WEN changes; CIP/BET are unaffected.</summary>
+    public void SetWriteProtected(bool protect)
+    {
+        _tape?.SetProtected(protect);
         UpdateStatusFromTape();
     }
 

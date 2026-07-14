@@ -6,8 +6,14 @@ namespace P2000.Machine.Devices.Cassette;
 /// at the current head position plus forward/reverse motor motion. Two sides; flipping the
 /// tape mirrors the position.
 ///
-/// A blank tape is seeded with deterministic pseudo-noise (so the ROM's block search finds
-/// garbage until real data, while save-state remains reproducible — machine CLAUDE.md §2).
+/// A blank tape is SILENCE (all phases false) — matching what BASIC's own "Tape init"
+/// command produces on real hardware (writes enough silence that the ROM's wait-for-first-
+/// marker times out) and what a genuinely erased cassette reads back as (no flux
+/// transitions). CORRECTED 2026-07-14 (machine CLAUDE.md §17): an earlier design filled
+/// blank tape with deterministic pseudo-noise instead, which broke `cas_Write`'s own forward
+/// scan — noise never presents the "nothing recorded here" signal the ROM is looking for, so
+/// the scan ran to the physical end of the tape before giving up with an EOT error. Silence
+/// is also simpler: `bool[]` already defaults to `false`, so nothing needs to be filled.
 ///
 /// Loaded <c>.cas</c> images are write-protected by default. The host face (<see
 /// cref="LoadCasImage"/>) is always instant; timing is the MDCR device's concern.
@@ -30,18 +36,11 @@ public sealed class MiniTape
     private int _position;
     private int _side;
 
-    /// <param name="seed">RNG seed for the blank-tape noise fill. Fixed default keeps
-    /// save-state deterministic (MDCR-implementation.md §9).</param>
-    public MiniTape(int seed = 42)
+    public MiniTape()
     {
         _phases = new bool[Sides][];
-        var rng = new Random(seed);
         for (var s = 0; s < Sides; s++)
-        {
-            _phases[s] = new bool[PhasesPerSide];
-            for (var i = 0; i < PhasesPerSide; i++)
-                _phases[s][i] = rng.Next(2) == 1;
-        }
+            _phases[s] = new bool[PhasesPerSide]; // defaults to false (silence) on both sides
     }
 
     // ---- State -------------------------------------------------------------------
@@ -88,11 +87,26 @@ public sealed class MiniTape
 
     // ---- Host face ---------------------------------------------------------------
 
+    /// <summary>Record offset of the write-protect byte in the FIRST 1280-byte record only —
+    /// previously-unspecified container padding (header occupies 0x30–0x4F, data starts at
+    /// 0x100; 0x50–0xFF was genuinely unused). Bit 0: 1 = protected, 0 = writable — matches
+    /// WEN's own convention. Never touches the on-tape phase encoding (MDCR-implementation.md
+    /// §6, machine CLAUDE.md §17 2026-07-14 write-protect decision) — zero hardware/CRC/ROM
+    /// impact, since the ROM only ever sees phases extracted from the header/data fields.</summary>
+    private const int ProtectByteOffset = 0x50;
+    private const byte ProtectBit = 0x01;
+
     /// <summary>Encodes a P2000T <c>.cas</c> image onto the current side, overwriting it.
     /// A <c>.cas</c> file represents one physical side of a cassette; to access the other
     /// side the tape must be ejected and flipped (call <see cref="SeekTo"/> with side 1 after
-    /// a new load, or load a second .cas via a separate call on side 1). Tape is
-    /// write-protected after loading (MDCR-implementation.md §3). Rewinds to BOT when done.
+    /// a new load, or load a second .cas via a separate call on side 1). Rewinds to BOT when
+    /// done.
+    ///
+    /// <b>Write-protect is read from the file, not passed in</b> (machine CLAUDE.md §17,
+    /// 2026-07-14): the previously-unspecified byte at <see cref="ProtectByteOffset"/> in the
+    /// first record, bit 0. An unset or absent bit (any file this emulator didn't explicitly
+    /// save as protected — new saves, older saves, or files from other tools) defaults
+    /// **writable** — a host-side, physical-tab concept, not derived from tape content.
     ///
     /// Tape block structure (Cassette.asm lines 912-918, load_block):
     ///   MARK:       0xAA | 0x00 | 0x00 | 0xAA  (empty block — 4 bytes total)
@@ -102,7 +116,7 @@ public sealed class MiniTape
     /// Header and data share ONE block with ONE combined CRC (not separate frames).
     /// Format: 1280 bytes/record; header (32 bytes) from record offset 0x30, data (1024 bytes)
     /// from offset 0x100. See MDCR-implementation.md §6.</summary>
-    public void LoadCasImage(byte[] casImage, bool writeProtect = true)
+    public void LoadCasImage(byte[] casImage)
     {
         var blocks = casImage.Length / 1280;
 
@@ -120,9 +134,16 @@ public sealed class MiniTape
         }
         // Remaining phases are already zero-filled (Array.Clear) → EOT silence
 
-        _protected[_side] = writeProtect;
+        _protected[_side] = blocks > 0
+            && casImage.Length > ProtectByteOffset
+            && (casImage[ProtectByteOffset] & ProtectBit) != 0;
         _position = 1; // just past the BOT sensor — IsAtEnd(0) would keep BET=0 forever
     }
+
+    /// <summary>Sets write-protect on the current side live (project CLAUDE.md §17,
+    /// 2026-07-14 — the host-side "physical tab" control; <see cref="MdcrDevice.SetWriteProtected"/>
+    /// is the live UI-facing entry point). Does not touch tape position or content.</summary>
+    public void SetProtected(bool protect) => _protected[_side] = protect;
 
     // ---- Head-relative block access (turbo ROM trap — machine CLAUDE.md §13.18) ----------
 
@@ -206,6 +227,12 @@ public sealed class MiniTape
             Array.Copy(records[i].header, 0, casImage, i * 1280 + 0x30, 32);
             Array.Copy(records[i].data, 0, casImage, i * 1280 + 0x100, 1024);
         }
+
+        // Persist write-protect into the first record's previously-unspecified padding
+        // (ProtectByteOffset, bit 0) — round-trips through Save → LoadCasImage.
+        if (_protected[_side])
+            casImage[ProtectByteOffset] |= ProtectBit;
+
         return casImage;
     }
 

@@ -78,19 +78,92 @@ public class MdcrDeviceTests
     }
 
     [Fact]
-    public void InsertProtectedTape_SetsWen()
+    public void InsertTape_WithProtectByteSet_SetsWen()
     {
+        // Write-protect is read from the file's own record (offset 0x50, bit 0) — machine
+        // CLAUDE.md §17, 2026-07-14 — not passed in as a caller flag anymore.
         var (mdcr, _) = Create();
-        mdcr.InsertTape(OneCasRecord(), writeProtect: true);
+        var cas = OneCasRecord();
+        cas[0x50] |= 0x01;
+        mdcr.InsertTape(cas);
         Assert.Equal(0x08, mdcr.ReadStatus() & 0x08); // WEN set = protected
     }
 
     [Fact]
-    public void InsertUnprotectedTape_WenClear()
+    public void InsertTape_NoProtectByte_DefaultsWritable()
+    {
+        // Regression check for the reported "always write-protected" symptom (§14.13a test
+        // (a)): a plain/foreign .cas with no protect byte ever set defaults writable.
+        var (mdcr, _) = Create();
+        mdcr.InsertTape(OneCasRecord());
+        Assert.Equal(0x00, mdcr.ReadStatus() & 0x08); // WEN clear = writable
+    }
+
+    [Fact]
+    public void SetWriteProtected_TogglesWen_WithoutTouchingCipOrBet()
     {
         var (mdcr, _) = Create();
-        mdcr.InsertTape(OneCasRecord(), writeProtect: false);
+        mdcr.InsertTape(OneCasRecord());
+        var cipBefore = mdcr.ReadStatus() & 0x10;
+        var betBefore = mdcr.ReadStatus() & 0x20;
+
+        mdcr.SetWriteProtected(true);
+        Assert.Equal(0x08, mdcr.ReadStatus() & 0x08);
+        Assert.Equal(cipBefore, mdcr.ReadStatus() & 0x10);
+        Assert.Equal(betBefore, mdcr.ReadStatus() & 0x20);
+
+        mdcr.SetWriteProtected(false);
         Assert.Equal(0x00, mdcr.ReadStatus() & 0x08);
+        Assert.Equal(cipBefore, mdcr.ReadStatus() & 0x10);
+        Assert.Equal(betBefore, mdcr.ReadStatus() & 0x20);
+    }
+
+    [Fact]
+    public void SetWriteProtected_NoTape_NoOp()
+    {
+        var (mdcr, _) = Create();
+        mdcr.SetWriteProtected(true); // must not throw with no tape mounted
+        Assert.False(mdcr.HasTape);
+    }
+
+    [Fact]
+    public void SetWriteProtected_ProtectedTape_RejectsWriteBlockAtHead()
+    {
+        // Confirms the toggle actually gates writes (via the already-modeled WEN check),
+        // not just a cosmetic status bit (§14.13a test (c)).
+        var (mdcr, _) = Create();
+        mdcr.InsertBlankTape();
+        mdcr.SetWriteProtected(true);
+
+        Assert.False(mdcr.WriteBlockAtHead(new byte[32], new byte[1024]));
+    }
+
+    [Fact]
+    public void SaveThenReload_ProtectStateRoundTrips()
+    {
+        // §14.13a test (d): protect a tape, save, reload — still protected.
+        var (mdcr, _) = Create();
+        mdcr.InsertBlankTape();
+        Assert.True(mdcr.WriteBlockAtHead(new byte[32], new byte[1024]));
+        mdcr.SetWriteProtected(true);
+
+        var saved = mdcr.SaveTape();
+        Assert.NotNull(saved);
+
+        var (reloaded, _) = Create();
+        reloaded.InsertTape(saved!);
+        Assert.True(reloaded.IsWriteProtected);
+        Assert.Equal(0x08, reloaded.ReadStatus() & 0x08);
+    }
+
+    [Fact]
+    public void InsertBlankTape_StillDefaultsWritable()
+    {
+        // §14.13a test (e): a genuinely fresh blank tape has no prior saved state to read —
+        // still defaults writable.
+        var (mdcr, _) = Create();
+        mdcr.InsertBlankTape();
+        Assert.False(mdcr.IsWriteProtected);
     }
 
     // ---- InsertBlankTape (P2000.Machine CLAUDE.md §17, 2026-07-14) --------------
@@ -351,7 +424,7 @@ public class MdcrDeviceTests
     {
         // When WCD=1 the write path is active; the PLL read path is suppressed.
         var (mdcr, cpOut) = Create();
-        mdcr.InsertTape(OneCasRecord(), writeProtect: false);
+        mdcr.InsertTape(OneCasRecord()); // unprotected by default (no protect byte set)
 
         cpOut.Write(0x08); // FWD=1, WCD=0 — advance off BOT first
         for (var i = 0; i < 209 * 3; i++) mdcr.Tick(1);

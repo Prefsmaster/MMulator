@@ -377,12 +377,22 @@ retroactively.
   uses **`.p2000t`** for clean tapes with proper 32-byte block headers — support reading it too
   if convenient, but `.cas` is primary.
 - **Fonts: text format** (`.`/`*`, see SAA5050 doc §8).
-- **Disk image (deferred with the FDC): raw SECTOR image, geometry ASSUMED** — 35-track
-  single-sided (confirmed hardware, §5d), extension **`.dsk`** (or `.img`). NOT flux; an image.
-  **No de-facto P2000 disk-image convention exists in public sources** (unlike `.cas`), so raw
-  sector is the pragmatic default. **CONFIRM what JWSDOS dumps actually use** from the
-  p2000t/documentation repo / RetroForum when the FDC milestone is undertaken — adopt their
-  layout if one is established. (JWSDOS = the P2000 disk OS; CP/M also existed.)
+- **Disk image: raw SECTOR image, extension `.dsk`** (or `.img`). NOT flux; an image. No
+  de-facto P2000 disk-image convention exists in public sources (unlike `.cas`), so raw
+  sector is the pragmatic default — **CONFIRMED, not just assumed** (real images inspected
+  byte-for-byte are plain raw sector dumps, no container header). **Geometry is per-disk, not
+  a fixed constant — supersedes the earlier "35-track single-sided" placeholder** (§5d also
+  updated). JWSDOS 5.0 itself supports 35/40/80-track, SS/DS as a per-disk format-time
+  choice, with a **self-describing on-disk geometry label** the emulator's `.dsk` loader can
+  read directly at fixed offsets — keeping this file convention header-free (full offsets +
+  fields: `docs/JWSDOS-format.md` §3). **Note:** real JWSDOS itself does NOT read this label
+  back to auto-configure its own runtime geometry state (`docs/JWSDOS-format.md` §1) — an
+  emulator auto-detecting geometry from the label anyway is a deliberate UX improvement
+  beyond replicating real JWSDOS behavior, not "just matching the hardware." Directory
+  format + allocation model: `docs/JWSDOS-format.md` (mirrors how `docs/MDCR-implementation.md`
+  holds cassette detail rather than duplicating it here). (JWSDOS = a third-party,
+  user-group-developed P2000 disk OS; the official Philips disk-BASIC product also existed,
+  §5b/§5d — different DOS, different on-disk conventions.)
 
 ---
 
@@ -899,6 +909,48 @@ What the monitor ROM does at startup, and why the cassette matters even on a bar
    REV drive lines) and tries to **auto-load and run a 'P'-type (Program/executable) file**,
    then starts it.
 
+### Disk-boot gate — CONFIRMED from disassembly (`Disk.asm`, owner-supplied 2026-07-13)
+Runs alongside the SLOT1 checks above when a floppy+RAM extension board (§5, §5c, §5d) is
+fitted — disk boot is **opt-in per-cartridge, not a blanket presence check** the way the CTC
+probe (§5e) or the cassette CIP-wait are. Three conditions, checked in this order, all
+required before the FDC is ever touched:
+1. **`memsize == 3`** — banked RAM at `0xE000`–`0xFFFF` populated (i.e. the floppy+RAM
+   extension board is fitted, §5). The ROM's own comment: *"mem at 0xE000 is on the
+   extension board, so when no mem is found there are also no disk drives"* — firmware
+   treats "RAM populated" and "disk exists" as the same fact, checked the same way.
+2. **SLOT1 cartridge present** — bit0 of the header byte at `0x1000` (the very start of the
+   cartridge region SLOT1 maps into, §5c; `1` reads the same as open-bus, i.e. "no
+   cartridge" — consistent with the open-bus SLOT1-empty check above, not a conflicting
+   mechanism).
+3. **Cartridge requests DOS** — bit1 of the same header byte ("needs DOS"). An ordinary
+   cartridge (BASIC etc.) that doesn't set this bit boots into BASIC normally (step 2 above);
+   only a disk-BASIC-style cartridge triggers the disk path.
+
+Only when all three hold does the FDC **presence probe** (§5d) run, and only if the probe
+succeeds does `getdos` get called to load the 2-track DOS extension into RAM. Any failure at
+any gate falls straight through to the normal flow (SLOT1-cartridge-into-BASIC or the
+cassette-wait, steps 2–3 above) — on a bare machine, or with an ordinary cartridge, **the FDC
+ports are never touched at boot.**
+
+**`getdos`'s own load sequence, CONFIRMED:** FDC reset + presence probe (§5d) → 342 ms settle
+(pure CPU busy-loop, no `TimingPolicy` hook needed) → `RETI` → SENSE INTERRUPT STATUS →
+SPECIFY (`03 60 34`) → RECALIBRATE (`07 01`, seeks track 0) → motor-on + another 342 ms
+settle → for each of 2 tracks: SEEK + READ DATA (`42 01 01 00 01 01 10 0E 00`), servicing the
+semi-DMA transfer via the `0x90`-bit0 poll (§5d) → track 1 to `0xE000`–`0xEFFF`, track 2 to
+`0xF000`–`0xFFFF` (**8 KB total** — an earlier "16 KB" figure was a typo; the 16 KB SLOT1
+cartridge + 8 KB loaded = 24 KB total, matching "24K disk BASIC") → checks the loaded byte
+at `0xE000` against `0xF3` ("system disk" signature) → cleanup always runs (CTC ch0 reset,
+FDC off, RAM bank restored to 0).
+
+**The `0xF3` signature is the OFFICIAL Philips disk-BASIC signature, CONFIRMED (owner,
+2026-07-13) against a real "Disk BASIC 24K" `.IMD` image — it is NOT a general "valid DOS"
+marker.** Third-party disk operating systems (e.g. JWSDOS, a user-group-developed DOS) do
+not carry it and are not expected to — real JWSDOS disk images have a different byte
+(confirmed to be JWSDOS's own first opcode, not a bad dump) at that offset and boot
+successfully regardless. See `docs/JWSDOS-format.md` §6/§7 for the full driver-side detail
+and the (still open) question of what downstream code actually does with the resulting
+`sysdisk_status` value.
+
 **Consequences:**
 - The bare machine has a real, demonstrable behavior — not a dead idle loop. It exercises the
   SLOT1 open-bus check, video (the prompt text), and cassette **status polling** (CIP), then
@@ -1237,7 +1289,7 @@ field-service manual (Fig 4.12) corroborates the devices and adds the analog/mec
 | `0x8B` | CTC ch3 | keyboard-scan interrupt — 20 ms / 50 Hz **system tick** |
 | `0x8C` | FDC status (`DSKIO1`, IN) | µPD765 main status; **bit 7 = RDY** |
 | `0x8D` | FDC data/status (`DSKSTAT`, IN/OUT) | **bit 2 = REQ** (data request) |
-| `0x90` | FDC control (`DSKCTRL`, OUT) | control latch — bits below |
+| `0x90` | FDC control (`DSKCTRL`, IN/OUT) | OUT: control latch — bits below. IN: bit0 = byte-ready (semi-DMA per-byte poll target during a track transfer) |
 | `0x94` | `RAMSW` bank flip-flop | §5 memory (card-specific: 1-bit original / wider homebrew) |
 
 The CTC's four channels are **one port each, `0x88`–`0x8B`** (A0/A1 select). This **resolves the
@@ -1252,12 +1304,25 @@ the time constant) · bit3 `CLKSTRT` (1 = start on next clock edge, 0 = immediat
 (1 = counter, 0 = timer) · bit7 `INTEN` (1 = generate interrupt). A byte with bit0 = 0 written after
 a `TCNEXT` control word is the **time constant**.
 
-**FDC control latch `OUT 0x90` (`DSKCTRL`) — per the ROM disassembly:**
-bit0 `ENABLE` (1 = read/write FDC registers) · bit1 `Count` (terminal count) · bit2 `RESET`
-(1 = FDC reset) · bit3 `MOTOR` (1 = on) · bit4 `SELDIS` (1 = select disabled — **only on the P2C2
-disk board**). (The service manual described bit0 as a data-vs-command transfer select and folded
-enable+reset into bit2; where the two disagree, the **ROM disassembly is authoritative** for
-emulation.)
+**FDC control latch `0x90` (`DSKCTRL`) — OUT and IN, per the ROM disassembly:**
+
+OUT (control latch): bit0 `ENABLE` (1 = read/write FDC registers) · bit1 `Count` (terminal
+count) · bit2 `RESET` (1 = FDC reset) · bit3 `MOTOR` (1 = on) · bit4 `SELDIS` (1 = select
+disabled — **only on the P2C2 disk board**). (The service manual described bit0 as a
+data-vs-command transfer select and folded enable+reset into bit2; where the two disagree,
+the **ROM disassembly is authoritative** for emulation.)
+
+**IN — CONFIRMED (owner-supplied `Disk.asm`/`getdos` disassembly, 2026-07-13):** reading
+`0x90` returns a **different register from the OUT-direction latch above**. During a
+track-read/write execute phase, JWSDOS's driver polls `IN A,(0x90)` and tests **bit0** (via
+`RRA` into carry) as the semi-DMA byte-ready flag: set → one data byte is available at
+`0x8D` (consumed via `INI`); clear → keep polling. This can't be a read-back of the just-
+written OUT value — the control latch's live value during a transfer (`0x0D`, `ENABLE`=1)
+has bit0 set permanently, which would make the poll never wait. Most likely a separate
+physical status line multiplexed onto the same port address, a common pattern on
+Z80-peripheral-era I/O — noting the mechanism as inferred, not asserting more than the
+disassembly shows. See `docs/JWSDOS-format.md` §6 for the full driver sequence this bit
+is used in.
 
 **FDC = µPD765, semi-DMA, software-polled (CONFIRMED):** status/data via A0 (`0x8C` status = MSR,
 `RDY`/`REQ` bits; `0x8D` data); command/execute/result phases; MFM; 2 drives; write-protect +
@@ -1286,29 +1351,68 @@ asserts (§5e). **Modelled as a standalone, board-agnostic `Z80Ctc` chip** (like
 owning board instantiates one and wires its per-channel CLK/TRG + INT routing; a multi-board
 framework is deferred until a second CTC-bearing board is real (machine milestone 17, design note).
 
+**Exact CTC control words for the disk channels — CONFIRMED (`Disk.asm`, owner-supplied
+2026-07-13):** ch0 (disk-complete) `0xD5` (INTEN|counter-mode|rising-edge|TC-follows|
+CTRLWRD), time constant `0x01`; ch1 (disk-not-ready) `0xC5` — same shape, **falling edge**
+instead of rising, TC `0x01`. Both reset via `0x03` when done with them.
+
+**Command bytes actually issued by `getdos`/the disk driver — CONFIRMED exact values
+(owner-supplied disassembly, 2026-07-13). Match command dispatch on these bytes, not a
+reconstructed MT/MF/SK bit-flag decomposition of the opcode:**
+
+| Command | Opcode | Bytes sent | Result |
+|---|---|---|---|
+| SPECIFY | `0x03` | `03 60 34` | none (2 param bytes: SRT/HUT, HLT/ND) |
+| RECALIBRATE | `0x07` | `07 01` | seeks to track 0; completion via INT |
+| SEEK | `0x0F` | `0F 01 01` | drive/head + cylinder byte |
+| READ DATA | `0x42` | `42 01 01 00 01 01 10 0E 00` | data phase, semi-DMA (above) |
+| WRITE DATA | `0x45` | same shape, opcode `0x45` | data phase, semi-DMA (above) |
+| SENSE INTERRUPT STATUS | `0x08` | `08` | 2 result bytes (ST0 + PCN) |
+
+Byte positions structurally match the standard µPD765 9-byte READ/WRITE DATA parameter block
+(drive/unit, cylinder, head, sector, N, EOT, GPL, DTL) — confident in the values and
+positions; not independently re-deriving the datasheet's MT/MF/SK bit-field meaning of the
+opcode byte from memory. This is the **full command subset the ROM driver actually issues**,
+not the complete 16-command µPD765 set — resolves "Constants to source" item 3 below.
 
 ### Fits as a slot device; presence check is free
 The FDC is the **internal-extension-slot** device (§5c) — populated in the M, addable to a
 T. The T's FDC card was **compatible with the P2000M's internal floppy controller**. The
-monitor ROM probes for disk presence by
-reading an FDC port:
+monitor ROM probes for disk presence, gated behind the disk-boot conditions in §5b, by
+reading FDC ports:
 - **Card mounted** → FDC responds with valid status → ROM concludes a disk subsystem exists.
 - **Slot empty** → open-bus 0xFF → ROM detects nothing.
 
-So "disk present" = "is an FDC slot device mounted." No special-casing. **The exact probe
-routine (which port, which status bits, expected response) is in the project's OWN monitor
-ROM disassembly** — authoritative; look there first.
+**CONFIRMED exact sequence (owner-supplied `Disk.asm` disassembly, 2026-07-13):**
+`OUT (0x90),0x04` (assert RESET alone — ENABLE/MOTOR/SELDIS all clear) → a fixed
+**~256-iteration `DJNZ` delay** (~1.3 ms, **no interrupt wait**) → `IN A,(0x8C)` then
+`CP 0x80` (**exact equality** against RQM-set/everything-else-clear, not a bare bit-7 test)
+→ match → `CALL getdos` (§5b). Either way `DSKCTRL` is rewritten to `0x00` afterward — "always
+switch the FDC off again, just to make sure." Absent card → open-bus `0x8C` reads `0xFF` →
+`CP 0x80` fails → `getdos` never called — same "genuine silence" pattern as the CTC probe
+(§5e). Model the chip's post-reset MSR as exactly `0x80` (idle, ready-for-command, no drive
+busy) so this exact-match check succeeds when a card is present.
+
+So "disk present" = "is an FDC slot device mounted, reset, and idle." No special-casing.
 
 ### Emulate the chip, not the magnetism
 The card uses a **µPD765-family FDC** (MAME's P2000T support implements it as µPD765, and
-PR #7577 carried µPD765 emulation changes). Standard, well-documented chip — emulate the
-register interface, not an analog medium:
-- Main Status Register + Data Register; command / execution / result phases; 16 commands;
-  user-programmable step-rate / head-load / head-unload; FM + MFM.
+PR #7577 carried µPD765 emulation changes; further corroborated by the real command bytes
+above structurally matching the standard µPD765 parameter-block shapes). Standard,
+well-documented chip — emulate the register interface, not an analog medium:
+- Main Status Register + Data Register; command / execution / result phases; 16 commands in
+  the datasheet, though the ROM driver only ever issues the subset above; user-programmable
+  step-rate / head-load / head-unload; FM + MFM.
 - INT line: in **non-DMA mode pulses per byte**, in **DMA mode pulses at command completion**.
-- **Reset-interrupt behaviour matters for the presence probe:** if RDY is high during
-  reset the FDC raises an interrupt within ~1.024 ms, cleared by Sense Interrupt Status.
-  Model it faithfully or ROM detection may misfire.
+  **CONFIRMED non-DMA/semi-DMA, polled:** the driver services each byte itself via the
+  `0x90`-bit0 poll + `INI` (above) — resolves "Constants to source" item 3 below.
+- **Datasheet reset-interrupt behaviour is real µPD765 behavior, but CORRECTED
+  (2026-07-13) — the P2000's own presence probe does NOT rely on it.** The datasheet says:
+  if RDY is high during reset, the FDC raises an interrupt within ~1.024 ms, cleared by
+  Sense Interrupt Status. The ROM's *actual* presence probe (above) is a fixed ~1.3 ms delay
+  then a direct status poll — **no interrupt wait at all**. Model the datasheet reset-INT
+  behavior for general chip fidelity if convenient, but it is not load-bearing for this
+  probe to succeed; don't gate the probe test on it.
 
 ### Two-level speed = chip-timing policy (NO ROM trap needed)
 The FDC interface is clean and self-contained, so unlike the cassette it needs no ROM
@@ -1325,19 +1429,28 @@ independent of the timing policy.
 
 ### Constants to source (NOT invent) + sources
 From **MAME PR #7577 FDC slot device** (chip, ports, DMA/INT wiring), the project's **own
-monitor-ROM disassembly** (presence probe + driver command sequence), and **JWSDOS disk
-images** from `p2000t/software` (test corpus):
-1. **Exact FDC chip** — µPD765 per MAME; confirm against the card schematic. (A hobbyist
-   building a *custom* P2000T controller once referenced the WD179x family, so pin down
-   the standard club-card chip; µPD765 is the strong default.)
-2. **FDC I/O port addresses** + any drive-select / motor / side latch on the card.
-3. **DMA vs non-DMA** transfer mode (a Z80 add-on most likely runs the µPD765 **non-DMA /
-   polled-interrupt**, where the driver moves each byte via the data register — changes
-   the transfer loop and INT cadence). Confirm.
-4. **FDC INT line wiring** to the Z80 (maskable INT / NMI / polled status). Note the NMI
-   line is already used for the soft-reset button, so FDC INT is presumably elsewhere.
-5. **Disk geometry / image format**: P2000M/T drives were **single-sided 35-track**;
-   confirm sector size + sectors/track and what JWSDOS images contain.
+monitor-ROM disassembly** (presence probe + driver command sequence), the owner's own
+**JWSDOS 5.0 binary disassembly**, and **real JWSDOS/`Disk BASIC` disk images** (test corpus)
+— see `docs/JWSDOS-format.md` for everything DOS/disk-format-specific:
+1. **Exact FDC chip** — µPD765 per MAME; corroborated (not independently schematic-confirmed)
+   by the real command bytes above structurally matching the standard µPD765 parameter-block
+   shapes. (A hobbyist building a *custom* P2000T controller once referenced the WD179x
+   family, so the schematic cross-check is still worth doing if convenient; µPD765 is the
+   strong, now well-corroborated default.)
+2. **FDC I/O port addresses** — **RESOLVED**, see the I/O port map above.
+3. ~~**DMA vs non-DMA** transfer mode~~ — **RESOLVED**: non-DMA / semi-DMA, software-polled
+   (above).
+4. ~~**FDC INT line wiring** to the Z80~~ — **RESOLVED**: through CTC ch0, IM2-vectored (§5d
+   CTC channel roles above), not a direct maskable INT or NMI line.
+5. ~~**Disk geometry / image format**~~ — **RESOLVED for sector size/count; geometry itself
+   moved to `docs/JWSDOS-format.md`.** Sector size/count CONFIRMED from `getdos`: 16
+   sectors/track, 256 B/sector (4 KB/track). The earlier "single-sided 35-track" figure was
+   a placeholder that did not survive contact with real disk images — JWSDOS 5.0 supports
+   **multiple geometries** (35/40/80-track, SS/DS) as a per-disk format-time choice, with a
+   self-describing on-disk label (byte-exact confirmed against a real 320 KB image: 40-track,
+   double-sided). Full detail — directory format, allocation model, the geometry label's
+   exact offsets — lives in `docs/JWSDOS-format.md`, not duplicated here. See also §3a for
+   the resulting `.dsk` file-convention note.
 
 ---
 

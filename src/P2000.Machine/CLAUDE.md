@@ -611,16 +611,157 @@ is NO machine-layer runner milestone here — it's promoted in with the external
       load of the same image; (b) turbo save round-trips (authentic re-load matches); (c) result
       registers/flags after the trap match the ROM's documented post-conditions so BASIC/ROM
       callers continue; (d) Authentic mode fires no trap. → commit.
+19. **Floppy Disk Controller (µPD765) — standalone chip + minimal board wiring** (reference
+    doc §5c/§5d/§5e + **`docs/JWSDOS-format.md`** for the DOS-specific facts below; the
+    disk-storage milestone the CTC (M17) was built to enable — its INT has nowhere to go
+    without ch0).
+    - **Design — standalone chip (DECISION, mirrors the `Z80Ctc`/`SAA5050` pattern):**
+      `Upd765 : IDevice`, board-agnostic, its own class + unit tests — the real chip boundary,
+      not a speculative abstraction. A thin `InternalExtensionBoard` object instantiates it
+      and wires: the chip's INT output → **CTC ch0** (`0x88`, IM2-vectored — the FDC has **no
+      direct CPU INT line**, §5d); routes `0x8C`/`0x8D`/`0x90` to the chip and `0x94` to the
+      existing `RAMSW` bank register. **Do NOT build the general multi-board RAM-variant
+      framework here** (T/54 vs T/102 vs PTC-96K socket population) — that's M20; this
+      milestone's board object is deliberately thin, just enough to host one `Upd765` and
+      route its ports/INT. M20 extends the SAME board class, it does not replace it.
+    - **Register interface, CONFIRMED (ROM-disassembly-authoritative, reference §5d):**
+      - `0x8C` `DSKIO1` (IN) — Main Status Register, **bit 7 = RDY**. Post-reset/idle value is
+        **exactly `0x80`** (not just bit7 set — the ROM's presence probe does an exact
+        `CP 0x80`, see below).
+      - `0x8D` `DSKSTAT` (IN/OUT) — data register, consumed byte-at-a-time via `INI` during a
+        transfer.
+      - `0x90` `DSKCTRL` — **two different registers sharing one address.** OUT = control
+        latch: bit0 `ENABLE`, bit1 `Count` (TC), bit2 `RESET`, bit3 `MOTOR`, bit4 `SELDIS`
+        (P2C2 board only). **IN = the actual semi-DMA byte-ready flag, bit0** — this, not
+        `0x8D` bit2, is what the real driver polls during a transfer (confirmed from
+        `getdos`'s `read_track` loop: `IN A,(0x90)` / `RRA` / `JP NC` / `INI`). Already synced
+        into reference doc §5d — model both directions as genuinely separate registers, not a
+        read-back of the OUT latch (the live OUT value during a transfer has bit0 permanently
+        set, which would make the poll never wait).
+    - **Presence probe, CONFIRMED exact ROM sequence (supersedes the earlier
+      datasheet-generic "reset raises INT" assumption — that path is NOT what this ROM
+      does):** `OUT (0x90),0x04` (RESET alone) → a fixed **~256-iteration `DJNZ` delay**
+      (~1.3 ms, **no interrupt wait**) → `IN A,(0x8C)` → `CP 0x80` (**exact equality**, not a
+      bare bit-7 test) → match → `CALL getdos`; either way `DSKCTRL` is rewritten to `0x00`
+      afterward. Absent card → open-bus `0x8C` reads `0xFF` → `CP 0x80` fails → `getdos`
+      never called — same "genuine silence" pattern as the CTC (M17) and cassette CIP
+      probes. Model `Upd765.Reset()` to leave MSR readable as exactly `0x80` so this succeeds.
+    - **Disk boot is 3-gate cartridge/config-conditioned, not a blanket boot-time probe
+      (CONFIRMED, belongs in reference doc §5b too — not yet synced there):** checked in
+      order, ALL three required before the presence probe above even runs: (1)
+      `memsize == 3` (banked RAM at `0xE000`–`0xFFFF` populated — the ROM's own comment:
+      *"mem at 0xE000 is on the extension board, so when no mem is found there are also no
+      disk drives"* — treats "RAM populated" and "disk exists" as the same fact); (2) SLOT1
+      cartridge present (bit0 of the header byte at `0x1000`); (3) cartridge requests DOS
+      (bit1 of the same byte). **Config-validation implication:** a `MachineConfig` with an
+      FDC card but `memsize` not reporting 3 is not a hardware-plausible combination — worth
+      a validation check, not just a boot-sequence detail.
+    - **Command subset, CONFIRMED exact bytes from `getdos` — match dispatch on these
+      values, not a reconstructed MT/MF/SK bit-flag theory:**
+      SPECIFY `03 60 34` · RECALIBRATE `07 01` · SEEK `0F 01 01` · READ DATA
+      `42 01 01 00 01 01 10 0E 00` · WRITE DATA same shape, opcode `45` · SENSE INTERRUPT
+      STATUS `08` → 2 result bytes (ST0 + PCN). Byte positions structurally match the
+      standard µPD765 9-byte parameter block (drive/unit, cylinder, head, sector, N, EOT,
+      GPL, DTL).
+    - **`getdos`'s own load sequence (the M19 RUN-gate's exact script):** `disk_init` (IM2,
+      FDC reset, a **342 ms** settle — `delay_342ms`, 854,799 T-states, a **pure CPU
+      busy-loop needing NO `TimingPolicy` hook**, same as the ~1.3 ms probe delay: the
+      cycle-exact core reproduces both for free) → `RETI` → SENSE INTERRUPT STATUS → SPECIFY
+      → RECALIBRATE (`HALT`-waits for the completion INT) → motor-on + another 342 ms settle
+      → for each of 2 tracks: sets `0x94 = 0x01` (RAMSW bank 1) **once, never toggled** →
+      READ DATA → poll `0x90` bit0 → `INI`-loop terminated by the FDC's own result-phase INT
+      (routed via CTC ch0, which **redirects the polling loop's return address** rather than
+      resuming it — an ISR technique, nothing special needed in the core) → track 1 to
+      `0xE000`–`0xEFFF`, track 2 to `0xF000`–`0xFFFF`, **8 KB total** (not 16 KB — an earlier
+      figure was a typo, see `docs/JWSDOS-format.md` provenance) → checks the loaded byte
+      against `0xF3` ("system disk" signature) → cleanup always runs: CTC ch0 reset, FDC off,
+      **RAMSW restored to `0x00`** (bank 0) — whatever runs the loaded DOS extension must
+      itself re-select bank 1 before jumping into it.
+      **`0xF3` signature — CONFIRMED, feeds directly into the RUN-gate test design
+      (`docs/JWSDOS-format.md` §6/§7):** two real JWSDOS disk images have `0x20` at that
+      offset (JWSDOS 5.0's own actual first opcode byte, `JR NZ`, not a bad dump), while a
+      real **"Disk BASIC 24K" `.IMD` image — the official Philips cartridge+disk product —
+      has `0xF3` there as expected.** So `0xF3` is the official Philips disk-BASIC signature;
+      JWSDOS is a third-party user-group DOS that was never expected to carry it. **This
+      means Test (e) needs TWO fixtures with two different correct outcomes, not one:**
+      official "Disk BASIC 24K" → `sysdisk_status` ends "recognized" (`0xF3` matches);
+      JWSDOS → `sysdisk_status` ends "not recognized" (`0x20`, cleared) — **and this is the
+      CORRECT, expected result for JWSDOS, not a bug to fix.** Do NOT force an artificial
+      `0xF3` byte into the JWSDOS test image to make the check "pass." Remaining open
+      question, not blocking: whether `sysdisk_status` actually gates the launch downstream —
+      confirm (once `getdos`'s caller is sourced) that a cleared flag doesn't itself prevent
+      JWSDOS from running, since real JWSDOS disks clearly work in practice.
+    - **CTC wiring, exact control words (extends M17's `Z80Ctc`, doesn't change it):** ch0
+      (disk-complete) `0xD5` (INTEN|counter-mode|rising-edge|TC-follows), TC `0x01`; ch1
+      (disk-not-ready) `0xC5` — same shape, **falling edge**, TC `0x01`; both reset via `0x03`
+      when done.
+    - **Semi-DMA, software-polled — model the handshake, not real DMA.** No autonomous DMA
+      engine; the driver polls `0x90` bit0 and moves each byte itself via `0x8D`.
+    - **`TimingPolicy` — chip-timing only, NO ROM trap** (register-level and self-contained,
+      unlike the cassette): Authentic honours seek time, motor spin-up, head-load, rotational
+      latency, per-byte transfer rate — i.e. how long after a command issues before the
+      *emulated chip's* result-phase INT actually fires. Turbo zeroes all of it; register
+      results are identical either way. ROM busy-loops (the 342 ms / 1.3 ms delays above) are
+      OUTSIDE this seam entirely — they need no hook, Authentic and Turbo both just execute
+      them at real T-state cost.
+    - **Disk geometry / JWSDOS format — see `docs/JWSDOS-format.md` (companion doc, don't
+      duplicate here, mirrors the MDCR pattern):** 16 sectors/track, 256 B/sector (CONFIRMED
+      from `getdos`); JWSDOS 5.0 itself supports **multiple geometries** (35/40/80-track,
+      SS/DS) as a per-disk format-time choice — supersedes the reference doc §5d/§3a's
+      "single-sided 35-track" placeholder (reference-doc sync still pending, flagging here so
+      it isn't missed). JWSDOS embeds a self-describing geometry label on-disk
+      (`docs/JWSDOS-format.md` §3) — **but real JWSDOS itself does NOT read this back** to
+      auto-configure its own runtime state (it uses live RAM defaults, changed only via its
+      own format menu, `docs/JWSDOS-format.md` §1). **Design decision:** the emulator's
+      `.dsk` loader SHOULD auto-detect geometry from this label anyway — a deliberate
+      emulator-side UX improvement beyond replicating real JWSDOS behavior, not "just
+      matching the hardware." Keeps the "raw sector dump, no header" file convention
+      (reference doc §3a) intact since the label is real on-disk JWSDOS data.
+    - **Host `.dsk` image API** — mount/eject/create-blank/write-protect/browse, always
+      host-speed, independent of `TimingPolicy` (the `.cas` API is the template). Read-only
+      directory browsing needs only the 32-byte directory-entry struct (`docs/JWSDOS-format.md`
+      §4) — no allocation logic. Write support (save into a mounted image) needs the
+      gap-reuse/append algorithm (`docs/JWSDOS-format.md` §5) — scope as a later concern
+      unless M19 needs write from the start.
+    - **`.state`:** the FDC device block (command/phase state, per-drive motor/head-position/
+      selected-drive state) is a new device stream entry → bump `MachineStateFile.
+      CurrentVersion`/`MinVersion` to **v4** at build time (reject v3), same discipline as the
+      v1→v2 and v2→v3 (CTC/Lock) bumps — never retroactively.
+    - **Tests:**
+      (a) presence probe, both the unit-level exact-byte sequence (`OUT 0x90←0x04` → no-INT
+      settle → `IN 0x8C` → `CP 0x80` exact match; open-bus `0xFF` when absent → probe fails)
+      and the integration-level version, which now needs **three** fixture preconditions
+      (`memsize==3` config, a 16 KB needs-DOS SLOT1 cartridge with bit1 set at `0x1000`, a
+      JWSDOS disk image) — not two, per the 3-gate boot finding above;
+      (b) each confirmed command (SPECIFY/RECALIBRATE/SEEK/READ DATA/WRITE DATA/SENSE
+      INTERRUPT STATUS) produces the modeled chip's expected phase transitions and result
+      bytes, matched on the exact byte sequences above;
+      (c) a semi-DMA transfer round-trips the REAL sequence end to end — reset → settle →
+      `RETI` → Sense Interrupt Status → SPECIFY → RECALIBRATE (halt-for-INT) → SEEK → READ
+      DATA (16 sectors × 256 B) → poll `0x90` bit0 → 4096 bytes via repeated `INI` → result
+      INT → CTC ch0 (`0xD5`/TC1) → IM2 vector via `0x6020` → result bytes from `0x8D`;
+      (d) FDC INT → CTC ch0 → IM2 vector fires and lands at the correct handler (integration
+      test against M17's daisy chain — this is the seam M17 was built for);
+      (e) **RUN gate:** boot with the three-precondition fixture from (a) → `sysdisk_status`
+      ends in the "success" state → the loaded 8 KB is present at bank 1 (`0xE000`–`0xEFFF`/
+      `0xF000`–`0xFFFF`) → bank restored to 0 on return. Resolve the `0xF3`-signature open
+      flag above before locking this fixture's exact bytes. → commit.
 
 ---
 
 ## 14. Deferred (build the seams now, implement later)
 
 Do NOT implement these in this build, but keep the interfaces ready (they're specced in the
-reference doc): **P2000M** (different video-memory sharing, 4 KB VRAM); **FDC/floppy**
-(internal-slot µPD765 card) + disk images; **hires overlay board**; **SLOT2 expansion cards**;
-**80-column mode**; **printer**. The aggregator (§8), slot model (§12.12), and `TimingPolicy`
-(§7) are the seams these plug into.
+reference doc): **P2000M** (different video-memory sharing, 4 KB VRAM); **the multi-board
+RAM-variant framework** (T/54 / T/102 / PTC-96K socket population and the wider-`0x94`
+homebrew bank register — M20, now that the FDC chip itself and its minimal board seam are
+built in M19); **hires overlay board**; **SLOT2 expansion cards**; **80-column mode**;
+**printer**. The aggregator (§8), slot model (§12.12), and `TimingPolicy` (§7) are the seams
+these plug into.
+
+(**FDC dropped off this list as of M19** — §13.19. The floppy+RAM board's *RAM* axis and
+PTC-96K move to M20 alongside the multi-board framework, since — per reference doc §5 —
+they're the same physical board as the FDC card, just a different concern.)
 
 ---
 

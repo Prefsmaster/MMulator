@@ -283,7 +283,10 @@ shared **`Z80Tables`** (root rule) so the debugger decodes exactly what the core
 - **Memory watch windows (MULTIPLE, independent):** each an observer over the snapshot with its
   own range; freely spawnable. Live hex + ASCII, refreshed per frame/step; **highlight bytes
   changed since last refresh** (colour flash). Optional **follow a register pair** (HL/SP).
-  Read-only.
+  **Read-only** for live cell editing (still true — this is not a hex editor). **Export/import
+  the whole configured range as a file IS supported** (§14 milestone 12: "Save range to file" /
+  "Load file to address" toolbar actions) — a bulk file operation over the range, distinct from
+  editing individual cells in place.
 - **Special VRAM / pan window:** the **80×24** screen buffer (0x5000–0x577F) laid out spatially
   (address = `0x5000 + col + 80*row`), each cell toggleable glyph/hex, with a **rectangle marking
   the visible 40-column viewport** positioned by `Video.PanX`, sliding live as the program pans.
@@ -418,6 +421,55 @@ builds did. Do not advance while the current milestone is red. Record spec corre
       preserved as a multimap); (b) `OUT (0x88)` resolves to `CTC_CH0` while the disasm line at
       `0x0088` does NOT get the port name; (c) `BIT_MOTON $0002` never labels address 0x0002;
       (d) an unknown-format file is rejected cleanly with a clear message. → commit.
+12. **Debugger — memory watch export/import.** Save a memory watch window's configured range to
+    a file, and load a file into RAM at an address — the missing piece for pulling machine code
+    (e.g. a routine loaded from `.cas`/disk into RAM by BASIC) out of a running session for
+    offline disassembly, and pushing it back in. **Motivating case:** the "JWS Systeem Disk"
+    writer loads from a `.cas` as a short BASIC wrapper around a machine-code routine — this
+    milestone is what lets the owner pull that routine out of RAM into a file.
+    - **Data-flow check — confirmed no new machine primitive needed, both directions:**
+      - **Export** needs only the memory-read half of the **already-shipped snapshot surface**
+        (machine ms.13, §3.2 first bullet — "full register file... plus memory reads"). The UI
+        reads the watch window's configured `[start, start+length)` range out of the current
+        snapshot and writes it to a file. No machine change.
+      - **Import** targets the **already-shipped command queue's `load-image-to-address`**
+        (machine ms.15, §3.2 third bullet). That command was scoped in ms.15 for the *future*
+        external IDE ("send code") and has had **no real caller until now** — this milestone is
+        its first consumer. **Verify, don't assume, its exact signature** (byte payload + target
+        address; confirm it accepts an arbitrary length and doesn't require a pre-existing
+        image/cartridge shape) before wiring the UI call — if the signature doesn't already fit
+        "arbitrary bytes at an arbitrary address," that's a small machine-side gap to flag back
+        per §17, not a reason to add a second machine primitive.
+      - This confirms the owner's own read of the situation: the data-flow plumbing already
+        exists on the machine side: the work here is entirely new UI.
+    - **File format:** raw binary, no header — exactly the `length` bytes of the watch window's
+      configured range, nothing else. Matches what `load-image-to-address` already expects to
+      push back in; do not invent a wrapper format for a one-range dump.
+    - **UI surface — extends the existing memory watch window, no new window type:** two toolbar
+      actions on each memory watch window (§10):
+      - **"Save range to file…"** — dumps the window's current `[start, length)` from the live
+        snapshot to a chosen path.
+      - **"Load file to address…"** — file picker + an editable target-address field (defaulted
+        to the window's own range start, but not required to match it — loading to a different
+        address than the window happens to be watching is a legitimate use), then enqueues
+        `load-image-to-address` with the file's bytes. Reject/flag files whose length would run
+        past the top of addressable RAM rather than silently truncating or wrapping.
+    - **Does NOT reopen the §10 "Read-only" decision.** Cell-by-cell live editing of a memory
+      watch window is still out of scope — this is a bulk file operation over the whole
+      configured range, not a hex editor. Keep the two clearly separate in the UI (distinct
+      toolbar actions, no inline-edit affordance added to the grid).
+    - **Same non-determinism caveat already on the books for `load-image-to-address`** (§3.2:
+      "Direct memory poke / load-to-RAM mid-run breaks cycle-exact replay for that session —
+      same category as turbo cassette; acceptable, flag it, don't forbid it"). No new decision
+      needed here, just carried forward: importing mid-run is allowed, not hidden from the user,
+      and not something `.state` replay needs to reproduce.
+    - **Tests:** (a) export a known range, re-import at the same address, verify byte-identical
+      round-trip; (b) export while paused vs. while running produces the live-at-that-moment
+      snapshot in both cases (no "stale until next break" surprise); (c) import at an address
+      outside current RAM size for the configured topology is rejected with a clear message, not
+      a silent wrap/crash; (d) importing a file larger than the watch window's own configured
+      length is allowed (target address is independent of the window's range) — only the RAM-size
+      bound in (c) applies. → commit.
 
 ---
 
@@ -766,6 +818,87 @@ project.
   `src/P2000.UI/runtimes/win-x64/native/openal32.dll` (bundled binary),
   `tools/get-openal.ps1` (download script).
 - **Synced:** yes (2026-07-10 — OpenAL native-DLL bundling + queue-cap latency: deployment/implementation-only, no reference change)
+
+### 2026-07-14 — Milestone 12: debugger memory watch export/import
+- **Assumed:** the data-flow check in this milestone's own spec (§14.12) — export via the
+  existing snapshot memory-read surface, import via the existing `LoadImageCommand` — would
+  hold with no machine-side gap. Confirmed true: `LoadImageCommand(ushort StartAddress, byte[]
+  Data)` (`src/P2000.Machine/Debug/MachineCommand.cs`) already writes an arbitrary-length byte
+  array at an arbitrary address via a plain `Memory.Write` loop — no cartridge/image-shape
+  assumption, no machine change needed.
+- **Found (design decision — `MemoryWatchVm` now takes the runner):** `MemoryWatchVm` was
+  previously constructible with no arguments (a pure observer fed externally via `Update()`).
+  Export/import needs to enqueue a command, so the constructor now takes `EmulationRunner` —
+  same pattern as `CassetteDeckVm`/`ConfigWindowVm` (store the runner, dereference
+  `_runner.Machine` at call time so a `Reconfigure()` swap is picked up automatically, per the
+  milestone-5 finding). `DebuggerWindowVm.AddMemoryWatch()` updated to pass `_runner`; existing
+  `MemoryWatchVmTests` updated to construct via `new MemoryWatchVm(new EmulationRunner())`.
+- **Found (top-of-RAM guard is a UI-side check, not a machine one):** `PageTable.Write` silently
+  discards out-of-range/unpopulated writes (open-bus convention) rather than throwing, so
+  "reject a file that would run past 0xFFFF" cannot come from the machine. `LoadFileToAddressAsync`
+  checks `address + data.Length > 0x10000` before enqueuing and surfaces a message instead —
+  the only bound checked (the file may exceed the watch window's own configured length since
+  the target address is independent of the window's range).
+- **Found (dialog plumbing reused verbatim):** `SaveFilePickerAsync`/`OpenFilePickerAsync` +
+  `TopLevel` lookup + a `ShowMessageRequested` event forwarded to a small dialog in
+  code-behind — same shape as `DisplayWindowVm`'s save/load-state commands and
+  `CassetteDeckVm`'s mount. No new UI pattern introduced.
+- **Applies to:** project CLAUDE.md §14.12 /
+  `src/P2000.UI/ViewModels/MemoryWatchVm.cs` (constructor, `SaveRangeToFileAsync`,
+  `LoadFileToAddressAsync`, `LoadAddressText`, `ShowMessageRequested`),
+  `src/P2000.UI/ViewModels/DebuggerWindowVm.cs` (`AddMemoryWatch`),
+  `src/P2000.UI/Views/MemoryWatchWindow.axaml` (toolbar actions),
+  `src/P2000.UI/Views/MemoryWatchWindow.axaml.cs` (`ShowErrorDialog`),
+  `tests/P2000.UI.Tests/ViewModels/MemoryWatchVmTests.cs` (+6 tests).
+- **Synced:** no (implementation-only — no hardware/spec correction to sync; the machine-side
+  `LoadImageCommand` contract itself was already synced at machine ms.15).
+
+### 2026-07-14 — Milestone 12 follow-up: configurable watch range (owner feedback)
+- **Assumed (first pass above):** a fixed 256-byte window was enough — "export" would just dump
+  whatever the window happened to be displaying (`_curr`), and "import" only needed an editable
+  target address.
+- **Found (owner feedback — not hardware, a scope correction):** a fixed 256-byte range isn't
+  actually useful for pulling an arbitrary machine-code routine out of RAM (the milestone's own
+  motivating case). Two changes:
+  1. **The watch window itself is now range-configurable**, not fixed at 256 bytes. Added a
+     "Length" field (hex) next to "Base"; `MemoryWatchVm.SetRange(ushort, int)` sets both
+     together, clamps length to `[1, 0x10000]`, and resizes `Rows` (now an
+     `ObservableCollection<MemoryWatchRow>`, not a fixed 16-element array) plus the internal
+     `_curr`/`_prev` buffers to `ceil(length/16)` whole rows. A length not a multiple of 16
+     rounds the display up (the extra trailing bytes are real memory, just past the requested
+     length) — only the exact requested length is used for export.
+  2. **"Save range to file…" now prompts for its own start+length**, defaulting to the window's
+     current `BaseAddress`/`Length` but independently editable at save time — so a one-off
+     export doesn't require changing what the window is currently watching. Implemented as a
+     small ad-hoc modal in `MemoryWatchWindow.axaml.cs` (`PromptRangeAsync`, same
+     inline-`Window`-construction style as the existing `ShowErrorDialog`), then calling
+     `MemoryWatchVm.SaveRangeToFileAsync(start, length)` — no longer a `[RelayCommand]` bound
+     directly to the button, since the view needs to gather the range first.
+- **Found (export now reads live machine memory directly, not `_curr`):** since the save-time
+  range can differ from the window's own displayed range, `SaveRangeToFileAsync` reads
+  `_runner.Machine.Memory.Read` fresh for the requested range rather than reusing `_curr` (which
+  is sized/addressed to the window's own configured range). This is actually simpler than the
+  first pass and still satisfies "live-at-that-moment" for both paused and running, since it's a
+  direct read at click time either way.
+- **Found ("Go" now sets both base and length):** `OnGoClicked` reads both `AddressBox` and the
+  new `LengthBox` and calls `vm.SetRange(...)` once. Leaving the length box's parsed value equal
+  to `vm.Length` when the box is empty preserves the old "just navigate" behaviour.
+- **Found (StorageProvider dialogs remain untested at the unit level):** confirmed no existing
+  test in this suite drives `SaveFilePickerAsync`/`OpenFilePickerAsync` end-to-end (checked
+  `DisplayWindowVm.SaveStateAsync`/`LoadStateAsync` — also untested for the same reason); a
+  headless `[AvaloniaFact]` test has no real desktop `TopLevel`/`MainWindow`, so `GetTopLevel()`
+  returns null and the picker call never fires. Kept the same scope here: unit tests cover
+  `SetRange`'s resize/clamp behaviour and the underlying `Machine.Memory.Read`/`Write` +
+  `LoadImageCommand` paths those commands rely on, not the file-picker plumbing itself.
+- **Applies to:** project CLAUDE.md §14.12 /
+  `src/P2000.UI/ViewModels/MemoryWatchVm.cs` (`Length`, `SetRange`, `ResizeBuffers`, `Rows` now
+  `ObservableCollection<MemoryWatchRow>`, `SaveRangeToFileAsync` signature),
+  `src/P2000.UI/Views/MemoryWatchWindow.axaml` (Length field, Save button now `Click`-bound),
+  `src/P2000.UI/Views/MemoryWatchWindow.axaml.cs` (`OnGoClicked`, `OnSaveRangeClicked`,
+  `PromptRangeAsync`),
+  `tests/P2000.UI.Tests/ViewModels/MemoryWatchVmTests.cs` (range tests added; export tests
+  reworked around `Machine.Memory.Read`/`Write` instead of the old fixed-buffer helper).
+- **Synced:** no (implementation-only UI scope correction, no hardware/spec content to sync).
 
 ### 2026-07-09 — Integer scaling: physical vs logical pixels
 - **Assumed:** computing the integer multiplier `n` from `Bounds.Width / Video.Width` (logical

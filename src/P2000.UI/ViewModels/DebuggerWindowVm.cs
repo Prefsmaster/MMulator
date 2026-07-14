@@ -189,7 +189,7 @@ public sealed partial class DebuggerWindowVm : ObservableObject, IDisposable
     [RelayCommand]
     private void AddMemoryWatch()
     {
-        var watch = new MemoryWatchVm();
+        var watch = new MemoryWatchVm(_runner);
         MemoryWatches.Add(watch);
         OpenMemoryWatchRequested?.Invoke(watch);
     }

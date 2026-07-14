@@ -5,8 +5,8 @@
         x:DataType="vm:MemoryWatchVm"
         x:Class="P2000.UI.Views.MemoryWatchWindow"
         Title="{Binding Title}"
-        Width="560" Height="340"
-        MinWidth="440" MinHeight="220"
+        Width="640" Height="370"
+        MinWidth="500" MinHeight="250"
         CanResize="True"
         Background="#1a1a1a">
 
@@ -16,21 +16,41 @@
         <Border DockPanel.Dock="Top"
                 Background="#252525" BorderBrush="#444" BorderThickness="1"
                 CornerRadius="3" Padding="6,4" Margin="0,0,0,4">
-            <StackPanel Orientation="Horizontal" Spacing="8">
-                <TextBlock Text="Base:" FontSize="11" Foreground="#888" VerticalAlignment="Center" />
-                <TextBox x:Name="AddressBox"
-                         MinWidth="70" FontFamily="Consolas,Courier New,monospace"
-                         FontSize="11" Watermark="e.g. 5000"
-                         ToolTip.Tip="Hex address (press Enter or click Go)" />
-                <Button Content="Go" MinWidth="36" FontSize="10"
-                        Click="OnGoClicked"
-                        ToolTip.Tip="Jump to entered address" />
-                <Separator />
-                <TextBlock Text="Follow:" FontSize="11" Foreground="#888" VerticalAlignment="Center" />
-                <ComboBox MinWidth="60" FontSize="10"
-                          ItemsSource="{x:Static vm:MemoryWatchVm.FollowOptions}"
-                          SelectedItem="{Binding Follow}"
-                          ToolTip.Tip="Auto-track a register pair when paused" />
+            <StackPanel Spacing="4">
+                <StackPanel Orientation="Horizontal" Spacing="8">
+                    <TextBlock Text="Base:" FontSize="11" Foreground="#888" VerticalAlignment="Center" />
+                    <TextBox x:Name="AddressBox"
+                             MinWidth="70" FontFamily="Consolas,Courier New,monospace"
+                             FontSize="11" Watermark="e.g. 5000"
+                             ToolTip.Tip="Hex address (press Enter or click Go)" />
+                    <TextBlock Text="Length:" FontSize="11" Foreground="#888" VerticalAlignment="Center" />
+                    <TextBox x:Name="LengthBox"
+                             MinWidth="60" FontFamily="Consolas,Courier New,monospace"
+                             FontSize="11" Text="0100"
+                             ToolTip.Tip="Hex byte count (press Enter or click Go)" />
+                    <Button Content="Go" MinWidth="36" FontSize="10"
+                            Click="OnGoClicked"
+                            ToolTip.Tip="Jump to entered address / resize to entered length" />
+                    <Separator />
+                    <TextBlock Text="Follow:" FontSize="11" Foreground="#888" VerticalAlignment="Center" />
+                    <ComboBox MinWidth="60" FontSize="10"
+                              ItemsSource="{x:Static vm:MemoryWatchVm.FollowOptions}"
+                              SelectedItem="{Binding Follow}"
+                              ToolTip.Tip="Auto-track a register pair when paused" />
+                </StackPanel>
+                <StackPanel Orientation="Horizontal" Spacing="8">
+                    <Button Content="Save range to file…" FontSize="10"
+                            Click="OnSaveRangeClicked"
+                            ToolTip.Tip="Prompts for a start address + length (defaults to this window's range) and dumps it to a raw binary file" />
+                    <Separator />
+                    <TextBlock Text="To:" FontSize="11" Foreground="#888" VerticalAlignment="Center" />
+                    <TextBox MinWidth="70" FontFamily="Consolas,Courier New,monospace"
+                             FontSize="11" Text="{Binding LoadAddressText}"
+                             ToolTip.Tip="Target hex address for the loaded file" />
+                    <Button Content="Load file to address…" FontSize="10"
+                            Command="{Binding LoadFileToAddressCommand}"
+                            ToolTip.Tip="Write a raw binary file into RAM at the target address" />
+                </StackPanel>
             </StackPanel>
         </Border>
 

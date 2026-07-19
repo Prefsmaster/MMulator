@@ -9,7 +9,7 @@ Keyboard mappings
 | Port 0x02   | rt   |   ,    |   dwn se | # degree-symbol |  np 0 def | np 00 tb | space | np , stop |
 | Port 0x03   | V    |  M    |   B   |    C  |     X   |   < >  |   N   |    shift-lock |
 | Port 0x04   |  R   |    U   |    T  |     E   |    W   |    A    |   Y    |   code   |
-| Port 0x05   |  - _ |    1 !  |   0 =  |   backspace |  np -/÷ |    np +/* |   9 )  |   np center-tab envelope |
+| Port 0x05   |  - _ |    1 !  |   0 =  |   backspace |  np -/÷ |    np +/* |   9 )  |   np clr-line/envelope(CLS) |
 | Port 0x06   | @ ¨  |  8 (  |   P   |    enter |  np 7 tape/WIS | np 8 dsk | O   |    np 9 (silent) |
 | Port 0x07   |  2 " |    K  |     / ?  |   ] [  |   np 1 zoek | np 2 flash | .  |  np 3 start |
 | Port 0x08   |  : * |    I  |  ; +  |  ´ ` | np 4 inl | np 5   |   L   |    np 6 opn
@@ -19,6 +19,15 @@ np = prefix for numpad key. up/nw/lft/rt/dwn/se = arrow directions (up, north-we
 
 **Correction (2026-07-19, owner):** Port 0x06 bit 7 shifted is **¨ (umlaut/diaeresis dead key)**,
 NOT a double quote. The only key that produces `"` is Port 0x07 bit 7 (the `2 "` key).
+
+**Clear-line/envelope confirmed (2026-07-19, owner, real hardware):** Port 0x05 bit 0 — raw
+transcription "np center-tab envelope" — is actually two separate functions, shift-selected same
+as ZOEK/START/STOP/INL/OPN/DEF elsewhere on the keypad:
+- **Unshifted**: a "|→←|" glyph (vertical bar / right-arrow / left-arrow / vertical bar) — clears
+  the current line and homes the cursor to its leftmost column. "center-tab" in the raw
+  transcription was this function, misread from the photo.
+- **Shifted**: the envelope icon (a rectangle with a cross/X through it) — clears the WHOLE
+  screen (the rectangle visually gets "x-ed out").
 
 **WIS confirmed (2026-07-19, owner):** the WIS function (clear tape — see `P2000T-reference.md`
 §5b BASIC↔cassette UI surface) is **Shift + Port 0x06 bit 3** — the numpad `7` key, the one
@@ -43,7 +52,7 @@ Letters and the following already need **no remap** — the position ms.3's posi
 
 | Host key | Target char | P2000 position | Shift state | Note |
 |---|---|---|---|---|
-| `'` | `'` | (0,6) | shifted | (8,4) unshifted does NOT give apostrophe (see below) — the real apostrophe is Shift+7 |
+| `'` | `'` | (0,6) | shifted | `OemQuotes`'s own position (8,7) unshifted does NOT give apostrophe — the real apostrophe is Shift+7 |
 | Shift+2 | `@` | (6,7) | **unshifted** | host holds Shift; P2000 side must NOT |
 | Shift+3 | `#` | (2,4) | **unshifted** | host holds Shift; P2000 side must NOT |
 | Shift+7 | `&` | (0,1) | shifted | |
@@ -51,7 +60,8 @@ Letters and the following already need **no remap** — the position ms.3's posi
 | Shift+9 | `(` | (6,6) | shifted | |
 | Shift+0 | `)` | (5,1) | shifted | |
 | `=` | `=` | (5,5) | shifted (add) | host key unshifted, P2000 side needs shift |
-| `;` | `;` | (8,5) | **unshifted** | positional currently gives `:` |
+| Shift+`=` | `+` | (8,5) | shifted | `OemPlus` now sits positionally at (8,4) — needs redirect |
+| `;` | `;` | (8,5) | unshifted | no override needed: `OemSemicolon` sits positionally here already |
 | Shift+; | `:` | (8,7) | **unshifted** | host holds Shift; P2000 side must NOT |
 | Shift+, | `<` | (3,2) | **unshifted** | host holds Shift; P2000 side must NOT |
 | Shift+. | `>` | (3,2) | shifted | |
@@ -63,7 +73,9 @@ Letters and the following already need **no remap** — the position ms.3's posi
 (owner-decided 2026-07-19) — plus, as of 2026-07-20 (see the bracket/arrow finding below):
 `` ` `` (plain backtick) and `[` / `]` (plain, unshifted) — the P2000 genuinely cannot display
 a literal backtick or bracket character at all, confirmed via the SAA5050 font table, so there
-is nothing left to redirect these to.
+is nothing left to redirect these to. `\`/`|` (`OemPipe`) is in the same category even though
+it now reaches (2,4) in P2000-Authentic mode (real-hardware-confirmed 2026-07-19, giving it the
+`#`/block function) — Standard-Host still has no literal backslash/pipe glyph to redirect to.
 
 Pressing any of these host keys in Standard-Host mode enqueues nothing — matches the
 milestone's "flag, don't guess" rule rather than picking a wrong stand-in character.
@@ -85,6 +97,26 @@ unshifted / ¾ shifted**, not any accent mark at all — see `P2000.UI/CLAUDE.md
 investigation. This means the backtick redirect above (which assumed (8,4) shifted gives a
 literal `` ` ``) was ALSO wrong; backtick is now "no P2000 equivalent" (see above), same
 category as the bracket/arrow finding below.
+
+### Correction (2026-07-19, owner-verified against a real physical P2000T): host-key wiring
+
+Direct hardware testing (a real P2000T hooked to a monitor) confirmed the (7,4) arrow behavior
+and the (8,4) ¼/¾ behavior above match the emulator exactly. It also caught three HOST-KEY
+wiring bugs — not matrix ground-truth errors, but the wrong host key wired to a correct matrix
+position:
+
+| Host key | Was wired to | Should be wired to | Why |
+|---|---|---|---|
+| `=` `+` (left of backspace) | (8,5) `; +` | (8,4) `¼ ¾` | real keyboard: this key sits over the accent-aigu/¼-¾ position |
+| `'` `"` (left of Enter) | (8,4) `¼ ¾` | (8,7) `: *` | real keyboard: this key sits over the `:`/`*` position |
+| (n/a, `;` fills the gap) | — | (8,5) `; +` | `OemSemicolon` naturally lands here once `OemPlus` vacates it |
+| `\` `\|` (US backslash/pipe) | unmapped (no-op) | (2,4) `# ` block | previously unreachable from any host key; owner suggested giving it the `#` function |
+
+`Key.OemPipe` (distinct from `Key.OemBackslash`, already used for the ISO `<>` key near
+Z/left-shift) is the correct Avalonia enum member for the fourth row. Standard-Host mode still
+treats `\`/`|` as "no P2000 equivalent" (same as `~`/`^`/brackets) since neither is a P2000
+character — only P2000-Authentic mode reaches (2,4) via this key. The `;`/`:` and `=`/`+`
+Standard-Host redirects (below) are unaffected in VALUE, only in which host key triggers them.
 
 ### Correction (2026-07-20, owner-reported): brackets are arrows, not brackets
 

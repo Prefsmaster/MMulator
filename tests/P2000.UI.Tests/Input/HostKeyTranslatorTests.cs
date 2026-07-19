@@ -170,11 +170,55 @@ public class HostKeyTranslatorTests
     }
 
     [Fact]
+    public void StandardHost_ShiftPlus_RedirectsAwayFromOemPlusOwnPosition()
+    {
+        // OemPlus now positionally sits at (8,4) [¼/¾] (owner-confirmed 2026-07-19), which no
+        // longer naturally yields '+' when shifted — must redirect to (8,5) shifted instead.
+        var (t, events) = NewTranslator(KeyMappingMode.StandardHost);
+
+        t.KeyDown(Key.LeftShift);
+        t.KeyDown(Key.OemPlus);
+        t.KeyUp(Key.OemPlus);
+        t.KeyUp(Key.LeftShift);
+
+        Assert.Equal(new[] { (9, 0, true), (8, 5, true), (8, 5, false), (9, 0, false) }, events);
+    }
+
+    [Fact]
+    public void StandardHost_PlainSemicolon_NeedsNoOverride_PositionalAlreadyCorrect()
+    {
+        // OemSemicolon now positionally sits at (8,5) [;/+] (owner-confirmed 2026-07-19), whose
+        // unshifted value already IS ';' — no override table entry should be needed for this.
+        var (t, events) = NewTranslator(KeyMappingMode.StandardHost);
+
+        t.KeyDown(Key.OemSemicolon);
+        t.KeyUp(Key.OemSemicolon);
+
+        Assert.Equal(new[] { (8, 5, true), (8, 5, false) }, events);
+    }
+
+    [Fact]
+    public async Task StandardHost_ShiftSemicolon_RedirectsToColon()
+    {
+        // (8,7) unshifted = ':' — host holds Shift, P2000 side must not (same force-off pattern
+        // as Shift+2/Shift+3, needing the field-boundary gap before the target press).
+        var (t, events) = NewTranslator(KeyMappingMode.StandardHost);
+
+        t.KeyDown(Key.LeftShift);
+        t.KeyDown(Key.OemSemicolon);
+        await AwaitForceOffGap();
+        t.KeyUp(Key.OemSemicolon);
+        t.KeyUp(Key.LeftShift);
+
+        Assert.Equal(new[] { (9, 0, true), (9, 0, false), (8, 7, true), (8, 7, false), (9, 0, true), (9, 0, false) }, events);
+    }
+
+    [Fact]
     public void StandardHost_PlainApostrophe_RedirectsToTheP2000sRealApostrophe()
     {
-        // (8,4) unshifted is accent aigu (´), not apostrophe (owner-corrected 2026-07-20) — the
-        // P2000's real apostrophe is (0,6) shifted (Shift+7), so Standard-Host must go there,
-        // not fall back positionally to (8,4).
+        // OemQuotes (the host "'/\"" key) positionally sits at (8,7) (owner-confirmed via real
+        // P2000T hardware, 2026-07-19) — but the P2000's real apostrophe lives at (0,6) shifted
+        // (Shift+7), so Standard-Host must redirect there regardless of where OemQuotes sits.
         var (t, events) = NewTranslator(KeyMappingMode.StandardHost);
 
         t.KeyDown(Key.OemQuotes);
@@ -236,16 +280,60 @@ public class HostKeyTranslatorTests
     }
 
     [Fact]
-    public void Authentic_PlainApostropheKey_SendsThePositionalAccentAigu()
+    public void Authentic_PlainApostropheKey_SendsThePositionalColonAsterisk()
     {
-        // P2000-Authentic is positional passthrough — it should send whatever the P2000's own
-        // key does, which IS the accent aigu, not an apostrophe. Only Standard-Host redirects.
+        // P2000-Authentic is positional passthrough — OemQuotes (the host "'/\"" key, left of
+        // Enter) sits over (8,7) [:/*] on a real P2000T (owner-confirmed 2026-07-19), not an
+        // apostrophe or accent mark. Only Standard-Host redirects to the literal character.
         var (t, events) = NewTranslator(KeyMappingMode.P2000Authentic);
 
         t.KeyDown(Key.OemQuotes);
         t.KeyUp(Key.OemQuotes);
 
+        Assert.Equal(new[] { (8, 7, true), (8, 7, false) }, events);
+    }
+
+    [Fact]
+    public void Authentic_PlainEqualsKey_SendsThePositionalAccentAigu()
+    {
+        // OemPlus (the host "=/+" key, left of backspace) sits over (8,4) [¼/¾ — printed as
+        // accent aigu/grave on the P2000 keycap] on a real P2000T (owner-confirmed 2026-07-19).
+        var (t, events) = NewTranslator(KeyMappingMode.P2000Authentic);
+
+        t.KeyDown(Key.OemPlus);
+        t.KeyUp(Key.OemPlus);
+
         Assert.Equal(new[] { (8, 4, true), (8, 4, false) }, events);
+    }
+
+    [Fact]
+    public void Authentic_Backslash_SendsThePositionalBlockKey()
+    {
+        // OemPipe (the US "\|" key) has no P2000 position of its own — owner-confirmed
+        // (2026-07-19) it's wired to (2,4) [#/block] instead of doing nothing.
+        var (t, events) = NewTranslator(KeyMappingMode.P2000Authentic);
+
+        t.KeyDown(Key.OemPipe);
+        t.KeyUp(Key.OemPipe);
+
+        Assert.Equal(new[] { (2, 4, true), (2, 4, false) }, events);
+    }
+
+    [Fact]
+    public void StandardHost_Backslash_IsNoOp()
+    {
+        // No P2000 position can display a literal backslash or pipe character — same category
+        // as the bracket/tilde findings. OemPipe reaches (2,4) only in P2000-Authentic mode.
+        var (t, events) = NewTranslator(KeyMappingMode.StandardHost);
+
+        Assert.False(t.KeyDown(Key.OemPipe));
+        t.KeyUp(Key.OemPipe);
+        t.KeyDown(Key.LeftShift);
+        Assert.False(t.KeyDown(Key.OemPipe));
+        t.KeyUp(Key.OemPipe);
+        t.KeyUp(Key.LeftShift);
+
+        Assert.Equal(new[] { (9, 0, true), (9, 0, false) }, events);
     }
 
     [Fact]
@@ -281,5 +369,66 @@ public class HostKeyTranslatorTests
         bool recognized = t.KeyDown(Key.Q); // OS auto-repeat
         Assert.True(recognized);
         Assert.Empty(events);
+    }
+
+    // ── PhysicalKey numpad recovery (owner-reported 2026-07-19: Shift+numpad-1 didn't reach
+    // ZOEK) ─────────────────────────────────────────────────────────────────────────────────
+
+    [Fact]
+    public void Authentic_ShiftNumpad1ReportedAsEnd_StillReachesZoek()
+    {
+        // Windows (NumLock ON) reports Key.End instead of Key.NumPad1 when Shift is held while
+        // pressing the physical numpad-1 key — PhysicalKey.NumPad1 is scancode-based and reveals
+        // the true key regardless, so the translator must still land on ZOEK's position (7,3).
+        var (t, events) = NewTranslator(KeyMappingMode.P2000Authentic);
+
+        t.KeyDown(Key.LeftShift);
+        t.KeyDown(Key.End, PhysicalKey.NumPad1);   // what Windows actually reports in this scenario
+        t.KeyUp(Key.End, PhysicalKey.NumPad1);
+        t.KeyUp(Key.LeftShift);
+
+        Assert.Equal(new[] { (9, 0, true), (7, 3, true), (7, 3, false), (9, 0, false) }, events);
+    }
+
+    [Fact]
+    public void StandardHost_ShiftNumpad1ReportedAsEnd_StillReachesZoek()
+    {
+        // Same recovery applies in Standard-Host mode — ZOEK has no override (no host ASCII
+        // equivalent), so it falls back to positional passthrough same as Authentic.
+        var (t, events) = NewTranslator(KeyMappingMode.StandardHost);
+
+        t.KeyDown(Key.LeftShift);
+        t.KeyDown(Key.End, PhysicalKey.NumPad1);
+        t.KeyUp(Key.End, PhysicalKey.NumPad1);
+        t.KeyUp(Key.LeftShift);
+
+        Assert.Equal(new[] { (9, 0, true), (7, 3, true), (7, 3, false), (9, 0, false) }, events);
+    }
+
+    [Fact]
+    public void Authentic_RealEndKey_UnaffectedByNumpadRecovery()
+    {
+        // A genuine press of the dedicated End key (PhysicalKey.End, not a numpad scancode) must
+        // NOT be swallowed by the numpad-recovery table — it has no P2000 mapping at all.
+        var (t, events) = NewTranslator(KeyMappingMode.P2000Authentic);
+
+        bool recognized = t.KeyDown(Key.End, PhysicalKey.End);
+        t.KeyUp(Key.End, PhysicalKey.End);
+
+        Assert.False(recognized);
+        Assert.Empty(events);
+    }
+
+    [Fact]
+    public void Authentic_NumpadWithDefaultPhysicalKey_StillWorksPositionally()
+    {
+        // Soft-keyboard clicks (and any caller that omits PhysicalKey) pass Key.NumPadN directly
+        // with no ambiguity to resolve — default(PhysicalKey) must not interfere.
+        var (t, events) = NewTranslator(KeyMappingMode.P2000Authentic);
+
+        t.KeyDown(Key.NumPad7);
+        t.KeyUp(Key.NumPad7);
+
+        Assert.Equal(new[] { (6, 3, true), (6, 3, false) }, events);
     }
 }

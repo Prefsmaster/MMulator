@@ -25,12 +25,13 @@ public class SoftKeyLayoutTests
     }
 
     [Fact]
-    public void KeysWithNoHostKey_AreExactlyTheThreeConfirmedUnreachablePositions()
+    public void KeysWithNoHostKey_AreExactlyTheTwoConfirmedUnreachablePositions()
     {
         var noHostKey = AllKeys().Where(d => d.HostKey is null).Select(d => (d.Row, d.Col)).ToHashSet();
 
-        // np00/TB, the envelope/centre-tab key, and "#/°" — see §18 2026-07-19 finding.
-        var expected = new HashSet<(int, int)> { (2, 2), (5, 0), (2, 4) };
+        // np00/TB and the envelope/centre-tab key — see §18 2026-07-19 finding. "#/°" (2,4) is
+        // no longer in this set: real-hardware confirmation (2026-07-19) wired OemPipe there.
+        var expected = new HashSet<(int, int)> { (2, 2), (5, 0) };
 
         Assert.Equal(expected, noHostKey);
     }

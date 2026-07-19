@@ -1728,3 +1728,117 @@ project.
 - **Synced:** no (real hardware/ROM content — the whole re-verified matrix table, the SAA5050
   national-character-set remaps, and the letter-auto-uppercase behavior — worth folding into
   `docs/P2000T-reference.md` §5f on the next human sync pass).
+
+### 2026-07-19 — Real physical P2000T hardware test: matrix confirmed, three host-key wiring bugs found
+
+- **Owner tested a real physical P2000T hooked to a monitor** and directly confirmed the (7,4)
+  arrow behavior and the (8,4) ¼/¾ behavior from the prior findings entries match the emulator
+  exactly — first ground-truth confirmation of this table against actual hardware rather than a
+  photo transcription or ROM-table extrapolation.
+- **Three NEW bugs found, but a different class from anything above:** the physical MATRIX
+  values at (8,4)/(8,5)/(8,7) were already correct — the bug was which HOST KEY `KeyMap.cs`
+  wired to which position:
+  - Host `=`/`+` key (left of backspace) was wired to (8,5) `;`/`+`; should be (8,4) `¼`/`¾` —
+    that's where it sits on a real keyboard.
+  - Host `'`/`"` key (left of Enter) was wired to (8,4) `¼`/`¾`; should be (8,7) `:`/`*`.
+  - Host `\`/`|` key did nothing (no host key reached this position at all); owner suggested
+    giving it the P2000's `#`/block key function at (2,4).
+- **Fix:** swapped the three `_map` entries (`OemQuotes`→(8,7), `OemSemicolon`→(8,5) filling the
+  gap `OemPlus` vacated, `OemPlus`→(8,4)); added `Key.OemPipe`→(2,4) (confirmed via reflection
+  dump of the Avalonia `Key` enum to be the correct, distinct member from `Key.OemBackslash`,
+  which is already used at (3,2) for the ISO "<>" key). Updated `_standardHostOverrides`
+  accordingly: removed the now-redundant `(OemSemicolon, false)` override (positional already
+  gives `;`), added a new `(OemPlus, true)` override targeting `(8,5,true)` for `+` (OemPlus no
+  longer naturally reaches it), and added `(OemPipe, false/true)` → null (no P2000 equivalent for
+  a literal backslash/pipe character — OemPipe only reaches (2,4) in P2000-Authentic mode).
+- **Tests:** `HostKeyTranslatorTests.cs` — updated the apostrophe/accent-key tests for the new
+  positions, added `StandardHost_ShiftPlus_RedirectsAwayFromOemPlusOwnPosition`,
+  `StandardHost_PlainSemicolon_NeedsNoOverride_PositionalAlreadyCorrect`,
+  `StandardHost_ShiftSemicolon_RedirectsToColon`, `Authentic_PlainEqualsKey_...`,
+  `Authentic_Backslash_SendsThePositionalBlockKey`, `StandardHost_Backslash_IsNoOp`.
+  `SoftKeyLayoutTests.cs`'s `KeysWithNoHostKey_...` set shrank from 3 to 2 positions since (2,4)
+  is no longer host-unreachable. 85/85 green in `P2000.UI.Tests`, 361/361 in
+  `P2000.Machine.Tests`.
+- **Applies to:** `src/P2000.UI/Input/KeyMap.cs` (`_map` + `_standardHostOverrides`),
+  `src/P2000.UI/Input/SoftKeyLayout.cs` (swapped `HostKey`/`HostBase`/`HostShifted` on the three
+  affected `SoftKeyDef`s, added `OemPipe` to the (2,4) entry), `docs/Keyboard/keyboard matrix.md`,
+  `docs/Keyboard/keyboard mappins.md`, `tests/P2000.UI.Tests/Input/HostKeyTranslatorTests.cs`,
+  `tests/P2000.UI.Tests/Input/SoftKeyLayoutTests.cs`.
+- **Synced:** no (real-hardware confirmation is worth folding into `docs/P2000T-reference.md`
+  §5f alongside the prior ROM-table findings on the next human sync pass).
+
+### 2026-07-19 — Shift+numpad ZOEK bug (Windows nav-key override) + soft-keyboard ANSI reshaping
+
+- **Owner-reported bug:** Shift + physical numpad-1 (NumLock on) didn't activate ZOEK, in either
+  mode. **Root cause:** Windows overrides the reported key when Shift is held during a numpad
+  press — with NumLock on, Shift+NumPad1 delivers `Key.End`, not `Key.NumPad1` (a documented OS
+  behavior for text-selection convenience), indistinguishable from a real End-key press by `Key`
+  alone. Avalonia's `KeyEventArgs.PhysicalKey` is scancode-based and unaffected by this override
+  (confirmed via reflection dump: `PhysicalKey.NumPad0..9`/`NumPadDecimal` exist as distinct
+  values from `PhysicalKey.End`/`Home`/arrows). **Fix:** `HostKeyTranslator.KeyDown`/`KeyUp` now
+  take an optional `PhysicalKey` parameter and normalize the effective key through a
+  `_physicalNumpadOverride` table before anything else runs — recovering `Key.NumPad1` (etc.)
+  regardless of what Windows reported. `DisplayWindow.axaml.cs` passes `e.PhysicalKey` through;
+  the soft-keyboard's synthetic presses are unaffected (they pass explicit `Key` values with no
+  ambiguity, using the default `PhysicalKey.None`).
+- **Tests:** `HostKeyTranslatorTests.cs` — `Authentic_ShiftNumpad1ReportedAsEnd_StillReachesZoek`,
+  `StandardHost_ShiftNumpad1ReportedAsEnd_StillReachesZoek` (both simulate the exact Windows
+  quirk: `KeyDown(Key.End, PhysicalKey.NumPad1)`), `Authentic_RealEndKey_UnaffectedByNumpadRecovery`
+  (a genuine End press must NOT be swallowed), `Authentic_NumpadWithDefaultPhysicalKey_...`
+  (soft-keyboard's no-PhysicalKey calls still work). Live end-to-end reproduction of the exact
+  Windows quirk via computer-use automation was attempted but not completed this session — that
+  input channel proved unreliable (see below) — so this fix is verified at the translator level
+  only; owner should confirm on real hardware.
+- **Owner-reported layout gap:** the soft-keyboard's shift row always showed the P2000T's own
+  ISO-style shape (narrow left Shift + a "&lt;&gt;" key between Shift and Z, wired to
+  `Key.OemBackslash`) even in Standard-Host mode, but the owner's real host keyboard is ANSI-shaped
+  (wide left Shift, no key there) — asked whether Standard-Host mode should reshape to match
+  (owner chose: reshape Standard-Host only, keep P2000-Authentic showing the P2000's real shape).
+  **Fix:** `SoftKeyDef` gained `IsIsoOnly` (marks the "&lt;&gt;" key) and `StandardHostWidth`
+  (overrides `Width` in Standard-Host mode only, set to 2.75 on the left Shift key — absorbing the
+  hidden key's 1.0 width on top of Shift's own 1.75). `SoftKeyVm.IsVisible`/`PixelWidth` become
+  mode-aware; `RefreshLabels()` renamed to `RefreshForModeChange()` since it now also refreshes
+  shape, not just legends. `KeyboardWindow.axaml`'s button template binds the new `IsVisible`.
+  Live-verified via screenshot in both modes: Standard-Host hides `<` and widens Shift; Authentic
+  shows both unchanged.
+- **Tests:** `KeyboardWindowVmTests.cs` — `Authentic_IsoKeyVisible_ShiftAtOwnWidth`,
+  `StandardHost_IsoKeyHidden_ShiftWidened`, `StandardHost_OtherKeys_KeepTheirOwnWidth`. 92/92 green
+  in `P2000.UI.Tests`.
+- **Methodology note — computer-use as a live-testing channel proved unreliable this session:**
+  a `key` tool call for a Shift+letter combo occasionally auto-repeated dozens of times instead of
+  a clean press+release (flooding the input line), and a transient Windows shell overlay
+  ("ShellHost", likely a notification toast) intermittently stole foreground focus and blocked
+  all clicks/keys for several tool calls with no fix available from this side. Pixel-reading the
+  soft-keyboard's tiny labels and the Debugger's VRAM hex view was also too unreliable at the
+  window's native size to trust (aspect-distorted zoom crops, easy to miscount rows). The
+  Debugger's **Memory Watch** (exact address → hex+ASCII text, e.g. VRAM row 7 col 0 = `0x5000 +
+  7*80 = 0x5230`) was the one live-verification technique that gave an unambiguous, address-precise
+  answer (confirmed Standard-Host `=` writes `0x3D` correctly) — prefer it over pixel-counting for
+  any future live VRAM check.
+- **Applies to:** `src/P2000.UI/Input/HostKeyTranslator.cs`, `src/P2000.UI/Views/DisplayWindow.axaml.cs`,
+  `src/P2000.UI/Input/SoftKeyLayout.cs`, `src/P2000.UI/ViewModels/KeyboardWindowVm.cs`,
+  `src/P2000.UI/Views/KeyboardWindow.axaml`, `tests/P2000.UI.Tests/Input/HostKeyTranslatorTests.cs`,
+  `tests/P2000.UI.Tests/ViewModels/KeyboardWindowVmTests.cs`.
+- **Synced:** no (the Windows Shift+NumLock nav-key override is general OS behavior worth a short
+  note in `docs/P2000T-reference.md` if the machine-layer docs ever cover host-input quirks).
+
+### 2026-07-19 — (5,0) "envelope/centre-tab" mislabel: envelope is shifted, not base; real function found
+
+- **Owner-reported (real P2000T hardware):** the numpad key ms.3 coded as unshifted-envelope
+  ("centre-tab" raw transcription, envelope shifted per the doc note) actually has the envelope
+  as its **shifted** function, and it performs **clear screen** (the rectangle-with-cross icon
+  visually gets "x-ed out"). The **unshifted** function is a different glyph — a vertical bar /
+  right-arrow / left-arrow / vertical bar ("|→←|") — and performs **clear line + home cursor** to
+  the leftmost column of the current line. "centre-tab" was a misread of this unshifted glyph.
+- **Fix:** `SoftKeyLayout.cs`'s (5,0) entry now sets `BaseIcon: "clear_line"` (new asset,
+  generated to match the existing icon set's style — light line-art on transparent 32×32) and
+  `ShiftedIcon: "envelope"` (swapped from the other way around); `Base`/`Shifted` text fallbacks
+  updated to "CLR"/"CLS". Both icons render stacked on the one key face (matching how a real
+  keycap prints both functions at once), confirmed via a live screenshot.
+- **Applies to:** `src/P2000.UI/Input/SoftKeyLayout.cs`, `src/P2000.UI/Assets/Icons/clear_line.png`
+  (new), `docs/Keyboard/keyboard matrix.md`, `docs/Keyboard/keyboard mappins.md`. No test changes
+  needed (this position has no host key at all — `HostKey: null` — so nothing in
+  `HostKeyTranslator`/`KeyMap` is affected; existing `SoftKeyLayoutTests.cs` coverage for
+  "positions with no host key" still holds).
+- **Synced:** no (a real hardware-confirmed correction, same category as the other 2026-07-19
+  findings above — worth folding into `docs/P2000T-reference.md` §5f together).

@@ -5,7 +5,7 @@
 | Port 0x02   | rt   |   ,    |   dwn se | # degree-symbol |  np 0 def | np 00 tb | space | np , stop |
 | Port 0x03   | V    |  M    |   B   |    C  |     X   |   < >  |   N   |    shift-lock |
 | Port 0x04   |  R   |    U   |    T  |     E   |    W   |    A    |   Y    |   code   |
-| Port 0x05   |  - _ |    1 !  |   0 =  |   backspace |  np -/÷ |    np +/* |   9 )  |   np center-tab envelope |
+| Port 0x05   |  - _ |    1 !  |   0 =  |   backspace |  np -/÷ |    np +/* |   9 )  |   np clr-line/envelope(CLS) |
 | Port 0x06   | @ ¨  |  8 (  |   P   |    enter |  np 7 tape/WIS | np 8 dsk | O   |    np 9 (silent) |
 | Port 0x07   |  2 " |    K  |     / ?  |   ] [  |   np 1 zoek | np 2 flash | .  |  np 3 start |
 | Port 0x08   |  : * |    I  |  ; +  |  ´ ` | np 4 inl | np 5   |   L   |    np 6 opn
@@ -52,4 +52,18 @@ own keycode-to-ASCII table at Z80 address 6164):**
   and live observation confirm Shift+3 genuinely shows £ (a Saa5050 font remap of byte 0x23,
   not literal '#'). That offset theory is NOT universally reliable and should not be trusted
   without independent confirmation for any other cell.
+
+**Real-hardware confirmation (2026-07-19, owner tested a physical P2000T on a monitor):** every
+matrix VALUE above at (7,4), (6,7), and (8,4) matches the emulator exactly. What the same test
+DID find wrong was which HOST KEY reaches (8,4)/(8,5)/(8,7) on `KeyMap.cs`'s Standard-host-
+keyboard side (a wiring bug, not a matrix ground-truth error) — see "keyboard mappins.md"'s
+2026-07-19 correction for the fix. It also identified `\`/`|` (`OemPipe`) as a previously-
+unmapped host key, now wired to Port 0x02 bit 4 (`#`/block).
+
+**Port 0x05 bit 0 correction (2026-07-19, owner, real hardware):** "np center-tab envelope" is
+wrong — this key's SHIFTED function is the envelope icon (rectangle with a cross/X through it),
+which clears the whole screen; its UNSHIFTED function is a "|→←|" glyph (vertical bar / right
+arrow / left arrow / vertical bar) that clears the current line and homes the cursor to its
+leftmost column. "center-tab" was a misread of the unshifted glyph. See "keyboard mappins.md"
+for the full note.
 

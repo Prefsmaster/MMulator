@@ -19,7 +19,14 @@ namespace P2000.UI.Input;
 /// <c>BaseIcon</c>/<c>ShiftedIcon</c> optionally replace the Base/Shifted TEXT with a small
 /// image instead (file name only, no extension — resolved to
 /// <c>avares://P2000.UI/Assets/Icons/{name}.png</c>). Icons don't vary by mode: none of the
-/// icon-bearing keys have a Standard-Host legend override.</summary>
+/// icon-bearing keys have a Standard-Host legend override.
+///
+/// <c>IsIsoOnly</c> marks a key that exists on the P2000T's own (ISO-style) physical keyboard
+/// but not on a standard ANSI host keyboard — hidden in Standard-Host mode so the soft-keyboard
+/// can double as a shape-accurate reference for where P2000 functions live on a real host
+/// keyboard (owner-reported 2026-07-19: their host has no key there and a wide left Shift
+/// instead). <c>StandardHostWidth</c>, when set, overrides <c>Width</c> in Standard-Host mode
+/// only — used on the left Shift key to absorb the space the hidden ISO key leaves behind.</summary>
 public sealed record SoftKeyDef(
     int Row, int Col,
     string Base, string? Shifted,
@@ -29,7 +36,9 @@ public sealed record SoftKeyDef(
     bool IsSticky = false,
     bool IsLock = false,
     string? BaseIcon = null,
-    string? ShiftedIcon = null);
+    string? ShiftedIcon = null,
+    bool IsIsoOnly = false,
+    double? StandardHostWidth = null);
 
 /// <summary>The full confirmed P2000T keyboard layout, grouped as visual rows matching the
 /// photo (NOT the electrical matrix rows — e.g. the "&lt;&gt;" key is wired to matrix row 3
@@ -54,15 +63,13 @@ public static class SoftKeyLayout
             new(5, 1, "9", ")", Key.D9, HostShifted: "("),
             new(5, 5, "0", "=", Key.D0, HostShifted: ")"),
             new(5, 7, "-", "_", Key.OemMinus),
-            // Legend shows what's PRINTED on the real keycap (accent aigu / accent grave, per
-            // the owner's reading of the photo) — NOT apostrophe/backtick. CONFIRMED
-            // (2026-07-20, two independent direct machine-level tests): pressing this key
-            // actually renders ¼/¾ on screen, not any accent mark — see the (8,4) note in
-            // KeyMap.cs for what's still open (why, not what). Legend kept as the printed
-            // keycap text since that's still accurate for what's ON the key. Standard-Host
-            // legend shows the literal host keycap symbols instead (the P2000's own apostrophe
-            // is (0,6) shifted).
-            new(8, 4, "´", "`", Key.OemQuotes, HostBase: "'", HostShifted: "\""),
+            // Legend shows what's PRINTED on the P2000 keycap (accent aigu / accent grave, per
+            // the owner's reading of the photo). CONFIRMED (2026-07-20, two independent direct
+            // machine-level tests): pressing this key actually renders ¼/¾ on screen, not any
+            // accent mark — see the (8,4) note in KeyMap.cs for what's still open (why, not
+            // what). Host key CONFIRMED via real P2000T hardware (2026-07-19): this position is
+            // reached by the host "=/+" key (left of backspace), not "'/\"" as first mapped.
+            new(8, 4, "´", "`", Key.OemPlus, HostBase: "=", HostShifted: "+"),
             new(5, 4, "⌫", null, Key.Back, Width: 1.5),
         },
         // ── Second row ───────────────────────────────────────────────────────────
@@ -99,17 +106,26 @@ public static class SoftKeyLayout
             new(1, 6, "J", null, Key.J),
             new(7, 6, "K", null, Key.K),
             new(8, 1, "L", null, Key.L),
-            new(8, 5, ";", "+", Key.OemPlus, HostBase: "=", HostShifted: "+"),
-            new(8, 7, ":", "*", Key.OemSemicolon, HostBase: ";", HostShifted: ":"),
-            // No host key reaches this position in ms.3's shipped KeyMap (unlike ZOEK/START/etc.,
-            // which numpad keys already cover) — genuinely unreachable except from this window.
-            new(2, 4, "#", "°", null),
+            // Host key CONFIRMED via real P2000T hardware (2026-07-19): OemSemicolon itself sits
+            // over this position (not OemPlus, as first mapped).
+            new(8, 5, ";", "+", Key.OemSemicolon, HostBase: ";", HostShifted: ":"),
+            // Host key CONFIRMED via real P2000T hardware (2026-07-19): the host "'/\"" key
+            // (left of Enter) sits over this position (not OemSemicolon, as first mapped).
+            new(8, 7, ":", "*", Key.OemQuotes, HostBase: "'", HostShifted: "\""),
+            // Host key CONFIRMED via real P2000T hardware (2026-07-19): the US "\|" key
+            // (OemPipe) has no P2000 position of its own, so it's wired here to give it the
+            // #/block function instead of doing nothing.
+            new(2, 4, "#", "°", Key.OemPipe, HostBase: "\\", HostShifted: "|"),
         },
         // ── Fourth row ───────────────────────────────────────────────────────────
         new SoftKeyDef[]
         {
-            new(9, 0, "SHIFT", null, Key.LeftShift, Width: 1.75, IsSticky: true),
-            new(3, 2, "<", ">", Key.OemBackslash),
+            // StandardHostWidth absorbs the "<>" key's Width (1.0) below when it's hidden —
+            // 1.75 + 1.0 = 2.75, matching a standard ANSI keyboard's wide left Shift.
+            new(9, 0, "SHIFT", null, Key.LeftShift, Width: 1.75, IsSticky: true, StandardHostWidth: 2.75),
+            // ISO-only: the P2000T's own keyboard has this key, but a standard ANSI host
+            // keyboard doesn't — hidden in Standard-Host mode (owner-reported 2026-07-19).
+            new(3, 2, "<", ">", Key.OemBackslash, IsIsoOnly: true),
             new(1, 2, "Z", null, Key.Z),
             new(3, 3, "X", null, Key.X),
             new(3, 4, "C", null, Key.C),
@@ -149,7 +165,14 @@ public static class SoftKeyLayout
             // Same source: shifted is '*' (times), not the letter 'x' — '+'/'*' pairs with '-'/÷
             // above as the numpad's arithmetic-operator row.
             new(5, 2, "+", "*", Key.Add),
-            new(5, 0, "✉", null, null, BaseIcon: "envelope"), // envelope / centre-tab — no host key reaches this at all (still open)
+            // Owner-corrected via real P2000T hardware (2026-07-19): the envelope icon is this
+            // key's SHIFTED function (not base, as first coded) and clears the whole screen (the
+            // rectangle gets "x-ed out"); the BASE (unshifted) function is a different symbol —
+            // a vertical bar / right-arrow / left-arrow / vertical bar glyph — and clears just
+            // the current line, homing the cursor to its leftmost column. "centre-tab" in the
+            // raw matrix transcription was this base function, mis-transcribed from the photo.
+            // No host key reaches this position at all (still open).
+            new(5, 0, "CLR", "CLS", null, BaseIcon: "clear_line", ShiftedIcon: "envelope"),
         },
         new SoftKeyDef[]
         {

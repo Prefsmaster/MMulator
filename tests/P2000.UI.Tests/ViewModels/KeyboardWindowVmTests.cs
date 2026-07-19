@@ -113,4 +113,45 @@ public class KeyboardWindowVmTests
         Assert.Equal(KeyMappingMode.StandardHost, translator.Mode);
         Assert.Equal("*", d8.ShiftedLabel);
     }
+
+    // ── ANSI reshaping in Standard-Host mode (owner-reported 2026-07-19: their host keyboard
+    // has a wide left Shift and no key to the left of Z, unlike the P2000T's own ISO-style
+    // layout) ────────────────────────────────────────────────────────────────────────────────
+
+    [Fact]
+    public void Authentic_IsoKeyVisible_ShiftAtOwnWidth()
+    {
+        var (vm, _, _) = NewVm();
+        var isoKey = Find(vm, 3, 2); // "<>" key
+        var shift = Find(vm, 9, 0);
+
+        Assert.True(isoKey.IsVisible);
+        Assert.Equal(1.75 * 40, shift.PixelWidth);
+    }
+
+    [Fact]
+    public void StandardHost_IsoKeyHidden_ShiftWidened()
+    {
+        var (vm, _, _) = NewVm();
+        var isoKey = Find(vm, 3, 2);
+        var shift = Find(vm, 9, 0);
+
+        vm.ToggleModeCommand.Execute(null);
+
+        Assert.False(isoKey.IsVisible);
+        Assert.Equal(2.75 * 40, shift.PixelWidth);
+    }
+
+    [Fact]
+    public void StandardHost_OtherKeys_KeepTheirOwnWidth()
+    {
+        // Only the ISO key and left Shift are affected — an unrelated key's width must not change.
+        var (vm, _, _) = NewVm();
+        var space = Find(vm, 2, 1);
+        var before = space.PixelWidth;
+
+        vm.ToggleModeCommand.Execute(null);
+
+        Assert.Equal(before, space.PixelWidth);
+    }
 }

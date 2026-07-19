@@ -61,12 +61,40 @@ public sealed class HostKeyTranslator
     // keypress as unshifted (see the class doc above) — one 20 ms field plus safety margin.
     private const int ForceOffGapMilliseconds = 40;
 
+    // Windows (with NumLock ON) reports the NAVIGATION key, not the digit, when Shift is held
+    // while a numpad key is pressed — e.g. Shift+NumPad1 delivers Key.End, not Key.NumPad1
+    // (owner-reported 2026-07-19: Shift+numpad-1 didn't activate ZOEK). This is indistinguishable
+    // from a real press of the dedicated End/Home/Arrow keys by Key alone, but Avalonia's
+    // PhysicalKey is scancode-based and unaffected by the OS's Shift+NumLock override — so the
+    // numpad's true identity is recovered from PhysicalKey before anything else runs.
+    private static readonly Dictionary<PhysicalKey, Key> _physicalNumpadOverride = new()
+    {
+        { PhysicalKey.NumPad0, Key.NumPad0 },
+        { PhysicalKey.NumPad1, Key.NumPad1 },
+        { PhysicalKey.NumPad2, Key.NumPad2 },
+        { PhysicalKey.NumPad3, Key.NumPad3 },
+        { PhysicalKey.NumPad4, Key.NumPad4 },
+        { PhysicalKey.NumPad5, Key.NumPad5 },
+        { PhysicalKey.NumPad6, Key.NumPad6 },
+        { PhysicalKey.NumPad7, Key.NumPad7 },
+        { PhysicalKey.NumPad8, Key.NumPad8 },
+        { PhysicalKey.NumPad9, Key.NumPad9 },
+        { PhysicalKey.NumPadDecimal, Key.Decimal },
+    };
+
+    private static Key Normalize(Key key, PhysicalKey physicalKey)
+        => _physicalNumpadOverride.TryGetValue(physicalKey, out var canonical) ? canonical : key;
+
     /// <summary>Presses the P2000 key(s) corresponding to <paramref name="key"/>, if any.
     /// Returns whether the key is part of the P2000 matrix at all (in the current mode) — the
     /// caller (e.g. the display window) uses this to decide whether to mark the host event
-    /// handled, so unrecognized keys (F5, F11, …) still reach the window's own KeyBindings.</summary>
-    public bool KeyDown(Key key)
+    /// handled, so unrecognized keys (F5, F11, …) still reach the window's own KeyBindings.
+    /// <paramref name="physicalKey"/> (optional — omitted by the soft-keyboard's synthetic
+    /// presses, which have no ambiguity to resolve) recovers the true numpad key identity when
+    /// Windows' Shift+NumLock override has swapped it for a navigation key — see the class doc.</summary>
+    public bool KeyDown(Key key, PhysicalKey physicalKey = default)
     {
+        key = Normalize(key, physicalKey);
         if (!_keysDown.Add(key)) return IsRecognized(key); // OS repeat — P2000T's 50 Hz ISR handles repeat itself
 
         if (key is Key.LeftShift or Key.RightShift)
@@ -135,9 +163,11 @@ public sealed class HostKeyTranslator
     }
 
     /// <summary>Releases whatever <see cref="KeyDown"/> pressed for this key. Return value has
-    /// the same meaning as <see cref="KeyDown"/>'s.</summary>
-    public bool KeyUp(Key key)
+    /// the same meaning as <see cref="KeyDown"/>'s. <paramref name="physicalKey"/> must match
+    /// whatever was passed to the corresponding <see cref="KeyDown"/> call — see its doc.</summary>
+    public bool KeyUp(Key key, PhysicalKey physicalKey = default)
     {
+        key = Normalize(key, physicalKey);
         _keysDown.Remove(key);
         if (!_activePress.Remove(key, out var pos)) return IsRecognized(key);
 

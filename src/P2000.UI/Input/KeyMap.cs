@@ -101,7 +101,11 @@ public static class KeyMap
         { Key.Right,            (2, 7) },   // → cursor right
         { Key.OemComma,         (2, 6) },   // , (also < when shifted on some hosts)
         { Key.Down,             (2, 5) },   // ↓ cursor down  (also ↘ when shifted)
-        // col 4 = np 0 / DEF  → NumPad0
+        // col 4 = # / block  — owner-confirmed via real hardware (2026-07-19): the US host
+        // "\|" key (OemPipe, distinct from OemBackslash which is already used at (3,2) for the
+        // ISO "<>" key) has no positional P2000 counterpart of its own, so it's wired here to
+        // give it the # block-key function instead of doing nothing.
+        { Key.OemPipe,          (2, 4) },
         { Key.NumPad0,          (2, 3) },
         // col 3 = np 00 / TB  — no standard host key; reachable via soft keyboard
         { Key.Space,            (2, 1) },
@@ -164,14 +168,14 @@ public static class KeyMap
         { Key.NumPad3,          (7, 0) },   // np 3 / START
 
         // ── Row 8 ────────────────────────────────────────────────────────────────────
-        // col 7 = : / *  — on US host : is Shift+; but we treat OemSemicolon as the base key
-        // and let the shift state produce : naturally via P2000T shift convention.
-        { Key.OemSemicolon,     (8, 7) },   // : / *  (Dutch: these two are the same physical key)
+        // Owner-confirmed via real P2000T hardware (2026-07-19) that the physical-position
+        // mapping below (not the earlier guess) matches a real keyboard: the "=/+" host key
+        // (left of backspace) sits over (8,4) [¼/¾], the "'/"" host key (left of enter) sits
+        // over (8,7) [:/*], and OemSemicolon fills the vacated (8,5) [;/+].
+        { Key.OemQuotes,        (8, 7) },   // : / *  (host "'/"" key, left of Enter)
         { Key.I,                (8, 6) },
-        // col 5 = ; / +  — on Dutch P2000T ; is a separate key.
-        // On US host OemPlus (= key) is nearby; approximate with OemTilde for now.
-        { Key.OemPlus,          (8, 5) },   // ; / +  (US = key maps here approximately)
-        { Key.OemQuotes,        (8, 4) },   // ´ (accent aigu) / ` (accent grave) — not apostrophe
+        { Key.OemSemicolon,     (8, 5) },   // ; / +  (host ";/:" key)
+        { Key.OemPlus,          (8, 4) },   // ¼ / ¾  (host "=/+" key, left of backspace)
         { Key.NumPad4,          (8, 3) },   // np 4 / INL
         { Key.NumPad5,          (8, 2) },   // np 5
         { Key.L,                (8, 1) },
@@ -209,7 +213,11 @@ public static class KeyMap
         { (Key.D9, true), new MatrixTarget(6, 6, true) },    // (  (positional gives ) instead)
         { (Key.D0, true), new MatrixTarget(5, 1, true) },    // )  (positional gives = instead)
 
-        { (Key.OemPlus, false), new MatrixTarget(5, 5, true) },   // =  (positional gives ; instead)
+        { (Key.OemPlus, false), new MatrixTarget(5, 5, true) },   // =  (positional gives ¼ instead)
+        { (Key.OemPlus, true),  new MatrixTarget(8, 5, true) },   // +  (positional gives ¾ instead —
+                                                                   // OemPlus moved off (8,5) itself,
+                                                                   // see the 2026-07-19 hardware
+                                                                   // remapping note above)
 
         // [ / ] / { / } — NO P2000 equivalent at all (owner-reported 2026-07-20, confirmed via
         // Saa5050Font.cs: the P2000's character set reassigns ASCII 0x5B/0x5D to Left/Right
@@ -222,19 +230,23 @@ public static class KeyMap
         { (Key.OemCloseBrackets, false), null },  // ]
         { (Key.OemCloseBrackets, true), null },   // }
 
-        { (Key.OemSemicolon, false), new MatrixTarget(8, 5, false) },  // ;  (positional gives : instead)
-        { (Key.OemSemicolon, true),  new MatrixTarget(8, 7, false) },  // :  (positional gives * instead)
+        // ; — no override needed: OemSemicolon now sits positionally at (8,5), whose unshifted
+        // value already IS ';' (see the 2026-07-19 hardware remapping note above).
+        { (Key.OemSemicolon, true),  new MatrixTarget(8, 7, false) },  // :  (positional gives + instead)
 
-        { (Key.OemQuotes, true),  new MatrixTarget(7, 7, true) },  // "  (positional (8,4) shifted
-                                                                    // renders as ¾, not " — see the
-                                                                    // (8,4) open question above)
-        // ' — (8,4) unshifted does NOT render as a literal apostrophe (renders as ¼ — see the
-        // (8,4) open question above); the P2000's actual apostrophe is (0,6) shifted (Shift+7,
-        // part of the original confirmed digit-row table), unaffected by that open question.
+        { (Key.OemQuotes, true),  new MatrixTarget(7, 7, true) },  // "  (positional (8,7) shifted
+                                                                    // gives '*', not '"')
+        // ' — the P2000's real apostrophe lives at (0,6) shifted (Shift+7, part of the original
+        // confirmed digit-row table), unrelated to wherever OemQuotes sits positionally.
         { (Key.OemQuotes, false), new MatrixTarget(0, 6, true) },
 
         { (Key.OemComma,  true), new MatrixTarget(3, 2, false) },  // <  (positional gives , unshifted twice)
         { (Key.OemPeriod, true), new MatrixTarget(3, 2, true) },   // >  (positional gives . unshifted twice)
+
+        // \ / | — no P2000 equivalent (same category as the bracket/tilde findings above).
+        // OemPipe is instead wired positionally to (2,4), giving it the #/block function.
+        { (Key.OemPipe, false), null },   // \
+        { (Key.OemPipe, true),  null },   // |
     };
 
     /// <summary>Standard-Host mode: translate a host key + current host-Shift state to the

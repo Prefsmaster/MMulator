@@ -190,14 +190,16 @@ public partial class DisplayWindow : Window
     private void OnPreviewKeyDown(object? sender, KeyEventArgs e)
     {
         // Only claim the event for recognized P2000 keys — F5/F11/F6/F8/F12 etc. must still
-        // reach the window's own KeyBindings unhandled.
-        if (_vm is not null && _vm.KeyTranslator.KeyDown(e.Key))
+        // reach the window's own KeyBindings unhandled. e.PhysicalKey is passed through so the
+        // translator can recover a real numpad press even when Windows (Shift + NumLock on)
+        // reports it as a navigation key instead (owner-reported 2026-07-19, see HostKeyTranslator).
+        if (_vm is not null && _vm.KeyTranslator.KeyDown(e.Key, e.PhysicalKey))
             e.Handled = true; // prevent a focused toolbar button from consuming e.g. Enter
     }
 
     private void OnPreviewKeyUp(object? sender, KeyEventArgs e)
     {
-        if (_vm is not null && _vm.KeyTranslator.KeyUp(e.Key))
+        if (_vm is not null && _vm.KeyTranslator.KeyUp(e.Key, e.PhysicalKey))
             e.Handled = true;
     }
 }

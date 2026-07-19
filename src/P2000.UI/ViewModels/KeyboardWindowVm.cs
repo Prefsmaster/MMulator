@@ -31,17 +31,25 @@ public sealed partial class SoftKeyVm : ObservableObject
     public string? ShiftedIconUri => Def.ShiftedIcon is { } s ? $"avares://P2000.UI/Assets/Icons/{s}.png" : null;
 
     private const double KeyUnitPixels = 40;
-    public double PixelWidth => Def.Width * KeyUnitPixels;
+    public double PixelWidth
+        => (_owner.Mode == KeyMappingMode.StandardHost ? Def.StandardHostWidth ?? Def.Width : Def.Width) * KeyUnitPixels;
+
+    // Standard-Host mode hides ISO-only keys so the soft-keyboard's shape matches a standard
+    // ANSI host keyboard (owner-reported 2026-07-19) — P2000-Authentic always shows every key,
+    // since that mode reflects the P2000T's own (ISO-style) physical layout.
+    public bool IsVisible => !(Def.IsIsoOnly && _owner.Mode == KeyMappingMode.StandardHost);
 
     [ObservableProperty] private bool _isActive;
 
     /// <summary>Raised by the owner after <see cref="KeyboardWindowVm.Mode"/> changes so bound
-    /// labels refresh (they are computed, not observable properties themselves).</summary>
-    public void RefreshLabels()
+    /// labels/shape refresh (they are computed, not observable properties themselves).</summary>
+    public void RefreshForModeChange()
     {
         OnPropertyChanged(nameof(Label));
         OnPropertyChanged(nameof(ShiftedLabel));
         OnPropertyChanged(nameof(ShowShiftedText));
+        OnPropertyChanged(nameof(PixelWidth));
+        OnPropertyChanged(nameof(IsVisible));
     }
 
     [RelayCommand]
@@ -93,8 +101,8 @@ public sealed partial class KeyboardWindowVm : ObservableObject
     partial void OnModeChanged(KeyMappingMode value)
     {
         _translator.Mode = value;
-        foreach (var row in Rows) foreach (var k in row) k.RefreshLabels();
-        foreach (var row in Numpad) foreach (var k in row) k.RefreshLabels();
+        foreach (var row in Rows) foreach (var k in row) k.RefreshForModeChange();
+        foreach (var row in Numpad) foreach (var k in row) k.RefreshForModeChange();
     }
 
     [RelayCommand]

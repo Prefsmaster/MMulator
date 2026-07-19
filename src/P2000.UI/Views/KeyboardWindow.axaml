@@ -12,6 +12,7 @@
     <Window.Resources>
         <DataTemplate x:Key="SoftKeyTemplate" DataType="vm:SoftKeyVm">
             <Button Command="{Binding ActivateCommand}"
+                    IsVisible="{Binding IsVisible}"
                     Width="{Binding PixelWidth}" Height="52"
                     Margin="2" Padding="2"
                     Background="{Binding IsActive, Converter={x:Static local:BoolToKeyBrushConverter.Instance}}">

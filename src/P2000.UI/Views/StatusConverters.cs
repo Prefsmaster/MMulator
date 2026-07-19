@@ -1,5 +1,7 @@
 using Avalonia.Data.Converters;
 using Avalonia.Media;
+using Avalonia.Media.Imaging;
+using Avalonia.Platform;
 using System.Globalization;
 
 namespace P2000.UI.Views;
@@ -113,6 +115,48 @@ public sealed class BoolToWriteProtectLabelConverter : IValueConverter
 
     public object? Convert(object? value, Type targetType, object? parameter, CultureInfo culture)
         => value is true ? "Write protected" : "Write enabled";
+
+    public object? ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture)
+        => throw new NotSupportedException();
+}
+
+/// <summary>Highlights a soft-keyboard key while a sticky Shift/CODE/Lock is engaged.</summary>
+public sealed class BoolToKeyBrushConverter : IValueConverter
+{
+    public static readonly BoolToKeyBrushConverter Instance = new();
+
+    public object? Convert(object? value, Type targetType, object? parameter, CultureInfo culture)
+        => value is true ? Brush.Parse("#4a7a4a") : Brush.Parse("#3a3a3a");
+
+    public object? ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture)
+        => throw new NotSupportedException();
+}
+
+
+/// <summary>Soft-keyboard mode-toggle button label.</summary>
+public sealed class ModeLabelConverter : IValueConverter
+{
+    public static readonly ModeLabelConverter Instance = new();
+
+    public object? Convert(object? value, Type targetType, object? parameter, CultureInfo culture)
+        => value is true ? "Standard-Host" : "P2000-Authentic";
+
+    public object? ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture)
+        => throw new NotSupportedException();
+}
+
+/// <summary>Loads a soft-keyboard key icon from an <c>avares://</c> URI string
+/// (<see cref="P2000.UI.ViewModels.SoftKeyVm.BaseIconUri"/>/<c>ShiftedIconUri</c>).</summary>
+public sealed class IconUriToBitmapConverter : IValueConverter
+{
+    public static readonly IconUriToBitmapConverter Instance = new();
+
+    public object? Convert(object? value, Type targetType, object? parameter, CultureInfo culture)
+    {
+        if (value is not string uri) return null;
+        using var stream = AssetLoader.Open(new Uri(uri));
+        return new Bitmap(stream);
+    }
 
     public object? ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture)
         => throw new NotSupportedException();

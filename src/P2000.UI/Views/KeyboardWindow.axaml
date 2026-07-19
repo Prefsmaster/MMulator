@@ -1,0 +1,93 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="using:P2000.UI.ViewModels"
+        xmlns:local="using:P2000.UI.Views"
+        x:DataType="vm:KeyboardWindowVm"
+        x:Class="P2000.UI.Views.KeyboardWindow"
+        Title="MMulator — Keyboard"
+        Width="900" Height="420"
+        CanResize="True"
+        Background="#2d2d2d">
+
+    <Window.Resources>
+        <DataTemplate x:Key="SoftKeyTemplate" DataType="vm:SoftKeyVm">
+            <Button Command="{Binding ActivateCommand}"
+                    Width="{Binding PixelWidth}" Height="52"
+                    Margin="2" Padding="2"
+                    Background="{Binding IsActive, Converter={x:Static local:BoolToKeyBrushConverter.Instance}}">
+                <StackPanel>
+                    <Image Source="{Binding ShiftedIconUri, Converter={x:Static local:IconUriToBitmapConverter.Instance}}"
+                           IsVisible="{Binding ShowShiftedIcon}"
+                           Width="14" Height="14" HorizontalAlignment="Center" />
+                    <TextBlock Text="{Binding ShiftedLabel}"
+                               IsVisible="{Binding ShowShiftedText}"
+                               FontSize="11" Foreground="#ccc"
+                               HorizontalAlignment="Center" />
+                    <Image Source="{Binding BaseIconUri, Converter={x:Static local:IconUriToBitmapConverter.Instance}}"
+                           IsVisible="{Binding ShowBaseIcon}"
+                           Width="18" Height="18" HorizontalAlignment="Center" />
+                    <TextBlock Text="{Binding Label}"
+                               IsVisible="{Binding ShowBaseText}"
+                               FontSize="14" FontWeight="Bold"
+                               HorizontalAlignment="Center" />
+                </StackPanel>
+            </Button>
+        </DataTemplate>
+    </Window.Resources>
+
+    <Window.Styles>
+        <Style Selector="ItemsControl.row">
+            <Setter Property="ItemsPanel">
+                <ItemsPanelTemplate>
+                    <StackPanel Orientation="Horizontal" />
+                </ItemsPanelTemplate>
+            </Setter>
+        </Style>
+        <Style Selector="ItemsControl.rows">
+            <Setter Property="ItemsPanel">
+                <ItemsPanelTemplate>
+                    <StackPanel Orientation="Vertical" />
+                </ItemsPanelTemplate>
+            </Setter>
+        </Style>
+    </Window.Styles>
+
+    <DockPanel>
+
+        <!-- ── Mode toggle ────────────────────────────────────────────────────── -->
+        <Border DockPanel.Dock="Top" Background="#1e1e1e" Padding="8">
+            <StackPanel Orientation="Horizontal" Spacing="12">
+                <TextBlock Text="Mapping mode:" Foreground="#ccc" VerticalAlignment="Center" />
+                <Button Content="{Binding IsStandardHost, Converter={x:Static local:ModeLabelConverter.Instance}}"
+                        Command="{Binding ToggleModeCommand}"
+                        ToolTip.Tip="P2000-Authentic sends whatever P2000 key sits at the host key's position; Standard-Host reproduces the literal host keycap character instead" />
+            </StackPanel>
+        </Border>
+
+        <ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto">
+            <StackPanel Orientation="Horizontal" Margin="12" Spacing="24">
+
+                <!-- ── Main block ───────────────────────────────────────────────── -->
+                <ItemsControl Classes="rows" ItemsSource="{Binding Rows}">
+                    <ItemsControl.ItemTemplate>
+                        <DataTemplate>
+                            <ItemsControl Classes="row" ItemsSource="{Binding}"
+                                          ItemTemplate="{StaticResource SoftKeyTemplate}" />
+                        </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                </ItemsControl>
+
+                <!-- ── Numpad ───────────────────────────────────────────────────── -->
+                <ItemsControl Classes="rows" ItemsSource="{Binding Numpad}">
+                    <ItemsControl.ItemTemplate>
+                        <DataTemplate>
+                            <ItemsControl Classes="row" ItemsSource="{Binding}"
+                                          ItemTemplate="{StaticResource SoftKeyTemplate}" />
+                        </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                </ItemsControl>
+
+            </StackPanel>
+        </ScrollViewer>
+    </DockPanel>
+</Window>

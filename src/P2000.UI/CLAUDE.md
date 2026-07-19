@@ -173,10 +173,15 @@ snapshot / the framebuffer view. None mutate the core except by enqueuing comman
    display stays interactive while it's open) — the topology axes (§7). Load/save `.cfg`. Changes
    queue and apply on cold reset; the window makes the reset-to-apply nature explicit (an "Apply
    (resets machine)" affordance), except cassette mount which is live.
-3. **Keyboard window** — the original P2000 key layout. Doubles as a **soft keyboard** (click a
-   key → enqueue the matrix event, applied at frame boundary like any host key) and as the
-   **host-key mapping reference**. Read the layout/labels; the machine models the 10×8 matrix +
-   ghosting.
+3. **Keyboard window** — the original P2000 key layout, built from the owner-supplied
+   `docs/Keyboard/` photo. Doubles as a **soft keyboard** (click a key → enqueue the matrix
+   event, applied at frame boundary like any host key — sticky Shift/CODE for click-based
+   modifier holds) and as the **host-key mapping reference**, including a **P2000 Authentic
+   (current default, already live) / Standard-Host (new) mode toggle** (§14 milestone 3a — the
+   escape hatch for special keys a host keyboard can't reach at all, plus an opt-in alternative
+   for anyone who wants literal Windows-keycap symbols instead of the P2000's own shift-pairings;
+   row/column matrix positions for CODE and several special keys are still unsourced, see ms.3a).
+   Read the layout/labels; the machine models the 10×8 matrix + ghosting.
 4. **Debugger window** — full debugger (§10). Purely observer-side.
 5. **Cassette "deck" window** — status indicators + the ONE physical control (eject). The MDCR
    is computer-controlled: **NO play/stop/rewind** (the CPU moves the tape via CPOUT). Show:
@@ -395,6 +400,111 @@ builds did. Do not advance while the current milestone is red. Record spec corre
 2. **Control surface.** Menu + toolbar + status bar (state, speed %, activity LED, model) +
    shortcuts (F5/F11/Shift+F11/F12/F6/F8), each as an enqueued command. → commit.
 3. **Input.** Host-key → matrix mapping, enqueue at frame boundary; type into BASIC. → commit.
+3a. **Virtual keyboard — graphical soft-keyboard window + P2000-authentic mapping mode**
+    (fast-follow, same "milestone + a" pattern as ms.9a/13a — closes a gap left open by ms.3,
+    not scoped as part of it). Two motivating owner problems (2026-07-14), both rooted in the
+    same cause: **ms.3 shipped host-key input, but not the soft-keyboard window §5 item 3 and
+    validation gate 3 both already called for** (§5 lists it, gate 3 says "via host keyboard AND
+    via the soft keyboard" — no §18 entry exists for ms.3, and nothing built has a keyboard
+    window). Consequences:
+    - **No way to reach keys with no modern-keyboard equivalent** — the numeric keypad's
+      cassette/program-control keys (ZOEK, START, STOP, and others, see photo asset below) have
+      no host key to bind to at all, mapping mode aside.
+    - **CORRECTED (2026-07-14, owner clarification) — root cause below was wrong, replaced:**
+      the owner's original request was misread as "shift+8 currently yields `*`, wrongly." It
+      does not. **Owner-confirmed (2026-07-14): the live default ALREADY produces the P2000's
+      own shift-row symbols, not the host layout's.** **Full digit-row table, CONFIRMED
+      (owner, 2026-07-14, corrected same day — `$` was initially dropped from the list):**
+
+      | Key | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 0 |
+      |-----|---|---|---|---|---|---|---|---|---|---|
+      | P2000 (shift, live today) | `!` | `"` | `£` | `$` | `%` | `&` | `'` | `(` | `)` | `=` |
+      | Windows (shift, US layout) | `!` | `@` | `#` | `$` | `%` | `^` | `&` | `*` | `(` | `)` |
+
+      Consistent with the two anchor points confirmed earlier in the same thread (Shift+2 →
+      `"`, Shift+8 → `(`). This is now a confirmed *order*, not just a confirmed *set* — safe to
+      use directly as the digit row of the P2000-Authentic mode's (already-live) symbol table
+      and as the target table Standard-Host mode must map away from.
+    - **So what's actually missing is the reverse of what was first assumed:** the graphical
+      soft-keyboard window itself (still not built — see gate/§18 note above) and, as an
+      **additive** option alongside the current default, a **"Standard / Host"** mode that
+      reproduces the literal Windows-keycap symbol instead — for anyone who wants their typing
+      to match what's printed on the keyboard in front of them rather than the P2000's own
+      pairing. **The current default is not being replaced or fixed — it already does what the
+      owner wants ("act as a P2000") and stays as the default;** "Standard/Host" is new,
+      opt-in work, not the other way around as an earlier draft of this milestone had it.
+    - **Mechanism behind the current default is UNCONFIRMED — flag, don't assume, and this is
+      now the more useful sourcing lead:** per machine ms.8's own findings (machine CLAUDE.md
+      §17, 2026-07-04), the `Keyboard` device only accepts **raw (row, column) crosspoint
+      presses** — there is no character-level injection path. For shift+8 to already correctly
+      produce `(`, ms.3's shipped code must already press SOME matrix coordinate for SHIFT
+      together with `8`'s coordinate — meaning **ms.3's existing implementation necessarily
+      already encodes a working answer for at least SHIFT's matrix position and the digit row**,
+      despite reference doc §5f's "still to confirm" note and despite ms.3 never getting a §18
+      findings entry (flagged as unusual when this milestone was first drafted — now explained:
+      it shipped a correct, tested, but never-logged mapping table). **Recommended resolution
+      path, revised:** ask Claude Code to report ms.3's actual current host-key→matrix table
+      (a data-flow check, same pattern as ms.12/13's "flag, don't assume") before designing
+      "Standard/Host" mode or the soft-keyboard's special-key positions — it is very likely the
+      most direct, already-tested source for SHIFT (and possibly more of the matrix) that exists
+      anywhere in this project, more direct than M2000 or fresh disassembly. Fall back to M2000
+      (§6: "good behavioural oracle... for keyboard matrix") or disassembly only for whatever
+      ms.3's table doesn't already cover (CODE, the special keypad keys, letters/punctuation
+      outside the digit row if ms.3 turns out not to handle those positionally too).
+    - **CODE key — function unconfirmed, do NOT invent.** Named alongside SHIFT in reference
+      doc §5f as a modifier the mapping table must account for, but its actual effect (a second
+      shift level? graphics/block-character set, common on similar-era keyboards? something
+      else?) is not documented anywhere in this project. Model it as a sticky modifier key with
+      an unconfirmed effect; do not assume it produces any specific character set.
+      **RESOLVED (2026-07-19, owner, see §18):** CODE's effect is **cartridge/software-dependent,
+      not a fixed second shift level** — neither of the two speculated options above. With the
+      BASIC cartridge plugged in specifically, it controls **LIST display speed** and is used
+      **while editing BASIC program lines**. Confirms modeling it as a bare sticky modifier
+      (matrix bit only, no emulator-side character-set logic) was the right call — the ROM/
+      cartridge interprets the bit, same as it interprets SHIFT; nothing to build differently.
+    - **Photo asset:** `docs/Keyboard/` (owner-supplied photo of a real Philips P2000T
+      keyboard) — the visual source for the soft keyboard's key regions, legends, and grouping.
+      **My own read of the photo, UNCONFIRMED, needs owner verification before it drives any
+      key's built behaviour:** the numeric keypad reads as a 3-column × 5-row grid — row 1:
+      `:-` / `x+` / an envelope-icon key; row 2: a cassette-icon key + `7`, a circle-with-dot
+      icon key + `8`, `M` + `9`; row 3: `INL` (yellow) + `4`, plain `5`, `OPN` (red-orange) +
+      `6`; row 4: `ZOEK` + `1`, a `↔` icon + `2`, `START` + `3`; row 5: `DEF` + `0`, a
+      flag/pennant icon + `00`, `STOP`. **Legend transcription only — matrix position AND, for
+      several keys, even ROM-level function are separately unsourced** (see above and below).
+    - **Several legends have no documented function at all — flag, don't guess:** `INL`, `OPN`,
+      `DEF`, and the envelope/cassette/circle-dot/flag icon-only keys appear on the photo but
+      are not named or explained anywhere in `P2000T-reference.md`. Only **ZOEK, START, STOP**
+      are independently confirmed (§5b "BASIC↔cassette UI surface": "START (run loaded
+      program), STOP (halt), ZOEK/search (show cassette index)") — those three legends' ROM-level
+      *meaning* is sourced even though their matrix *position* still isn't. **WIS** (the fourth
+      member of that same confirmed list — "clear cassette dialog") has not been located on the
+      keypad in the photo read above at all; either it's one of the unlabelled icon keys (don't
+      guess which) or it sits outside the numeric keypad entirely (e.g. main keyboard block) —
+      open item.
+      **RESOLVED (2026-07-19, owner, see §18):** WIS = Shift + the numpad `7`/cassette-icon key
+      (port 0x06 bit 3) — the same key ms.3 already maps to host `NumPad7`. No new matrix
+      behaviour; the key was always reachable, only its shifted meaning was undocumented.
+    - **UI:** new soft-keyboard window (§5 item 3, already spec'd: click a key → enqueue the
+      matrix event at frame boundary, same as any host key). **Sticky Shift** (click to latch,
+      click again or press a regular key to release — matches how a real keyboard's physical
+      shift differs from a mouse click, which can't be "held"); **sticky CODE** likewise, pending
+      its function being sourced. A mode toggle — **"P2000 Authentic" (current default, already
+      live, unchanged by this milestone) / "Standard-Host" (new)** — visible on this window,
+      applying to BOTH host-key input and, where meaningful, the soft keyboard's own
+      shifted-click behaviour. Special keys with no host equivalent (ZOEK/START/STOP/etc.) are
+      soft-keyboard-only regardless of mapping mode — there's no host key for either mode to
+      translate from.
+    - **Tests:** (a) **regression guard, not a new behaviour:** P2000 Authentic mode (the
+      existing default) is unchanged by this milestone — host Shift+8 still enqueues whatever
+      matrix event ms.3 already sends and BASIC still echoes `(`; same for Shift+2 → `"`; (b)
+      Standard-Host mode: host Shift+8 (US layout) produces the literal Windows-keycap symbol
+      (`*`) instead, via whatever P2000 key/combo (if any) produces that character — flag,
+      don't guess, if no P2000 key produces a given host symbol at all; (c) soft-keyboard click
+      on a QWERTY-block key (confirmed positionally from ms.3) enqueues the identical matrix
+      event a host keypress for that key would; (d) sticky Shift latches across a soft-keyboard
+      click and releases after exactly one subsequent key; (e) any special key without a sourced
+      matrix position is either absent from the built window or clearly marked unavailable —
+      never wired to a guessed coordinate. → commit.
 4. **Cassette deck + mount/eject.** File dialog + drag-drop mount (live CIP), eject, status
    indicators (direction, R/W activity), directory. RUN a real `.cas` end-to-end. → commit.
 5. **Config window + `.cfg`.** Axes, load/save, reset-to-apply (cold reset) with the cassette
@@ -1189,9 +1299,10 @@ project.
 - **Applies to:** `src/P2000.UI/ViewModels/CassetteDeckVm.cs` (`RefreshDirectoryFromLiveTape`,
   `_wasActive`, `OnFrameReady`), `tests/P2000.UI.Tests/ViewModels/CassetteDeckVmTests.cs`
   (documented the untested gap rather than shipping a flaky test).
-- **Synced:** no (implementation-only UI fix; the `Cassette.asm` replace/append mechanism
-  finding is useful context for future cassette work but describes BASIC-level policy this
-  project doesn't implement, not machine hardware — nothing to sync into the reference doc).
+- **Synced:** yes (2026-07-14 — the UI directory-refresh fix itself is implementation-only, but
+  the `Cassette.asm` replace/append finding this entry cites turned out worth syncing after
+  all — see `P2000.Machine/CLAUDE.md` §17's matching entry and P2000T-reference.md §5b
+  "Replace vs append," now corrected).
 
 ### 2026-07-14 — Directory list block count off by one (floor vs ceiling division)
 - **Owner-reported (live app, replace-scenario testing):** the "Blk" column undercounted —
@@ -1270,3 +1381,350 @@ project.
 - **Applies to:** project CLAUDE.md §14.6 (milestone 6, integer scaling) /
   `src/P2000.UI/Rendering/DisplayControl.cs` (`ComputeDestRect`).
 - **Synced:** yes (2026-07-10 — DPI/physical-pixel integer scaling: rendering implementation-only, no reference change)
+
+### 2026-07-19 — Milestone 3a: ms.3's "no host key at all" claim was wrong for the numpad function keys
+- **Assumed (§14.3a, as drafted):** the numeric keypad's cassette/program-control keys (ZOEK,
+  START, STOP, INL, OPN, DEF, and the tape/dsk/M icon keys) "have no host key to bind to at
+  all, mapping mode aside" — implying the soft-keyboard window would be the first thing to
+  make them reachable.
+- **Found (false — ms.3 already wired all of them):** `src/P2000.UI/Input/KeyMap.cs`, sourced
+  from `docs/Keyboard/keyboard matrix.md` (committed 2026-07-07, ms.3's own commit — never
+  given a §18 findings entry, same "shipped correct but never logged" pattern already noted
+  for SHIFT/digit-row in §14.3a), maps every one of these positions directly to the
+  corresponding host NumPad key: NumPad0→DEF (2,3), NumPad1→ZOEK (7,3), NumPad2→flash (7,2),
+  NumPad3→START (7,0), NumPad4→INL (8,3), NumPad6→OPN (8,0), NumPad7→tape (6,3),
+  NumPad8→dsk (6,2), NumPad9→M (6,0), Decimal→STOP (2,0). CODE (4,0) is already mapped to
+  LeftCtrl; Shift-Lock (3,0) to CapsLock. This is the same crosspoint the physical P2000 key
+  serves for both plain numeric entry and its icon/function legend — one matrix position, ROM
+  context decides the meaning — so ms.3's positional mapping already covers it correctly, no
+  machine or KeyMap change needed.
+- **Only two matrix positions remain host-unreachable** (known positions, just no host key
+  bound): np00/TB (2,2) and np-center/tab/envelope (5,0). The soft-keyboard window can reach
+  both directly by matrix coordinate since it enqueues positions, not host keys. **WIS** still
+  has no matrix position sourced anywhere (open item, unchanged).
+- **Revised scope for the soft-keyboard window (§14.3a):** it is a discoverability/no-numpad
+  affordance and the only way to reach np00/TB, the envelope key, and (once sourced) WIS — not
+  the first path to ZOEK/START/STOP/INL/OPN/DEF, which already work today from any keyboard
+  with a numpad.
+- **Applies to:** project CLAUDE.md §14.3a / `src/P2000.UI/Input/KeyMap.cs` /
+  `docs/Keyboard/keyboard matrix.md`.
+- **Synced:** no (corrects this project's own milestone doc; no reference-doc hardware content
+  changes as a result).
+
+### 2026-07-19 — Milestone 3a: soft-keyboard window + Standard-Host mode, built
+- **Found (matrix correction, owner-caught):** `docs/Keyboard/keyboard matrix.md` and the new
+  `docs/Keyboard/keyboard mappins.md` both mislabeled Port 0x06 bit 7 shifted as `"` — it's
+  actually **¨ (umlaut/diaeresis dead key)**. The only key that produces `"` is Port 0x07 bit 7.
+  Confirmed by re-photographing the physical key (shows two dots, not a double-quote glyph) and
+  by the owner (who'd mistyped it in their own draft table). Fixed in both matrix files and
+  `KeyMap.cs`'s comments — the matrix POSITION (`OemOpenBrackets` → (6,7)) was never wrong, only
+  the documented character.
+- **Found (photo re-verification caught a second transcription slip, mine this time):** my first
+  pass at the soft-keyboard's visual layout misplaced the "'`" key (port 8 bit 4) and the "<>" key
+  (port 3 bit 2) — I'd assumed "<>" sat on the top numeric row and "'`" didn't exist on the
+  keyboard at all. Zoomed crops of `docs/Keyboard/P2000T keyboard.jpg` (via a scratch Python/PIL
+  script — no image-crop tool exists in this toolchain) showed "'`" actually sits on the top row
+  between `-_` and Backspace, and "<>" is the ISO-style key immediately left of Z (matching
+  `KeyMap.cs`'s existing "ISO extra key" comment for `OemBackslash` → (3,2), which turned out to
+  already be right — my new layout code was the one with the bug, not the shipped matrix).
+- **Built:** `HostKeyTranslator` (`src/P2000.UI/Input/HostKeyTranslator.cs`) — stateful
+  press/release bookkeeping shared by the physical-keyboard handler (`DisplayWindow.axaml.cs`)
+  and the new soft-keyboard window, so both obey the same `KeyMappingMode`. `KeyMap.cs` gained
+  `MapStandardHost` (an explicit override table derived algorithmically from the confirmed
+  matrix — see `docs/Keyboard/keyboard mappins.md`'s "Standard-Host mode reverse mapping" — not
+  hand-guessed) plus the `KeyMappingMode` enum. New `SoftKeyLayout.cs` (full photo-verified 10×8
+  layout data), `KeyboardWindowVm`/`SoftKeyVm` (sticky Shift/CODE, toggle Lock, mode toggle,
+  momentary regular-key press), `Views/KeyboardWindow.axaml(.cs)`.
+- **Found (`DisplayWindow`'s `e.Handled` needed a real signal, not "always true"):** the
+  pre-existing key handler only marked non-matrix keys (F5/F11/…) unhandled so the window's own
+  `KeyBindings` still fired. Routing everything through the shared translator meant `KeyDown`/
+  `KeyUp` had to start returning whether the key was recognized at all (in the current mode) —
+  added that return value rather than hardcoding `Handled = true`.
+- **Found (owner decisions, both confirmed live in this session, not guessed):** (1) the
+  ambiguous `"` position — (7,7), not (6,7), per the umlaut correction above; (2) missing
+  US symbols (`~^{}\|`) are a silent no-op in Standard-Host mode, matching the milestone's own
+  "flag, don't guess" instruction rather than picking a wrong stand-in character.
+- **Verified live (owner's running app, this session):** soft-keyboard click of "1" types `1`
+  into BASIC; sticky Shift + click "8" in P2000-Authentic gives `(`; toggling to Standard-Host
+  relabels the digit row (2→@, 3→#, 6→^, 7→&, 8→*, 9→(, 0→)) and Shift+8 now gives `*` instead —
+  confirming both the translator's forced-shift bookkeeping and the mode-dependent legend
+  refresh work end-to-end, not just at the unit level.
+- **Tests (72 total in `P2000.UI.Tests`, all green):** `HostKeyTranslatorTests` — Authentic
+  regression (Shift+8/Shift+2 unchanged), Standard-Host literal-character cases including both
+  forced-shift-ON and forced-shift-OFF, the missing-symbol no-op, positional fallback, and OS
+  auto-repeat suppression. `SoftKeyLayoutTests` — every `HostKey`-bearing position matches
+  `KeyMap` exactly, the only `HostKey: null` positions are the three confirmed-unreachable ones
+  (np00/TB, envelope, "#/°"), no duplicate matrix positions. `KeyboardWindowVmTests` — soft-click
+  parity with the equivalent host key, sticky Shift latch/release (both click-again and
+  release-after-one-key), CODE and Shift latch independently, mode toggle updates both the
+  translator and displayed legends.
+- **Not built (per the milestone's own scope):** CODE's semantic effect (modeled as a sticky
+  modifier only, per the milestone's explicit "do NOT invent" instruction). **WIS's matrix
+  position was resolved the same day — see the follow-up entry below — so it is NOT in this
+  "not built" list**; it was always reachable (host `NumPad7`), only its shifted meaning was
+  undocumented at the time this entry was first written.
+- **Applies to:** project CLAUDE.md §14.3a / `src/P2000.UI/Input/KeyMap.cs`,
+  `src/P2000.UI/Input/HostKeyTranslator.cs` (new), `src/P2000.UI/Input/SoftKeyLayout.cs` (new),
+  `src/P2000.UI/ViewModels/KeyboardWindowVm.cs` (new), `src/P2000.UI/Views/KeyboardWindow.axaml(.cs)`
+  (new), `src/P2000.UI/Views/DisplayWindow.axaml(.cs)` (menu item, key-handler rewiring),
+  `src/P2000.UI/ViewModels/DisplayWindowVm.cs` (`KeyTranslator`, `KeyboardVm`),
+  `src/P2000.UI/Views/StatusConverters.cs` (+3 converters), `docs/Keyboard/keyboard matrix.md`,
+  `docs/Keyboard/keyboard mappins.md` (umlaut correction + finished Standard-Host table),
+  `tests/P2000.UI.Tests/Input/*` (new), `tests/P2000.UI.Tests/ViewModels/KeyboardWindowVmTests.cs`
+  (new).
+- **Synced:** no (implementation-only UI wiring; the umlaut correction is worth folding into
+  `docs/P2000T-reference.md` §5f on the next human sync pass, since that's real hardware content).
+
+### 2026-07-19 — Milestone 3a follow-up: WIS located (owner)
+- **Assumed (per this milestone's own text above, and `docs/P2000T-reference.md` §6 "still to
+  confirm"):** WIS's ROM-level function was known ("clear cassette dialog," §5b) but its matrix
+  position had never been located anywhere — not in the owner's photo transcription, not
+  independently derivable, open item.
+- **Found (owner-confirmed):** WIS is **Shift + the numpad `7` key** (port 0x06 bit 3) — the key
+  showing the mini-cassette-tape icon, already mapped in ms.3's `KeyMap.cs` to host `NumPad7`.
+  Same shift-selects-the-function convention as ZOEK/START/STOP/INL/OPN/DEF elsewhere on the
+  keypad (unshifted = the digit, shifted = the function) — no new matrix behaviour and no code
+  change needed beyond the label: the key was always reachable and functional via Shift+NumPad7
+  through the existing `HostKeyTranslator`, only its shifted MEANING was undocumented.
+- **Changed:** `SoftKeyLayout.cs`'s (6,3) entry relabeled from generic "tape" to "WIS" (matching
+  the ZOEK/START/STOP convention of showing the named function, not an icon description);
+  `docs/Keyboard/keyboard matrix.md` and `docs/Keyboard/keyboard mappins.md` updated
+  ("np 7 tape" → "np 7 tape/WIS").
+- **Applies to:** project CLAUDE.md §14.3a (WIS paragraph, marked RESOLVED inline) /
+  `src/P2000.UI/Input/SoftKeyLayout.cs` / `docs/Keyboard/keyboard matrix.md` /
+  `docs/Keyboard/keyboard mappins.md`.
+- **Synced:** no (this closes `docs/P2000T-reference.md` §6's "still to confirm" WIS item and
+  should fold into that doc's §5b/§6 on the next human sync pass — real hardware content, not
+  implementation-only).
+
+### 2026-07-19 — Milestone 3a follow-up: CODE's function confirmed (owner)
+- **Assumed (per this milestone's own text and `docs/P2000T-reference.md` §6 "still to
+  confirm"):** CODE's matrix position AND its actual function were both fully unsourced;
+  speculated candidates were a second shift level or a graphics/block-character set (both
+  common on similar-era keyboards) — neither ever confirmed, hence "do NOT invent."
+- **Found (owner-confirmed):** CODE's effect is **not a fixed emulator-level behaviour at all —
+  it's cartridge/software-dependent**, decided by whatever's plugged into SLOT1, not by the
+  keyboard hardware. With the **BASIC cartridge** specifically, CODE is used to control
+  **LIST display speed** and while **editing BASIC program lines**. Different cartridge
+  software could use the same matrix bit differently.
+- **Confirms (no change needed):** modeling CODE as a bare sticky modifier — pressing/releasing
+  matrix position (4,0), no character-set or shift-level logic on the emulator side — was
+  already the correct design, for the same reason SHIFT needs none: the ROM/cartridge reads the
+  bit and decides what it means, exactly like it does for SHIFT. Nothing to build differently in
+  `HostKeyTranslator`, `KeyMap`, or the soft-keyboard window.
+- **Applies to:** project CLAUDE.md §14.3a (CODE-key paragraph, marked RESOLVED inline).
+- **Synced:** no (closes `docs/P2000T-reference.md` §6's "still to confirm" CODE function item —
+  real hardware/software-behaviour content, fold in on the next human sync pass).
+
+### 2026-07-20 — Milestone 3a follow-up: (8,4) is accent aigu/grave, not apostrophe/backtick — real bug found
+- **Assumed:** `KeyMap.cs`, `SoftKeyLayout.cs`, and both `docs/Keyboard/keyboard matrix.md` /
+  `keyboard mappins.md` labeled Port 0x08 bit 4 as `'` (unshifted) / `` ` `` (shifted) —
+  apostrophe and backtick.
+- **Found (owner-corrected):** it's actually **´ (accent aigu, unshifted) / ` (accent grave,
+  shifted)** — a diacritic pair, not a literal apostrophe. The backtick half was coincidentally
+  already correct (accent grave IS what ASCII backtick conventionally represents); only the
+  unshifted half was wrong.
+- **Found (real Standard-Host bug, not just a label fix):** `KeyMap.MapStandardHost` had no
+  override for `(Key.OemQuotes, false)`, so it fell back to the positional mapping — pressing
+  (8,4) unshifted. With the corrected label, that means a plain host `'` in Standard-Host mode
+  was sending the P2000's **accent aigu**, not an apostrophe. The P2000 DOES have a real
+  apostrophe — (0,6) shifted (Shift+7, part of the original confirmed digit-row table) — so
+  added `{ (Key.OemQuotes, false), new MatrixTarget(0, 6, true) }` to redirect there. Backtick's
+  existing override ((8,4) shifted) was unaffected and needed no change.
+- **Not a bug in P2000-Authentic mode:** Authentic is positional passthrough by design — sending
+  the P2000's own accent-aigu key for that host position is correct there; only Standard-Host
+  (which promises the literal host character) needed the fix.
+- **Tests (+3, `HostKeyTranslatorTests`):** Standard-Host apostrophe redirects to (0,6) shifted;
+  Standard-Host backtick still targets (8,4) shifted (regression guard); Authentic mode still
+  sends the positional accent-aigu for the same host key (regression guard, not "fixed" — that
+  behavior is correct as-is).
+- **Applies to:** `src/P2000.UI/Input/KeyMap.cs` (comments + new override entry),
+  `src/P2000.UI/Input/SoftKeyLayout.cs` ((8,4) entry), `docs/Keyboard/keyboard matrix.md`,
+  `docs/Keyboard/keyboard mappins.md`, `tests/P2000.UI.Tests/Input/HostKeyTranslatorTests.cs`
+  (+3 tests, 75 total in `P2000.UI.Tests`, all green).
+- **Synced:** no (real hardware content — the accent-key identity and the P2000's actual
+  apostrophe position — fold into `docs/P2000T-reference.md` §5f on the next human sync pass).
+
+### 2026-07-20 — Milestone 3a follow-up: soft-keyboard icons + focus-return fix (owner feedback)
+- **Icons added for pictorial keys.** `SoftKeyDef` gained optional `BaseIcon`/`ShiftedIcon`
+  (file-name-only, resolved to `avares://P2000.UI/Assets/Icons/{name}.png`); `KeyboardWindow`'s
+  `DataTemplate` shows an `Image` instead of the text legend when one is set, via the new
+  `IconUriToBitmapConverter`. No new NuGet dependency — plain PNG via Avalonia's built-in
+  `AssetLoader`/`Bitmap`, per root CLAUDE.md's minimal-dependency rule (an SVG library would
+  have needed one). Wired to the `Assets\Icons\**` `AvaloniaResource` glob in the `.csproj`
+  (previously absent — this project had no icon infrastructure at all before this).
+- **Icons created (7, via a scratch Python/Pillow script — no image-authoring tool exists in
+  this toolchain):** envelope (5,0 base), tape/WIS (6,3 shifted), disk/dsk (6,2 shifted), flash
+  (7,2 shifted), flag/00 (2,2 shifted), plus the two keys beside the space bar — `home_up`
+  ((0,2) base, combining the real key's ↖ + ↑ glyphs) and `end_down` ((2,5) base, combining
+  ↘ + ↓) — scope was owner-specified as "all numpad keys, also the key to the left and right of
+  the space bar." Textual numpad keys (INL/OPN/ZOEK/START/STOP/DEF/M and the plain digit/symbol
+  pairs) were left as text — the real keycaps show colored TEXT there, not pictograms, so an
+  icon would misrepresent them; only genuinely pictorial keys got images.
+- **Focus-return fix (owner-reported):** clicking a soft key left the Keyboard window
+  OS-focused, so the user couldn't type into the emulator without re-clicking it. Added
+  `KeyboardWindowVm.KeyActivated` (raised at the end of every `ActivateAsync` branch — lock,
+  sticky, and regular key); `KeyboardWindow.axaml.cs` subscribes and calls `Owner?.Activate()`.
+  Verified live: soft-click "1" then a real host "2" keypress (no manual re-click) both landed
+  in the emulator's BASIC prompt as "12".
+- **Removed:** `StringNotEmptyConverter` (dead code once the shifted-label visibility logic
+  moved to `SoftKeyVm.ShowShiftedText`, which also accounts for the icon case).
+- **Tests:** existing 75 (`P2000.UI.Tests`) still green — icon rendering and the focus-return
+  Activate() call are both AXAML/window-lifecycle behavior not covered by headless VM unit
+  tests (same StorageProvider/TopLevel limitation already noted for ms.12/13's dialogs); verified
+  live instead, per that established pattern.
+- **Applies to:** `src/P2000.UI/Input/SoftKeyLayout.cs` (`BaseIcon`/`ShiftedIcon`, new icon refs),
+  `src/P2000.UI/ViewModels/KeyboardWindowVm.cs` (icon computed properties, `KeyActivated` event),
+  `src/P2000.UI/Views/KeyboardWindow.axaml(.cs)` (icon template, focus-return handler),
+  `src/P2000.UI/Views/StatusConverters.cs` (`IconUriToBitmapConverter` added,
+  `StringNotEmptyConverter` removed), `src/P2000.UI/P2000.UI.csproj` (`AvaloniaResource` glob),
+  `src/P2000.UI/Assets/Icons/*.png` (new, 7 files).
+- **Synced:** no (implementation-only UI polish; no new hardware content).
+
+### 2026-07-20 — Real bug: Standard-Host forced-shift release hardcoded to Left Shift only
+- **Owner-reported:** in Standard-Host mode, physical Shift+2 produced an unrelated glyph
+  instead of `@`; Shift+3 similarly wrong instead of `#`.
+- **Root cause:** `HostKeyTranslator`'s "force P2000 Shift off" path (needed for `@`, `#`, `;`,
+  `<` — see the digit-row/Standard-Host table) always released the hardcoded P2000 Left-Shift
+  crosspoint (9,0), regardless of which real host Shift key was actually held. Typing Shift+2
+  with the **Right** Shift key (mapped to (9,7) — the natural choice when reaching for a
+  left-side key with the right hand) meant the "force off" released a crosspoint that was never
+  down — a no-op — while the REAL (9,7) press stayed asserted the whole time. So pressing (6,7)
+  for `@` still read as shifted on the P2000 side, producing ¨ (the umlaut/diaeresis key) instead.
+  Same mechanism for `#`/(2,4) and any other forced-off case.
+- **Fix:** track which real Shift key(s) are actually down in a `_realShiftDown` set; "force
+  off"/"restore" now release/re-press exactly those crosspoints (`ReleaseRealShifts`/
+  `RestoreRealShifts`), never a hardcoded position. The "force ON" path (used when NO real Shift
+  is held at all, e.g. plain `=` or `[`) is unaffected — there's nothing real to conflict with,
+  so a synthetic (9,0) press/release is still safe there.
+- **Not (yet) explained:** the owner also reported `[` showing two arrow characters instead of
+  `[`. This isn't reachable from the same bug (the force-ON path for an unshifted key has no
+  real-Shift conflict to get wrong) — most likely a keyboard-layout mismatch, where the physical
+  key producing `[` on the owner's layout doesn't arrive as Avalonia's `Key.OemOpenBrackets`.
+  Flagging rather than guessing; needs the owner to confirm which key/layout is in play.
+- **Tests (+1, 76 total):** `StandardHost_RightShift2_ReleasesTheRightShiftCrosspoint_NotLeft` —
+  reproduces the exact reported scenario with `Key.RightShift`, asserting (9,7) (not (9,0)) is
+  what gets released and restored.
+- **Applies to:** `src/P2000.UI/Input/HostKeyTranslator.cs` (`_realShiftDown`,
+  `ReleaseRealShifts`/`RestoreRealShifts`, renamed `ShiftRow`/`ShiftCol` →
+  `SyntheticShiftRow`/`SyntheticShiftCol`), `tests/P2000.UI.Tests/Input/HostKeyTranslatorTests.cs`.
+- **Synced:** no (implementation-only bug fix).
+
+### 2026-07-20 — Real bug #2: force-off release and target press need a genuine field gap
+- **Owner-reported (persisted after the left/right-crosspoint fix above):** Standard-Host
+  Shift+2 still showed an up-arrow instead of `@`; Shift+3 still showed a block instead of `#`.
+  Owner also confirmed via the **soft-keyboard mouse click** (not the physical keyboard) that
+  the same wrong output occurs — ruling out a real-hardware/OS key-delivery quirk and ruling
+  out the left/right-crosspoint fix as the (sole) cause, since the soft keyboard always drives
+  a fixed `Key.LeftShift`, no ambiguity possible.
+- **Diagnosed via a machine-level test** (bypassing `P2000.UI` entirely — booted the real
+  `assets/BASIC.bin` cartridge, drove `KeyboardDevice.SetKey` directly with the exact sequence
+  `HostKeyTranslator` emits, read the echoed byte back from VRAM): a clean, isolated, never-
+  shifted press of (6,7) correctly echoes `@`. But releasing an ALREADY-held Shift crosspoint
+  and pressing (6,7) in the same synchronous instant (same field) still echoes `^` — the same
+  result as if Shift were genuinely still held. A one-field (20 ms) real gap between the
+  release and the press was sufficient and necessary in every case tested (`gapFields: 0` →
+  wrong, `1/2/3` → correct) — the monitor ROM's keyboard scan apparently needs to observe a
+  moment with Shift genuinely released before it will register a subsequent keypress as
+  unshifted, even though the emulated matrix state is technically already correct the instant
+  both `SetKey` calls land.
+- **Force-ON needs no such gap (also empirically confirmed):** the mirror case (no real Shift
+  held at all, e.g. plain `=` or `[`) works correctly with ZERO gap between asserting the
+  synthetic Shift and pressing the target key — there's no stale "already pressed" state to
+  escape; it's exactly how a normal Shift+key combo already looks to the ROM.
+- **Fix:** `HostKeyTranslator`'s force-OFF path now defers the target-key press via a
+  fire-and-forget `Task.Delay(40ms)` after releasing the real Shift crosspoint(s), instead of
+  emitting both in the same synchronous call. The target position is still recorded in
+  `_activePress` immediately (so `KeyUp` knows what to release even if the press is still
+  pending behind the gap). Force-ON is unchanged — confirmed not to need it.
+- **Verified live (owner's build, this session):** Standard-Host Shift+2 → `@`, Shift+3 → `#`,
+  both via soft-keyboard click, after the fix.
+- **Tests:** `P2000.Machine.Tests/Boot/KeyboardScanTimingTests.cs` (new, permanent) — a
+  machine-level regression pair proving the ROM genuinely needs the gap (`...NoGap_
+  StillReadsAsShifted`) and that the gap fixes it (`...NeedARealFieldGap_ToRegisterAsUnshifted`),
+  independent of `P2000.UI` — protects the underlying ROM-timing assumption itself, not just
+  the translator's bookkeeping. `HostKeyTranslatorTests.cs` updated: the two existing force-off
+  tests now `await` past the internal gap; added
+  `StandardHost_ForceOff_TargetPressIsDeferred_NotImmediate` asserting the press genuinely
+  hasn't landed right after `KeyDown` returns. 77/77 green in `P2000.UI.Tests`, 347/347 in
+  `P2000.Machine.Tests`.
+- **Not chased further (out of scope for this fix):** the same machine-level diagnostic
+  surfaced what look like a couple of additional matrix-table transcription discrepancies
+  (e.g. Shift+3's POSITIONAL target, port (0,4), read `#` rather than the previously-recorded
+  `£` in one sweep) — but that sweep accumulated a long, un-cleared BASIC input line across
+  ~140 key presses and is not trusted as clean evidence (probably input-buffer-length
+  interference, same category of artifact as the timing bug this entry fixes). Flagging rather
+  than silently editing the table on unverified data — if `£` is ever reported wrong live,
+  re-verify with a fresh-boot single-key test the way (2,4)="#" and (6,7)="@" were confirmed
+  above, not a long accumulated sweep.
+- **Applies to:** `src/P2000.UI/Input/HostKeyTranslator.cs` (`ForceOffGapMilliseconds`,
+  `PressAfterForceOffGapAsync`), `tests/P2000.UI.Tests/Input/HostKeyTranslatorTests.cs`,
+  `tests/P2000.Machine.Tests/Boot/KeyboardScanTimingTests.cs` (new).
+- **Synced:** no (the ROM-timing fact itself — Shift-release-to-keypress needs a real field
+  gap to register as unshifted — is real hardware/ROM-behavior content worth folding into
+  `docs/P2000T-reference.md` §5f on the next human sync pass).
+
+### 2026-07-20 — Bracket keys are arrows, not brackets; matrix table fully re-verified via ROM data
+- **Owner-reported:** Standard-Host `[` still showed two arrows; `]` showed one right-pointing
+  arrow. Also: P2000-Authentic `[`/`]` show `@` and a right arrow "instead of `]`" — i.e. the
+  owner expected literal brackets from Authentic mode too.
+- **Root cause — NOT a translator bug:** `Saa5050Font.cs` (already-shipped, sourced font table)
+  reassigns ASCII 0x5B/0x5D/0x5E to Left-Arrow/Right-Arrow/Up-Arrow GLYPHS. (7,4) — the position
+  ms.3's photo transcription labeled "] [" — genuinely CANNOT display a literal bracket on real
+  hardware; it displays an arrow. **P2000-Authentic mode showing arrows for `[`/`]` is correct,
+  faithful emulation** — not a bug to fix. Standard-Host mode, which promises the literal host
+  character, has nothing to redirect `[`/`]` to, so both are now "no P2000 equivalent" (null),
+  same category as `~`/`^`/`{`/`}`/`\`/`|`.
+- **Owner-suggested investigation that unlocked everything else:** the monitor ROM does a
+  port-matrix→keycode conversion; the BASIC cartridge separately does a keycode→ASCII
+  conversion via a table at Z80 address 6164. Dumping that table from `assets/BASIC.bin`
+  (`table[keycode] = asciiByte`, keycode 0–~140ish before the table runs into unrelated Z80
+  opcodes) gave ROM-sourced ground truth for the whole keyboard instead of continuing to guess
+  from the photo.
+- **Found (keycode formula, confirmed against 7+ independently-known facts):** unshifted keycode
+  = `row×8+col`; shifted keycode = that **+72**. Also found: **BASIC forces all letters to
+  uppercase** regardless of the table's own (mixed-case) entries — explains why every earlier
+  letter-row test showed no shift/case distinction.
+- **Found (the +72 theory is NOT universally reliable — do not trust it alone):** it wrongly
+  predicted Shift+3 would show `#` (keycode 76 → 0x5F). Direct machine-level testing AND the
+  owner's live observation both confirm Shift+3 genuinely shows **`£`** (byte 0x23) — which is
+  itself a `Saa5050Font.cs` remap (British Pound) that an earlier pass of this investigation
+  initially misread as plain '#' by naively casting the byte to ASCII without checking the font
+  table for 0x23 specifically (only 0x5B/5C/5D/5E/5F/60/7B/7D/7E/7F had been checked). **Lesson
+  recorded for next time:** decode every VRAM byte against the FULL `Saa5050Font.cs` comment
+  table, never assume plain ASCII, and never trust a keycode-arithmetic extrapolation over a
+  direct machine-level test.
+- **Corrections applied, each independently confirmed by a direct SetKey→VRAM test (not the
+  table formula alone):**
+  - `[` / `]` / `` ` `` (backtick): no P2000 equivalent in Standard-Host (arrows/fractions only
+    exist at those positions — see the (8,4) note below for backtick specifically).
+  - Numpad "+/x" (5,2) shifted is `*`, not the letter `x`.
+  - Numpad "-/:" (5,3) is `-` unshifted / ÷ (divide) shifted, not `_`/`:` — pairs with (5,2) as
+    a calculator-style arithmetic-operator row, not "minus/colon".
+  - Numpad "9/M" (6,0) shifted produces no visible character (silent function).
+  - Numpad "5" (8,2) shifted doesn't echo into the input line either, but DOES trigger some
+    other screen-level redraw (looked like it touched the top banner row) — genuinely unclear
+    what it does; flagged, not chased further.
+  - (8,4) (accent aigu/grave key): now CONFIRMED (independently, twice) to render as ¼/¾, not
+    any accent mark — upgraded from "open question" to a settled fact. Backtick's
+    Standard-Host redirect (which assumed (8,4) shifted gives literal backtick) is also wrong
+    for the same reason — now null, same as the brackets.
+  - (2,4) unshifted (`#`) and (0,4) shifted (`£`): re-confirmed CORRECT as originally
+    documented — the +72 theory briefly cast doubt on both, wrongly.
+- **Tests:** `tests/P2000.Machine.Tests/Boot/MatrixCharacterOutputTests.cs` (new, permanent,
+  14 tests) — direct SetKey→VRAM assertions for every position in this entry, both the
+  regression guards (positions that were already correct) and the actual corrections, plus the
+  two silent-function keys. `HostKeyTranslatorTests.cs`: replaced the now-stale backtick test
+  with `StandardHost_Backtick_IsNoOp`; added `StandardHost_Brackets_AreNoOp` and
+  `Authentic_Brackets_CorrectlyShowArrows_NotBugged` (the latter explicitly asserting Authentic
+  mode's arrow behavior is intentional, not a regression to "fix" later). 79/79 green in
+  `P2000.UI.Tests`, 361/361 in `P2000.Machine.Tests`.
+- **Applies to:** `src/P2000.UI/Input/KeyMap.cs` (comments + `OemTilde`/`OemOpenBrackets`/
+  `OemCloseBrackets` overrides all now null), `src/P2000.UI/Input/SoftKeyLayout.cs` (labels for
+  (5,2)/(5,3)/(6,0)/(8,4), removed misleading Standard-Host legend on the bracket keys),
+  `docs/Keyboard/keyboard matrix.md`, `docs/Keyboard/keyboard mappins.md`,
+  `tests/P2000.Machine.Tests/Boot/MatrixCharacterOutputTests.cs` (new),
+  `tests/P2000.UI.Tests/Input/HostKeyTranslatorTests.cs`.
+- **Synced:** no (real hardware/ROM content — the whole re-verified matrix table, the SAA5050
+  national-character-set remaps, and the letter-auto-uppercase behavior — worth folding into
+  `docs/P2000T-reference.md` §5f on the next human sync pass).

@@ -23,6 +23,11 @@
     <ProjectReference Include="..\Z80.Disassembler\Z80.Disassembler.csproj" />
   </ItemGroup>
 
+  <!-- Soft-keyboard icon assets (project CLAUDE.md §14.3a) -->
+  <ItemGroup>
+    <AvaloniaResource Include="Assets\Icons\**" />
+  </ItemGroup>
+
   <!-- Native OpenAL Soft libraries — populated by tools/get-openal.ps1.
        Link="..." copies each file to the OUTPUT ROOT (not into the runtimes/
        subfolder), which is where NativeLibrary.Load looks at runtime.

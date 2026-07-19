@@ -9,6 +9,7 @@ using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using P2000.Machine.Debug;
 using P2000.Machine.State;
+using P2000.UI.Input;
 using P2000.UI.Rendering;
 using P2000.UI.Runner;
 using System.Runtime.InteropServices;
@@ -32,6 +33,15 @@ public sealed partial class DisplayWindowVm : ObservableObject, IDisposable
     /// register file and VRAM window stay current even when the window is not open.</summary>
     public DebuggerWindowVm DebuggerVm { get; }
 
+    /// <summary>Translates host key events to P2000 matrix events under the active
+    /// <see cref="KeyMappingMode"/> (project CLAUDE.md §14.3a). Shared with
+    /// <see cref="KeyboardVm"/> so the physical keyboard and the soft-keyboard window's clicks
+    /// obey the same mode.</summary>
+    public HostKeyTranslator KeyTranslator { get; } = new();
+
+    /// <summary>Soft-keyboard ViewModel — created lazily since most sessions never open it.</summary>
+    public KeyboardWindowVm KeyboardVm { get; }
+
     /// <summary>Raised when the user requests the cassette deck satellite window.</summary>
     public event Action? OpenDeckWindowRequested;
 
@@ -40,6 +50,9 @@ public sealed partial class DisplayWindowVm : ObservableObject, IDisposable
 
     /// <summary>Raised when the user requests the debugger satellite window.</summary>
     public event Action? OpenDebuggerWindowRequested;
+
+    /// <summary>Raised when the user requests the soft-keyboard satellite window.</summary>
+    public event Action? OpenKeyboardWindowRequested;
 
     /// <summary>Raised with a user-facing error message (e.g. version-mismatch on load).
     /// The view code-behind shows a modal dialog.</summary>
@@ -82,6 +95,8 @@ public sealed partial class DisplayWindowVm : ObservableObject, IDisposable
     {
         CassetteVm  = new CassetteDeckVm(Runner);
         DebuggerVm  = new DebuggerWindowVm(Runner);
+        KeyboardVm  = new KeyboardWindowVm(KeyTranslator);
+        KeyTranslator.MatrixEvent += Runner.EnqueueKey;
         Runner.FrameReady += OnFrameReady;
         Runner.BreakHit += _ => Dispatcher.UIThread.Post(UpdatePauseState);
         Runner.Start();
@@ -172,6 +187,9 @@ public sealed partial class DisplayWindowVm : ObservableObject, IDisposable
 
     [RelayCommand]
     private void OpenDebugger() => OpenDebuggerWindowRequested?.Invoke();
+
+    [RelayCommand]
+    private void OpenKeyboard() => OpenKeyboardWindowRequested?.Invoke();
 
     [RelayCommand]
     private void ToggleTurbo()
@@ -307,6 +325,7 @@ public sealed partial class DisplayWindowVm : ObservableObject, IDisposable
     public void Dispose()
     {
         Runner.FrameReady -= OnFrameReady;
+        KeyTranslator.MatrixEvent -= Runner.EnqueueKey;
         CassetteVm.Detach();
         DebuggerVm.Dispose();
         Runner.Dispose();

@@ -50,6 +50,10 @@
                 <MenuItem Header="_Debugger…" Command="{Binding OpenDebuggerCommand}"
                           ToolTip.Tip="Open debugger: register file, VRAM/pan window, memory watches" />
             </MenuItem>
+            <MenuItem Header="_Input">
+                <MenuItem Header="_Keyboard window…" Command="{Binding OpenKeyboardCommand}"
+                          ToolTip.Tip="Soft keyboard — click-to-press, P2000-Authentic / Standard-Host mode toggle" />
+            </MenuItem>
             <MenuItem Header="_Cassette">
                 <MenuItem Header="_Open Deck window" Command="{Binding OpenCassetteDeckCommand}" />
                 <Separator />

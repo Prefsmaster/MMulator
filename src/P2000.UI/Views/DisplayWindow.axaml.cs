@@ -1,7 +1,6 @@
 using Avalonia.Controls;
 using Avalonia.Input;
 using Avalonia.Platform.Storage;
-using P2000.UI.Input;
 using P2000.UI.ViewModels;
 
 namespace P2000.UI.Views;
@@ -12,10 +11,8 @@ public partial class DisplayWindow : Window
     private CassetteDeckWindow? _deckWindow;
     private ConfigWindow? _configWindow;
     private DebuggerWindow? _debuggerWindow;
+    private KeyboardWindow? _keyboardWindow;
     private Action<uint[], bool, bool[]>? _frameReadyHandler;
-    // Track which Avalonia Keys are currently down to suppress OS key-repeat events.
-    // The P2000T's 50 Hz ISR handles auto-repeat at the hardware level.
-    private readonly HashSet<Key> _keysDown = new();
 
     public DisplayWindow()
     {
@@ -37,6 +34,7 @@ public partial class DisplayWindow : Window
             _vm.OpenDeckWindowRequested     -= ShowDeckWindow;
             _vm.OpenConfigWindowRequested   -= ShowConfigWindow;
             _vm.OpenDebuggerWindowRequested -= ShowDebuggerWindow;
+            _vm.OpenKeyboardWindowRequested -= ShowKeyboardWindow;
             _vm.ShowMessageRequested        -= ShowErrorDialog;
         }
 
@@ -57,6 +55,7 @@ public partial class DisplayWindow : Window
             _vm.OpenDeckWindowRequested     += ShowDeckWindow;
             _vm.OpenConfigWindowRequested   += ShowConfigWindow;
             _vm.OpenDebuggerWindowRequested += ShowDebuggerWindow;
+            _vm.OpenKeyboardWindowRequested += ShowKeyboardWindow;
             _vm.ShowMessageRequested        += ShowErrorDialog;
         }
 
@@ -132,6 +131,17 @@ public partial class DisplayWindow : Window
         _debuggerWindow.Show(this);
     }
 
+    private void ShowKeyboardWindow()
+    {
+        if (_keyboardWindow is { IsVisible: true })
+        {
+            _keyboardWindow.Activate();
+            return;
+        }
+        _keyboardWindow = new KeyboardWindow { DataContext = _vm!.KeyboardVm };
+        _keyboardWindow.Show(this);
+    }
+
     // ── Drag-and-drop (.cas mount) ────────────────────────────────────────────
 
     private void OnDragOver(object? sender, DragEventArgs e)
@@ -173,22 +183,21 @@ public partial class DisplayWindow : Window
     }
 
     // ── Keyboard passthrough to P2000T matrix ────────────────────────────────
+    // Routed through HostKeyTranslator (project CLAUDE.md §14.3a) so P2000-Authentic vs
+    // Standard-Host mode (set from the soft-keyboard window) applies here too. The translator
+    // itself suppresses OS auto-repeat — the P2000T's 50 Hz ISR handles repeat at the hardware level.
 
     private void OnPreviewKeyDown(object? sender, KeyEventArgs e)
     {
-        if (!_keysDown.Add(e.Key)) return;  // OS repeat — P2000T handles auto-repeat at 50 Hz
-        var entry = KeyMap.Map(e.Key);
-        if (!entry.HasValue) return;
-        _vm?.Runner.EnqueueKey(entry.Value.Row, entry.Value.Col, true);
-        e.Handled = true; // prevent focused toolbar button from consuming e.g. Enter
+        // Only claim the event for recognized P2000 keys — F5/F11/F6/F8/F12 etc. must still
+        // reach the window's own KeyBindings unhandled.
+        if (_vm is not null && _vm.KeyTranslator.KeyDown(e.Key))
+            e.Handled = true; // prevent a focused toolbar button from consuming e.g. Enter
     }
 
     private void OnPreviewKeyUp(object? sender, KeyEventArgs e)
     {
-        _keysDown.Remove(e.Key);
-        var entry = KeyMap.Map(e.Key);
-        if (!entry.HasValue) return;
-        _vm?.Runner.EnqueueKey(entry.Value.Row, entry.Value.Col, false);
-        e.Handled = true;
+        if (_vm is not null && _vm.KeyTranslator.KeyUp(e.Key))
+            e.Handled = true;
     }
 }

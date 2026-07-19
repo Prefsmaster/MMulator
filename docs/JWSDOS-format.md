@@ -106,40 +106,51 @@ more precisely once it actually needs the directory.
 0x2000–0x2FFF  More DOS code (unchanged from previous finding, not re-examined this pass)
 ```
 
-**Why sectors 1–8 (0x1000–0x17FF) hold a second, different directory — HIGHLY PLAUSIBLE
-theory (owner, 2026-07-13), supersedes the previous "older JWSDOS build" guess, still
-pending validation against the responsible utility's own code.** `dir_side1_prep`
-unconditionally targets sector 25 (track-2 sector 9); nothing found in `jwsdos5.0.asm` ever
-reads or writes sectors 17–24 (track-2 sectors 1–8) as directory data. Yet those bytes are
-shaped exactly like real directory entries and list 20 files with **zero filename overlap**
-with the 18 files in the active directory. The owner's theory: the JWSDOS system disk
-carries **two separate utilities**, not part of the `jwsdos5.0.asm` binary disassembled so
-far — a **`Format`** program (low-level FDC formatting — sector/track layout) and a
-**`JWS Systeem Disk`** program (writes the two DOS system tracks onto an already-formatted
-disk, turning it into a bootable system disk). It's this second program the theory concerns:
-it writes RAM `0xE000`–`0xEFFF` as track 1 and RAM `0xF000`–`0xFFFF` as track 2 onto the
-target disk — i.e. it dumps the **live DOS-code RAM image**, not a purpose-built "blank track
-2." Since `0xF000`–`0xFFFF` is the same RAM range `getdos` unconditionally loads at **every
-boot** (§6) and that JWSDOS's own directory buffers occupy, `JWS Systeem Disk` only needs to
-clear/rewrite *part* of that range (the active directory portion, sectors 9–16, presumably
-via the same `dir_side1_prep`/`save_directory` machinery) before writing the track —
-whatever was sitting in the rest of that RAM window (sectors 1–8) at the time, including a
-stale directory from **whatever disk was booted or read right before it ran**, gets carried
-straight onto the newly written disk as an accidental byte-for-byte copy.
+**Why sectors 1–8 (0x1000–0x17FF) hold a second, different directory — write-SCOPE now
+CONFIRMED from `JWS Systeem Disk`'s own disassembly (owner, 2026-07-20); the data-SOURCE half
+of the theory below remains open.** `dir_side1_prep` unconditionally targets sector 25
+(track-2 sector 9); nothing found in `jwsdos5.0.asm` ever reads or writes sectors 17–24
+(track-2 sectors 1–8) as directory data. Yet those bytes are shaped exactly like real
+directory entries and list 20 files with **zero filename overlap** with the 18 files in the
+active directory. The owner's theory: the JWSDOS system disk carries **two separate
+utilities**, not part of the `jwsdos5.0.asm` binary disassembled so far — a **`Format`**
+program (low-level FDC formatting — sector/track layout) and a **`JWS Systeem Disk`** program
+(writes the DOS system tracks onto an already-formatted disk, turning it into a bootable
+system disk). It's this second program the theory concerns.
 
-**Empirical support for this theory (this pass):** a second real image, `jwssytem.dsk`
-(327,680 B, owner-supplied 2026-07-13), lines up with it directly. Its track 1 + label
-(`0x0000`–`0x0FFF`) are **byte-for-byte identical** to `Spel1.dsk`'s — both share the same
-DOS boot code and the same `"...DS 40Tr drive"` label, consistent with both having been
-formatted from the same master. But its entire track 2 (`0x1000`–`0x1FFF`, both halves) is
-**all zero** — no stale cluster, no active entries, nothing — exactly what the theory
-predicts if this particular disk happened to be formatted right after a boot where
-`0xF000`–`0xFFFF` genuinely held nothing (e.g. formatted immediately, before any directory
-read/write touched that RAM). `Spel1.dsk`'s stale 20-file cluster, by contrast, is exactly
-what the theory predicts if some *other* disk (with those 20 files in its own directory) had
-been booted or read shortly before `Spel1.dsk` was formatted. Not proof — the owner's own
-next step (reading `JWS Systeem Disk`'s disassembly) is what would confirm it — but a real,
-independent second data point that fits cleanly.
+**CONFIRMED (owner, 2026-07-20, from `JWS Systeem Disk`'s own disassembly): the program
+writes a full track 1 (all 16 sectors) plus only 8 sectors of track 2 — sectors 1–8. It does
+NOT touch sectors 9–16 of track 2 at all — not written, not cleared, not read.** This refines
+(and partly supersedes) the earlier "clears/rewrites the active-directory portion before
+writing" framing below — the more precise, disassembly-confirmed mechanism is simpler: sectors
+9–16 are entirely outside this program's write path, full stop. Whatever was physically on the
+disk there beforehand (typically zero/blank from low-level `Format`, unless the disk had
+already been used) is exactly what remains after `JWS Systeem Disk` runs; `Spel1.dsk`'s real
+18-file active directory in that range reflects ordinary DOS `save_directory` activity
+**after** `JWS Systeem Disk` ran (i.e. files actually copied onto the finished system disk),
+not anything `JWS Systeem Disk` itself wrote there.
+- **Still OPEN — not confirmed by this pass:** where the data written into sectors 1–8 actually
+  comes from. The original theory (**live RAM 0xE000–0xFFFF dumped verbatim, sectors 1–8
+  landing on whatever stale directory happened to be sitting in that RAM window at write
+  time**) is consistent with the confirmed write-scope above and still the leading candidate,
+  but the write-scope finding alone doesn't prove the SOURCE is live RAM specifically, as
+  opposed to e.g. a fixed template/leftover buffer baked into the utility's own image. Needs
+  the specific instructions that populate sectors 1–8's write buffer, not just the sector
+  range they're written to.
+
+**Empirical support for the leading (still not fully confirmed) source theory:** a second real
+image, `jwssytem.dsk` (327,680 B, owner-supplied 2026-07-13), lines up with it directly. Its
+track 1 + label (`0x0000`–`0x0FFF`) are **byte-for-byte identical** to `Spel1.dsk`'s — both
+share the same DOS boot code and the same `"...DS 40Tr drive"` label, consistent with both
+having been formatted from the same master. But its entire track 2 (`0x1000`–`0x1FFF`, both
+halves) is **all zero** — no stale cluster, no active entries, nothing — exactly what the
+live-RAM-source theory predicts if this particular disk happened to be formatted right after a
+boot where the relevant RAM genuinely held nothing (e.g. formatted immediately, before any
+directory read/write touched that RAM). `Spel1.dsk`'s stale 20-file cluster, by contrast, is
+exactly what the theory predicts if some *other* disk (with those 20 files in its own
+directory) had been booted or read shortly before `Spel1.dsk` was formatted. Not proof — still
+pending the specific write-buffer-population instructions in `JWS Systeem Disk`'s disassembly
+— but a real, independent second data point that fits cleanly.
 
 **Corrected — NOT "directory for side 1(?)" and NOT side 2's directory sitting out of
 place.** Both clusters above have every entry's side-byte (§4 offset 24) equal to **0** —
@@ -148,6 +159,57 @@ this is all side-1 data, one currently-active and one stale. **Side 2's own dire
 `DIR_side_2_mem = 0xF800`, but issued with FDC **head = 1** — a physically different disk
 surface) lives somewhere else entirely in the raw `.dsk` file, depending on how this image
 interleaves the two physical sides. Not located in this pass — **new open item**, see §7.
+
+**`save_directory`'s exact mechanics — CONFIRMED source-level (owner, 2026-07-20, re-read of
+`jwsdos5.0.asm` lines 1107–1143), a strong new candidate explanation for the stale cluster:**
+
+```
+dir_side1_prep:  DE_filelen=0x0800 (2048B); DE_transfer=0xF000 (DIR_side_1_mem);
+                 DE_start_sector=0x19 (25, track-2 sector 9); DE_head=0.
+dir_side2_prep:  DE_transfer=0xF800 (DIR_side_2_mem); DE_start_sector=0x11 (17, track-2
+                 sector 1); DE_head=1.   (DE_filelen carries over from dir_side1_prep, still
+                 0x0800 — dir_side2_prep never resets it, doesn't need to.)
+
+save_directory:  call dir_side1_prep → disk_write_action     ; ALWAYS runs
+                 call is_disk_SS → ret z                     ; single-sided disk: stop here
+                 call dir_side2_prep → disk_write_action     ; double-sided only
+```
+
+`execute_disk_IO` genuinely consumes `DE_head` as a physical FDC parameter (folds it into the
+drive number via `xor 0x04`, confirmed at line ~1427–1433) — so `dir_side2_prep`'s write really
+does target physical **head 1**, a different surface, not a same-head sector-only distinction.
+This is the exact mechanism the earlier "Corrected" note above already inferred; now sourced
+to the precise instructions rather than inferred from the comments alone.
+
+**New candidate explanation for the stale 20-entry cluster, combining this with the
+already-confirmed `JWS Systeem Disk` write-scope finding (above):** `JWS Systeem Disk` writes a
+full track 1 plus track-2 sectors 1–8 as one **blind, sequential, directory-unaware** copy —
+by write-scope alone (16 + 8 = 24 sectors = 6144 B), its source RAM range is `0xE000`–`0xF7FF`.
+**That range includes the entirety of `DIR_side_1_mem` (`0xF000`–`0xF7FF`) — the SAME RAM
+buffer `dir_side1_prep` reads/writes for perfectly ordinary side-1 directory operations, on
+WHATEVER disk happens to be in the drive at the time.** Since this buffer is never zeroed
+between operations (getdos's own boot-time load into this same RAM range confirms nothing
+clears it — §2 above), whatever directory content was sitting there — most plausibly a genuine
+side-1 directory read from some *other* disk shortly before `JWS Systeem Disk` ran — gets swept
+into the new disk's sectors 17–24 as an incidental side effect of the blind copy, landing at
+raw `0x1000`–`0x17FF`. **This would also explain the puzzling "all 20 stale entries have
+side-byte 0" observation without needing a separate explanation:** `DIR_side_1_mem` is
+STRUCTURALLY a side-1-only buffer (every write path that populates it does so via
+`dir_side1_prep`, which always operates in a `DE_head=0` context) — so no matter which disk's
+directory was sitting there when `JWS Systeem Disk` ran, it would necessarily be shaped like a
+valid, side-byte-0 directory. This is a materially stronger version of the original "live RAM
+dump" theory — same shape, now grounded in an exact RAM-buffer identity (`DIR_side_1_mem`
+specifically, not just "whatever's in `0xE000`-`0xFFFF`") that mechanistically explains the
+side-byte-0 detail the original theory didn't account for.
+- **Still not fully proven** — this is a strong synthesis of two separately-confirmed facts
+  (the write-scope finding + this RAM-buffer identity), not a direct disassembly trace of "here
+  is the specific prior disk-read that populated `DIR_side_1_mem` before this write." Treat as
+  the leading theory, not a closed item.
+- **Independent of, and doesn't resolve, where TRUE side-2 (head 1) data lives in a raw `.dsk`
+  file** — still open, see §7 item 3. If a real, currently-in-use double-sided disk's genuine
+  side-2 directory is written via `dir_side2_prep`'s head-1 path, it must live SOMEWHERE in the
+  raw file, and this pass didn't locate it — it is almost certainly NOT the same bytes as the
+  stale cluster this theory explains, since those are side-1-shaped, not side-2-shaped.
 
 ---
 
@@ -161,11 +223,20 @@ has to infer or that the operator has to configure separately.
 | Offset | Field |
 |---|---|
 | `$FBF` | ASCII banner — **CONFIRMED byte-exact against `Spel1.dsk`:** `"JWS DISK SYSTEM.(c)-1986....versie 5.0.NL....DS 40Tr drive "` (the `.` marks non-ASCII display color/position attribute bytes, not literal characters — confirmed to be single bytes, e.g. `0x8C`, `0x04 0x03 0x02`, `0x83`, `0x86`, interleaved between text runs). Doubles as the boot-screen banner and a human-readable geometry record. |
+| `$FEF` | **SS/DS indicator — CONFIRMED exact byte position (2026-07-20, direct byte inspection of both real images), a single fixed-offset ASCII character: `'D'` or `'S'` (the first letter of `"DS "`/`"SS "`), always followed by a literal `'S'` at `$FF0`.** Verified byte-identical (`44 53` = `"DS"`) at this exact offset in both `Spel1.dsk` and `jwssytem.dsk` (which share byte-identical track-1+label data). **Closes the former "side-count field" open item (§7) — there is no separate NUMERIC side-count byte, but there IS a reliable single-byte, fixed-offset field**, just as usable for auto-detection as `$FFF`'s track-count byte; no fuzzy text search of the banner is needed. |
+| `$FF2`–`$FF3` | Track count as **2-digit ASCII text** (e.g. `"40"`) — human-readable duplicate of `$FFF`'s binary value, part of the same `"...Tr drive "` banner tail. Redundant with `$FFF`; **prefer `$FFF` for parsing** (fixed-width binary, no digit-count ambiguity for 35/80 vs 40) and treat this as display-only. |
 | `$FFE` | System drive number — **CONFIRMED**, value `0x01` in `Spel1.dsk`. Not a geometry field, noting separately so it doesn't get conflated with track/side count. |
 | `$FFF` | Track count **+1** — **CONFIRMED**, value `0x29` = 41 → 40 tracks; matches "40Tr" in the same image's banner text exactly, and independently matches the directory's own highest-referenced sector (§1, §4). |
 
-All three fields verified at their literal absolute offsets `0x0FBF`/`0x0FFE`/`0x0FFF` in the
-raw image — i.e. within the **first** 4096-byte block (see §2's corrected layout).
+All fields verified at their literal absolute offsets in the raw image — i.e. within the
+**first** 4096-byte block (see §2's corrected layout). Full confirmed byte dump of the label
+region (`Spel1.dsk`, identical in `jwssytem.dsk`), for reference:
+
+```
+$FBF "JWS DISK SYSTEM" $FCE<attr> "(c)-1986" $FD7..$FDA<attr×4> "versie 5.0" $FE5<attr>
+"NL" $FE8..$FEE<attr×7> "DS" $FF1<space> "40" "Tr" $FF6<space> "drive" $FFC<space>
+$FFD=00 $FFE=01(drive#) $FFF=29(=41, track count+1)
+```
 
 **Design implication — revised in light of §1's RAM-vs-disk finding.** The label is real,
 byte-exact, on-disk data, so an emulator `.dsk` loader **can** read it without adding an
@@ -176,10 +247,28 @@ auto-detects geometry from the label would be doing something **more convenient 
 real DOS does**, not simply replicating existing JWSDOS behavior. Worth treating as a
 deliberate emulator-side UX improvement (call it out as such in the milestone doc) rather
 than "just matching the hardware," since a real P2000T user had to get the format-menu
-settings right manually.
+settings right manually. **Now that `$FEF` (side) is confirmed alongside `$FFF` (track
+count), auto-detection is two independent fixed-offset single-byte reads — no banner-text
+parsing, no ambiguity — a small, low-risk implementation for the host `.dsk` loader.**
 
-**OPEN:** is there a dedicated numeric side-count byte parallel to `$FFF`'s track count, or
-is "SS"/"DS" only recoverable by parsing the banner text? Not yet confirmed either way.
+**RESOLVED (2026-07-20, direct byte inspection, closes the former "side-count field" open item):** is there a dedicated
+side-count byte parallel to `$FFF`'s track count? Not a separate numeric byte, but
+functionally yes — `$FEF` is a reliable, fixed-offset ASCII `'D'`/`'S'` character (see the
+table row above), confirmed identically in two independent real images. No banner-text search
+needed; parse it exactly like `$FFF`.
+
+**RESOLVED (owner, 2026-07-19 — disassembly of `JWS Systeem Disk` itself; closes the former
+"where does the on-disk label get written" open item, moved to §7's resolved list):**
+`JWS Systeem Disk` — not `jwsdos5.0.asm`'s own format/erase routine — is confirmed to be the
+program that writes this label, and it writes the **correct** track count and SS/DS into the
+disk image's text for whatever geometry the operator actually selected at format time. This
+matches the in-RAM-template theory already on record here (`SS_DS_Char`/`track_count_chars`,
+§1) rather than a hardcoded/copy-pasted banner — the label is live operator-selected geometry,
+not a fixed constant baked into every disk regardless of shape. **Scope note — this confirms
+the label-writing half only, not §7 item 3's separate "stale directory carried over from live
+RAM" theory**, which concerns a different part of the same program's write path (whether it
+dumps `0xE000`–`0xFFFF` verbatim including sectors 1–8
+of track 2) — don't conflate the two; §7 item 3 stays open pending that specific question.
 
 ---
 
@@ -285,8 +374,11 @@ Once gated through, `getdos` (ROM address `0x0E90`, per the owner-supplied disas
 performs the actual JWSDOS-aware load:
 
 1. Save the caller's SP; presume failure (`sysdisk_status = 1`, meaning — per the ROM's own
-   ambiguous comment — either "no controller/drive/disk/motor-off/door-open" **or**
-   "PDOS was read"; flagged as genuinely ambiguous in the source, not resolved here).
+   comment — either "no controller/drive/disk/motor-off/door-open" **or** "PDOS was read".
+   **The ambiguity is now EXPLAINED, not just flagged (owner, 2026-07-20, re-read of step 7's
+   exact branch below): it's inherent in the ROM's own logic, not a disassembly gap** — see
+   step 7, which never clears this value on the success path, only on the specific
+   "loaded fine, but not the official signature" path.
 2. Copy 4 command templates from ROM (`disk_constants`) to RAM (`disk_transfer` = `0x6070`,
    CONFIRMED address).
 3. `disk_init`: IM2, FDC reset (`OUT 0x04→0x90`), a **342 ms** settle delay (`delay_342ms`,
@@ -309,27 +401,65 @@ performs the actual JWSDOS-aware load:
    `0x0000` and `0x1000` respectively — resolved in §2: this is a generic, directory-unaware
    2-track load; it happens to land on the same RAM range JWSDOS's own directory buffers
    later occupy, but `getdos` itself has no notion of a directory and doesn't skip anything.)
-7. Check the loaded track 1's first byte against `0xF3` ("system disk" signature); if it
-   doesn't match, clear `sysdisk_status` to 0. **CONFIRMED (owner, 2026-07-13): `0xF3` is the
-   official Philips disk-BASIC signature, not a JWSDOS convention.** The exact check, straight
-   from `Disk.asm` — `ld hl,0E000h` / `ld a,0F3h` / `cp (hl)` — compares raw disk offset
-   `0x0000` (the very first byte loaded to `0xE000`) against `0xF3`. Two real JWSDOS images
-   (`Spel1.dsk`, `jwssytem.dsk`) have `0x20` there instead — confirmed to be JWSDOS 5.0's own
-   real first opcode byte (`JR NZ`, per `jwsdos5.0.asm`'s `org 0E000h`), not a bad dump. The
-   owner then located a real **`.IMD` image of "Disk BASIC 24K"** (the official Philips
-   cartridge+disk product — 16 KB SLOT1 cartridge + 8 KB loaded from disk, exactly the figure
-   reconciled earlier in this doc's provenance) and confirmed it **has `0xF3` as the first
-   byte at `0xE000`**. This settles it: `0xF3` signs the **official Philips disk-BASIC
-   system disk**; JWSDOS is a **third-party, user-group-developed DOS** with no reason to
-   carry that byte, and doesn't. Not a bug or an emulator-relevant contradiction — two
-   different DOSes, one convention, only one of them follows it.
-   **Follow-on point still worth confirming:** `getdos` itself only sets `sysdisk_status`
-   (never jumps into the loaded code — see step 8); some other, not-yet-sourced caller reads
-   that flag afterward to decide whether to actually launch the loaded code. Since real
-   JWSDOS disks legitimately leave `sysdisk_status = 0` here and clearly still work in
-   practice, that caller either treats `sysdisk_status` as informational rather than a hard
-   gate, or JWSDOS reaches the user through a different path than this automatic
-   cartridge-triggered `getdos` flow. Worth sourcing `getdos`'s caller to settle which.
+7. Check the loaded track 1's first byte against `0xF3` ("system disk" signature). **Exact
+   branch, straight from `Disk.asm` (re-read 2026-07-20 for the precise polarity — corrects an
+   imprecise "recognized/not recognized" framing in an earlier pass of this doc):**
+   ```
+   ld hl,0e000h        ; 1st byte of track 1
+   ld a,0f3h
+   cp (hl)              ; A(0xF3) - (HL) ; Z set iff byte at 0xE000 == 0xF3
+   jr z,disk_interrupts_off   ; MATCH: skip the clear below — sysdisk_status stays 1
+   xor a                       ; NO MATCH: clear sysdisk_status to 0
+   ld (sysdisk_status),a
+   ```
+   **So `sysdisk_status` ends at exactly `1` when `0xF3` matches, and exactly `0` when it
+   doesn't** — the reverse of what "presume failure, clear on success" would suggest at a
+   glance. This is precisely why step 1's initial-value comment is genuinely ambiguous by ROM
+   design, not just imprecise writing: value `1` covers BOTH "never got this far" (hardware
+   absent/not ready) AND "got here and the signature matched" — the code has no way to tell
+   those two apart from `sysdisk_status` alone. Only `0` is unambiguous: "loaded two full
+   tracks successfully, but the first byte isn't `0xF3`."
+
+   **`0xF3` is confirmed to be PDOS's own system-disk signature, not a generic "Philips"
+   convention — CONFIRMED from two independent, converging sources (2026-07-13 disk-image
+   comparison + 2026-07-20 disassembly-comment corroboration):**
+   - **Image comparison (2026-07-13):** two real JWSDOS images (`Spel1.dsk`, `jwssytem.dsk`)
+     have `0x20` at raw offset `0x0000` instead of `0xF3` — confirmed to be JWSDOS 5.0's own
+     real first opcode byte (`JR NZ`, per `jwsdos5.0.asm`'s `org 0E000h`), not a bad dump. A
+     real **`.IMD` image of "Disk BASIC 24K"** (the official Philips cartridge+disk product)
+     has `0xF3` as its first byte at `0xE000` instead.
+   - **Disassembly corroboration (2026-07-20):** `Disk.asm`'s own `disk_constants` table names
+     the RAM destination this check reads from directly: `defw 0xe000 ; Transfer adress for
+     PDOS (0xE000 in bank 1)`. The original disassembler (independent of the image-comparison
+     finding) already identified this exact address as **PDOS's** transfer target — not a
+     generic "system disk" destination. Combined with step 1's "OR PDOS was read" comment, the
+     ROM's own naming makes it explicit: `getdos` is fundamentally **PDOS's own two-track boot
+     convention**, baked into the monitor ROM; JWSDOS is a compatible third-party DOS that
+     reuses the same entry point rather than the convention's original owner.
+   - **PDOS = "Philips DOS," a real, distinct, official DOS with its own directory system —
+     NEW (owner, 2026-07-20, from external documentation research), separate from and
+     unrelated to `jwsdos5.0.asm`'s directory format (§4).** The owner is still researching;
+     what's confirmed so far is the name and that it loads via the same `getdos` mechanism.
+     **Presumed but NOT yet confirmed:** that "Disk BASIC 24K" (the official Philips
+     cartridge+disk product, already identified as the `0xF3`-signed image above) is itself a
+     PDOS disk. Plausible and consistent with everything found so far, but not independently
+     verified — treat as the working assumption, not a settled fact, until the owner's
+     research confirms it directly. **PDOS's own directory format is completely unsourced** —
+     don't assume it matches `jwsdos5.0.asm`'s `DE_*` struct (§4); that layout is JWSDOS's own,
+     not necessarily shared with the official DOS it's compatible with at the boot level only.
+   - Not a bug or an emulator-relevant contradiction either way — two different DOSes, one
+     boot convention, only one of them (its originator) carries the signature it checks for.
+   **`sysdisk_status`-gates-the-launch question — evidence now stronger, still not fully
+   resolved:** `getdos` itself only sets `sysdisk_status` (never jumps into the loaded code —
+   see step 8); some other, not-yet-sourced caller reads that flag afterward to decide whether
+   to actually launch the loaded code. Real JWSDOS disks legitimately end this routine with
+   `sysdisk_status = 0` (confirmed exact value now, not just "cleared") and clearly still work
+   in practice — **and now that 0 specifically means "loaded fine, just not carrying PDOS's own
+   signature" rather than any kind of failure, a hard gate on this value would make JWSDOS
+   unbootable outright, which contradicts known reality.** Strengthens, but doesn't fully
+   prove, that the caller treats `sysdisk_status` as informational (e.g. a "recognized system
+   disk" banner distinction) rather than a hard boot gate. Still worth sourcing `getdos`'s
+   caller to settle definitively.
 8. Cleanup (always runs): reset CTC ch0 (`03`), FDC off (`00→0x90`), restore caller's SP,
    **restore `0x94 = 0x00`** (bank 0) — so whatever code actually runs the loaded DOS
    extension must itself re-select bank 1 before jumping into it; it isn't left selected.
@@ -366,53 +496,68 @@ match dispatch on the exact byte values above, not a reconstructed bit theory.
 
 ## 7. Open items
 
-1. Side-count field (§3) — dedicated byte parallel to `$FFF`'s track count, or is "SS"/"DS"
-   only recoverable by parsing the banner text?
-2. **Where does the on-disk label (§3) actually get written?** `jwsdos5.0.asm`'s format/erase
-   routine (`disk_erase_directory`/`erase_directory_noask`) zero-fills and re-saves the
-   directory, and the in-RAM banner template (`SS_DS_Char`/`track_count_chars`, defaulting to
-   `"DS 80Tr drive "`) is clearly the source of the on-disk banner text — but the specific
-   code that copies this RAM template into the `$FBF`–`$FFF` disk region wasn't located in
-   this pass (a 2980-line file, only sampled — not exhaustively traced). **Owner's lead
-   (2026-07-13):** the JWSDOS system disk carries two separate utilities, neither part of
-   `jwsdos5.0.asm` — **`Format`** (low-level FDC formatting) and **`JWS Systeem Disk`**
-   (writes the two DOS system tracks, including presumably the label, onto an
-   already-formatted disk). `JWS Systeem Disk` is the likelier candidate for writing the
-   label and the two system tracks — owner is planning to examine it next; see item 5 below,
-   which is the same program's write path.
-3. **Does anything re-sync `SS_DS_Char`/`number_of_tracks` (§1) from an inserted disk's own
+1. **Does anything re-sync `SS_DS_Char`/`number_of_tracks` (§1) from an inserted disk's own
    label?** Not found in this pass. If nothing does, real JWSDOS relies entirely on the
    operator manually matching the format menu to whatever disk is inserted — worth
    double-checking before concluding the emulator's auto-detect-from-label behavior (§3) is
    purely an enhancement rather than also fixing a real usability gap.
-4. **Where does side 2's own directory actually live in a raw `.dsk` image?** (§2)
+2. **Where does side 2's own directory actually live in a raw `.dsk` image?** (§2)
    `dir_side2_prep` reads a physically different disk surface (FDC head = 1); not located in
    `Spel1.dsk`'s raw bytes in this pass — depends on the image's side-interleaving
    convention, which itself isn't confirmed.
-5. **Origin of the stale 20-entry directory cluster at raw `0x1000`–`0x17FF`** (§2) — read as
+3. **Origin of the stale 20-entry directory cluster at raw `0x1000`–`0x17FF`** (§2) — read as
    real, valid, cross-validated directory entries, but not touched by the current build's
    read/save routines and sharing no filenames with the 18-entry active directory.
-   **Leading theory, HIGHLY PLAUSIBLE but not yet confirmed (owner, 2026-07-13):** the
-   `JWS Systeem Disk` utility (distinct from `Format` — see item 2) writes RAM
-   `0xE000`–`0xFFFF` verbatim as the disk's two system tracks, so sectors 1–8 of track 2
-   carry whatever was sitting in that RAM region (e.g. a stale directory from a previously
-   booted/read disk) at write time, since only the active directory portion (sectors 9–16)
-   gets explicitly cleared and rewritten. Supported by a second real image (`jwssytem.dsk`)
-   whose track 2 is entirely clean where this one isn't — see §2. Owner's next step is
-   reading `JWS Systeem Disk`'s own disassembly to confirm.
-6. **Follow-on from the now-resolved `0xF3` signature question (§6 step 7):** does
-   `sysdisk_status` actually gate whether the loaded DOS launches, and if so, how does a real
-   JWSDOS disk boot despite legitimately failing the `0xF3` check? Needs `getdos`'s
-   (unsourced) caller to settle.
-7. Load-address 3-way variation (`0x6547`/`0x67BC`/`0x7000`) across `Spel1.dsk`'s active
+   **Write SCOPE now CONFIRMED (owner, 2026-07-20, from `JWS Systeem Disk`'s disassembly):**
+   the program writes a full track 1 (16 sectors) plus only 8 sectors of track 2 (sectors
+   1–8) — sectors 9–16 (where the active directory lives) are not touched at all, not written,
+   not cleared. This replaces the earlier "clears/rewrites the active-directory portion"
+   framing with a simpler, confirmed one. **Still OPEN, but now a much stronger candidate: the
+   data SOURCE for sectors 1–8.** Refined theory (owner write-scope finding + a fresh
+   `jwsdos5.0.asm` re-read, both 2026-07-20, see §2): the write-scope's implied source range
+   (`0xE000`–`0xF7FF`, from "full track 1 + 8 sectors of track 2") **exactly contains
+   `DIR_side_1_mem` (`0xF000`–`0xF7FF`)** — the specific RAM buffer `dir_side1_prep`/
+   `save_directory`/`read_directory` use for ordinary side-1 directory operations, confirmed
+   never zeroed between disks. `JWS Systeem Disk`'s blind sequential copy would sweep up
+   whatever side-1 directory happened to be sitting there (most plausibly from some other disk
+   read shortly before), landing it on the new disk's sectors 17–24 — and because that buffer
+   is structurally side-1-only by construction, this also explains the previously-unexplained
+   detail that all 20 stale entries have side-byte 0. Still not a closed item — this is a
+   strong synthesis of two confirmed facts, not a direct trace of the actual write instructions
+   populating the buffer at `JWS Systeem Disk` runtime. **Also not resolved by the 2026-07-19
+   label-writing finding (§3)** — that confirmed `JWS Systeem Disk` writes the label correctly,
+   a separate question from this one. Owner's next step is still reading the rest of
+   `JWS Systeem Disk`'s disassembly to confirm this specific mechanism.
+4. **Follow-on from the now-precisely-understood `0xF3`/`sysdisk_status` branch (§6 step 7):**
+   does `sysdisk_status` actually gate whether the loaded DOS launches, and if so, how does a
+   real JWSDOS disk boot despite legitimately ending with `sysdisk_status = 0`? Evidence now
+   points toward "informational, not a hard gate" more strongly than before (§6 step 7), but
+   still needs `getdos`'s (unsourced) caller to settle definitively.
+5. Load-address 3-way variation (`0x6547`/`0x67BC`/`0x7000`) across `Spel1.dsk`'s active
    directory entries (§4) — observed, unexplained.
-8. `sysdisk_status`'s ambiguous initial-value comment (§6 step 1) — presented as-is, not
-   resolved.
-9. RAM variable addresses beyond `disk_transfer` (`0x6070`, confirmed): `memsize`,
+6. RAM variable addresses beyond `disk_transfer` (`0x6070`, confirmed): `memsize`,
    `disk_status`, `sysdisk_status`, `stacktemp_disk`, `disk_track_num`, `disk_search_track` —
    nice-to-have for `.state`/debugger symbol work, not blocking.
+7. **PDOS (Philips DOS) — NEW (owner, 2026-07-20), a real, distinct, official DOS with its
+   own directory system, confirmed to exist by name but otherwise unsourced.** Owner is
+   researching further. Open sub-questions: (a) is "Disk BASIC 24K" (the `0xF3`-signed image,
+   §6 step 7) actually a PDOS disk — presumed, not confirmed; (b) PDOS's own on-disk directory
+   format — completely unsourced, do not assume it matches `jwsdos5.0.asm`'s `DE_*` struct
+   (§4), which is JWSDOS's own and only boot-level-compatible with PDOS, not necessarily
+   directory-format-compatible; (c) whether this project needs to model PDOS as a second,
+   separate DOS at all, or whether JWSDOS-only support is sufficient scope — an open scoping
+   question for whoever picks this up, not just a research gap.
 
-**Resolved since the last revision (moved out of this list):** the SS-80/DS-40 geometry
+**Resolved since the last revision (moved out of this list):** **`sysdisk_status`'s ambiguous
+initial-value comment (2026-07-20)** — explained, not just flagged: the exact `0xF3` branch
+(§6 step 7) never clears it on the match path, so value `1` inherently covers two different
+situations (hardware absent, or PDOS signature matched) by ROM design, not by disassembly
+imprecision; **the SS/DS indicator's exact
+byte offset (2026-07-20)** — `$FEF`, a single fixed ASCII `'D'`/`'S'` character, confirmed
+identically in two real images, no banner-text search needed (§3); **where the on-disk geometry
+label gets written (2026-07-19)** — `JWS Systeem Disk`, confirmed via its own disassembly, and
+confirmed to write the correct track-count/SS-DS text for the operator's actually-selected
+format geometry (§3); the SS-80/DS-40 geometry
 ambiguity (§1 — byte-confirmed 40-track/DS); the byte-offset reconciliation between the
 label and "track 2" (§2 — was an imprecision, label is in the first block); directory-entry
 offsets 0–28's field semantics (§4 — fully confirmed via real `DE_*` source symbols);

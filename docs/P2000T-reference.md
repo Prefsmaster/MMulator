@@ -802,6 +802,20 @@ The machine object builds a **page table** over the 64 KB space when assembled (
 - Known schematic erratum: in the common hobbyist teletext schematic
   (qsl.net/zl1wtt), SAA5050 **pin 27 (P0) should be tied to GND, not VCC**. Use the
   Philips originals as ground truth.
+- **National/teletext character-set remaps — CONFIRMED, some on real hardware (2026-07-19/20,
+  found while sourcing the keyboard matrix, UI milestone 3a):** several ASCII code points do
+  NOT render as their US-ASCII glyph on the P2000T — already implemented correctly in
+  `Saa5050Font.cs` (a sourced, already-shipped font table this predates ms.3a), but not
+  previously called out here. Confirmed remaps found so far: **0x5B (`[`) → left-arrow glyph**,
+  **0x5D (`]`) → right-arrow glyph**, **0x5E (`^`) → up-arrow glyph**, **0x23 (`#`) → £ (British
+  pound) glyph** — the last one independently confirmed twice, including matching real P2000T
+  hardware. This means a P2000 key whose UNSHIFTED matrix position produces byte 0x5B, for
+  example, will visibly show a left arrow, not a bracket — **correct, faithful emulation**, not
+  a bug (a UI-side attempt to "fix" this by rendering a literal bracket would itself be wrong).
+  **`Saa5050Font.cs`'s own comment table is the canonical full list — do not re-derive or
+  duplicate it here; consult it directly for any byte not listed above**, and always verify
+  against that table (or real hardware) rather than assuming plain ASCII when decoding a VRAM
+  byte — an earlier pass of the ms.3a investigation briefly misread 0x23 as plain `#` this way.
 
 ### 80-column mode (timing-relevant)
 - Switching 40→80 columns switches the SAA5050 operating frequency **6 MHz → 12 MHz**.
@@ -990,7 +1004,20 @@ the logical tape content. This is why both speed modes come out clean.
   head (the analog part is below the digital interface you emulate).
 - Bidirectional, **floptical-style random-ish access**: treated like a floppy. CLOAD
   searches the tape for a named program; CSAVE finds free space; a directory command
-  exists. So your tape model needs a **position** and a **seek**.
+  exists. So your tape model needs a **position** and a **seek**. (This is the user-facing
+  BASIC-level experience — the low-level ROM driver's own replace/append mechanism is
+  simpler than "search," see below.)
+- **A blank/erased tape is SILENCE — no flux transitions — not noise. CONFIRMED (2026-07-14,
+  live-app bug + owner's BASIC manual).** BASIC's "Tape init" command preps a tape by writing
+  enough silence that the ROM's wait-for-first-marker times out; that's what a real blank
+  cassette reads back as. This matters because an earlier emulator design pass filled blank
+  tape with deterministic pseudo-noise ("so the ROM's block search finds garbage until real
+  data") — that was wrong: `cas_Write` does its own internal forward scan/settle check before
+  writing, which real leading silence satisfies almost immediately, but pure noise never does,
+  so the scan ran all the way to the physical end of the tape before giving up. Caused a real
+  CSAVE failure (`Cassette fout N`) reproduced in the live app; fixed by making blank tape
+  genuinely silent (a freshly-allocated all-`false` phase buffer — no seeded fill needed at
+  all).
 
 ### Two interception levels = your two user-selectable speed modes
 A **timing-policy strategy** on one cassette device. The device owns the `.cas` image, a
@@ -1020,10 +1047,27 @@ tape position, and a transport state machine; only the timing policy differs.
      **min(remaining, 1024)** with `remaining` starting at `record_length` and only the LAST block
      partial; the source/dest pointer advances a full **1024 bytes per block regardless** (a partial
      last block still consumes a full 1024-byte slot).
-   - **Replace vs append:** the real ROM does a physical forward tape search for an existing block's
-     marker (hardware can't know the head position); the emulator KNOWS the head position, so the
-     trap **writes the MARK+DATA pair at the current head** — same net effect (overwrite in place
-     when parked over a block, append on blank tape) with none of the search logic.
+   - **Replace vs append — CORRECTED (2026-07-14, owner-supplied `Cassette.asm`):** earlier
+     phrasing here ("a physical forward tape search for an existing block's marker") overstated
+     what the low-level ROM driver does. **`cas_block_write`'s replace-vs-append choice is
+     driven entirely by two `cassette_status` RAM bits (`CST_NOMARK`, `CST_WCDON`) carried over
+     from whatever cassette operation ran immediately before `cas_Write`** — there is **no
+     filename comparison, and no searching for "an existing block's marker," inside
+     `Cassette.asm` at all.** It simply writes MARK+DATA at the current head, replace or append
+     as those two carried-over bits dictate. The "CLOAD searches for a name / CSAVE finds free
+     space" user-facing behavior above is real, but it's **BASIC's own save routine, layered on
+     top of this driver** (positioning the tape and priming those bits before calling in) — a
+     different, higher-level source this project does not have. The emulator's turbo trap
+     already matches the CONFIRMED low-level behavior: it **writes the MARK+DATA pair at the
+     current head** — same net effect (overwrite in place when parked over a block, append on
+     blank tape) with no search logic, because there was never any search logic to replicate.
+   - **`cas_Write` does its own write-then-verify — CONFIRMED (2026-07-14, traced via direct
+     ROM-entry-point tests).** After a successful write onto a blank tape, the head ends up
+     roughly TWICE one block's on-tape width past where the block was written — `cas_Write`
+     reads its own just-written block back (an internal verify) before returning, it doesn't
+     just write and stop. Not a bug to emulate around: a same-session `cas_Read` run
+     immediately afterward, without a rewind (eject/reinsert or a fresh mount), correctly finds
+     nothing further — there genuinely is nothing recorded past the just-verified block.
    - **Byte-identical to authentic:** `MiniTape.TryReadBlockAtHead` / `WriteBlockAtHead` share the
      per-block encode/decode helpers with `Save()`/`LoadCasImage()`, so a turbo-written tape
      re-loads identically through the authentic path (verified both directions).
@@ -1041,10 +1085,24 @@ makes it feel real:
   block directly. Both append to the same image.
 
 ### Host-side .cas manipulation = a SEPARATE, always-fast API
-Do NOT gate this behind the timing policy. Insert/eject, rewind, create-blank,
-write-protect, directory browse, import/export, reorder/delete programs — host-side
-container operations, always instant, independent of authentic/turbo. Keep as a distinct
-interface so the two concerns don't tangle.
+Do NOT gate this behind the timing policy. Insert/eject, create-blank, write-protect,
+directory browse, import/export, reorder/delete programs — host-side container operations,
+always instant, independent of authentic/turbo. Keep as a distinct interface so the two
+concerns don't tangle.
+
+**"Rewind" — CORRECTED (2026-07-14): not a peer of the other entries above.** The real MDCR
+has **no rewind button, only Eject** (confirmed by the owner — matches the "NO play/stop/
+rewind controls" note earlier in this section). Tape position only ever resets two ways: (1)
+**software-driven**, the ROM commanding REV over CPOUT (e.g. the confirmed on-insertion
+rewind-then-auto-load sequence) — already modeled, not a host-side operation at all; or (2)
+**implicitly at the host level**, since both `LoadCasImage`-based mount and the blank-tape
+mount already start the tape at position 0/BOT — eject-then-reinsert already gets you this
+for free, no dedicated action needed. A standalone host-side "Rewind" button, if ever added,
+would be a pure **emulator convenience** that skips the ROM's own software rewind (same
+category as turbo CSAVE/CLOAD — an authenticity trade-off to flag, not a missing physical
+control being restored, since no such physical control ever existed). Unlike write-protect
+(which mirrors a real physical tab the owner could snap out), rewind has no hardware analog
+to build UI for — don't scope it as an equivalent, equally-deferred item.
 
 ### Determinism caveat (restated)
 Authentic port-level path: deterministic, fits cycle-exact replay. ROM-trap turbo path:
@@ -1841,18 +1899,75 @@ emerges naturally** — some software depends on matrix quirks; hard to add late
 The ISR does its own debounce + auto-repeat at 50 Hz. The device just presents a **stable
 matrix** each frame. No debounce logic in the emulator.
 
-### Host-key mapping (the real work — borrow two modes, default symbolic)
-- **Positional:** host physical key → same physical P2000 key. Good for games/muscle memory,
-  wrong characters across layouts.
-- **Symbolic:** host key producing 'A' → P2000 'A'. Good for typing; must handle P2000 shift
-  states + characters with no modern equivalent (and vice versa).
-- Offer both, default symbolic. The Dutch layout + special keys (CODE, ZOEK/START/STOP,
-  cursor/function keys) won't all map → the **soft keyboard window is the escape hatch**
-  (click to press unmappable keys).
+### Host-key mapping (the real work — two modes, BOTH now built, UI milestone 3a)
+- **Positional ("P2000 Authentic"):** host physical key → same physical P2000 key. The
+  **live default** — correct P2000 shift-pairings (e.g. Shift+8 → `(`, Shift+2 → `"`) fall out
+  for free since the P2000's own ROM/hardware decides the shifted character.
+- **Symbolic ("Standard-Host"):** host key producing character X → the P2000 key/combo that
+  also produces X, where one exists. New, opt-in (UI milestone 3a). Characters with **no P2000
+  equivalent at all** (`~^{}\|` among others — see below) are a deliberate silent no-op, not a
+  best-guess substitute.
+- Both modes now built, plus a graphical **soft-keyboard window** (click-to-press, sticky
+  Shift/CODE) as the escape hatch for keys with no host equivalent at all (ZOEK/START/STOP/
+  INL/OPN/DEF and other numeric-keypad functions, reachable from a host numpad in EITHER mode
+  since they're plain matrix crosspoints — see below — but also clickable for anyone without a
+  numpad).
+- **Full, current 10×8 key/legend table lives in `docs/Keyboard/keyboard matrix.md` and
+  `docs/Keyboard/keyboard mappins.md`** (UI project) — kept as the single canonical source
+  through several correction passes during ms.3a's implementation and a real-hardware
+  verification session; **do not duplicate the full table here**, only the hardware-level facts
+  below that are worth having independent of the UI implementation.
+
+### Confirmed keyboard facts (2026-07-19/20, from UI milestone 3a's implementation + a real
+physical P2000T hardware verification session — supersedes the "still to confirm" note below)
+- **SHIFT — CONFIRMED positions:** Left Shift = matrix **(9,0)**; Right Shift = matrix **(9,7)**
+  (two independent physical shift keys, both real crosspoints, not a single shared one).
+- **CODE — CONFIRMED position (4,0); function is cartridge/software-dependent, NOT a fixed
+  second shift level or graphics set (both had been speculated, both wrong).** With the
+  **BASIC cartridge** specifically, CODE controls **LIST display speed** and is used while
+  **editing BASIC program lines**. The ROM/cartridge reads the matrix bit and decides its
+  meaning, exactly like SHIFT — the keyboard device itself needs no CODE-specific logic.
+  Different cartridge software could use the bit differently; this is a BASIC-cartridge fact,
+  not a universal one.
+- **WIS — CONFIRMED position: Shift + the numeric-keypad "7"/cassette-icon key (port 0x06 bit
+  3, i.e. matrix (6,3)).** Closes the last unlocated item from §5b's BASIC↔cassette UI surface
+  list (WIS/ZOEK/START/STOP).
+- **The numeric keypad's special functions are ALL the shifted meaning of a plain digit key,
+  same convention throughout** (unshifted = digit, Shift = function) — ZOEK/START/STOP/INL/
+  OPN/DEF/WIS/M/etc. are not separate physical keys from the numpad digits, they're what the
+  same crosspoints mean when read with SHIFT asserted. Since the `Keyboard` device already
+  accepted raw crosspoints with no character-level path (machine CLAUDE.md §17 ms.8), and
+  these are ordinary Shift+digit combinations like any other, **no machine-layer change was
+  needed to reach any of them** — confirms the original ms.8 assessment that the device was
+  already "ready to accept key presses at any crosspoint."
+- **Keyboard scan timing quirk — CONFIRMED (machine-level test, `assets/BASIC.bin` booted
+  against real ROM entry points):** releasing an already-held SHIFT crosspoint and pressing a
+  different key in the **same field** still reads as shifted on the P2000 side — the monitor
+  ROM's keyboard scan needs to observe **at least one real field (20 ms) with SHIFT genuinely
+  released** before a subsequent press registers as unshifted, even though the emulated matrix
+  state is technically already correct the instant both changes land. Matters for anything that
+  programmatically "releases SHIFT and presses a new key" in the same host input event (as
+  Standard-Host mode's redirect logic must for characters like `@`/`#`/`;`/`<` that sit on an
+  unshifted P2000 crosspoint). No such gap is needed the other direction (asserting SHIFT fresh,
+  with none previously held, then pressing a key — behaves like an ordinary Shift+key combo).
+- **BASIC forces all letters to uppercase**, regardless of what the ROM's own keycode→ASCII
+  table (dumped from `assets/BASIC.bin` at Z80 address 6164 during this investigation) contains
+  for the lowercase entries — confirmed by direct testing, not inferred from the table alone.
+- **Keycode arithmetic exists but is NOT reliable on its own — CONFIRMED, use with caution:**
+  unshifted keycode = `row×8+col`, shifted keycode = `+72`, holds for most positions but
+  **wrongly predicted Shift+3** (predicted `#`, actual — confirmed twice, including on real
+  hardware — is `£`). Treat the formula as a starting guess only; verify each position against
+  a direct machine-level `SetKey`→VRAM read (or real hardware) before trusting it, the same
+  lesson that caught the original mis-transcription of the (8,4) key as an accent mark when it
+  actually renders **¼ (unshifted) / ¾ (shifted)** — a fraction glyph pair, not any accent.
 
 ### Still to confirm (minor)
-- Where **SHIFT / CODE** and function keys sit in the 10×8 matrix (for the mapping table).
 - Whether ports 1–9 float or read 0xFF while scanning is ON (assumed 0xFF above).
+- The exact matrix position/legend for a small number of keys not yet independently confirmed
+  outside the UI project's own working table (`docs/Keyboard/keyboard matrix.md`) — e.g. the
+  numpad "5" key's shifted function, which doesn't echo a character and triggers what looked
+  like a screen-level redraw effect the owner's session flagged as "genuinely unclear," not
+  chased further.
 
 ---
 

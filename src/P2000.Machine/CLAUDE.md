@@ -647,7 +647,7 @@ is NO machine-layer runner milestone here — it's promoted in with the external
       never called — same "genuine silence" pattern as the CTC (M17) and cassette CIP
       probes. Model `Upd765.Reset()` to leave MSR readable as exactly `0x80` so this succeeds.
     - **Disk boot is 3-gate cartridge/config-conditioned, not a blanket boot-time probe
-      (CONFIRMED, belongs in reference doc §5b too — not yet synced there):** checked in
+      (CONFIRMED — synced, reference doc §5b "Disk-boot gate"):** checked in
       order, ALL three required before the presence probe above even runs: (1)
       `memsize == 3` (banked RAM at `0xE000`–`0xFFFF` populated — the ROM's own comment:
       *"mem at 0xE000 is on the extension board, so when no mem is found there are also no
@@ -678,19 +678,35 @@ is NO machine-layer runner milestone here — it's promoted in with the external
       **RAMSW restored to `0x00`** (bank 0) — whatever runs the loaded DOS extension must
       itself re-select bank 1 before jumping into it.
       **`0xF3` signature — CONFIRMED, feeds directly into the RUN-gate test design
-      (`docs/JWSDOS-format.md` §6/§7):** two real JWSDOS disk images have `0x20` at that
-      offset (JWSDOS 5.0's own actual first opcode byte, `JR NZ`, not a bad dump), while a
-      real **"Disk BASIC 24K" `.IMD` image — the official Philips cartridge+disk product —
-      has `0xF3` there as expected.** So `0xF3` is the official Philips disk-BASIC signature;
-      JWSDOS is a third-party user-group DOS that was never expected to carry it. **This
-      means Test (e) needs TWO fixtures with two different correct outcomes, not one:**
-      official "Disk BASIC 24K" → `sysdisk_status` ends "recognized" (`0xF3` matches);
-      JWSDOS → `sysdisk_status` ends "not recognized" (`0x20`, cleared) — **and this is the
-      CORRECT, expected result for JWSDOS, not a bug to fix.** Do NOT force an artificial
-      `0xF3` byte into the JWSDOS test image to make the check "pass." Remaining open
-      question, not blocking: whether `sysdisk_status` actually gates the launch downstream —
-      confirm (once `getdos`'s caller is sourced) that a cleared flag doesn't itself prevent
-      JWSDOS from running, since real JWSDOS disks clearly work in practice.
+      (`docs/JWSDOS-format.md` §6/§7); `0xF3` is specifically PDOS's (Philips DOS's) own
+      system-disk signature, not a generic "Philips" convention** — confirmed two ways:
+      two real JWSDOS disk images have `0x20` at that offset (JWSDOS 5.0's own actual first
+      opcode byte, `JR NZ`, not a bad dump) while a real **"Disk BASIC 24K" `.IMD` image —
+      presumed to be a PDOS disk, not yet independently confirmed — has `0xF3` there as
+      expected; separately, `Disk.asm`'s own `disk_constants` table names this exact RAM
+      destination `"Transfer adress for PDOS"` in the disassembler's own comment. `getdos` is
+      fundamentally **PDOS's own two-track boot convention**; JWSDOS is a compatible
+      third-party DOS reusing the same monitor-ROM entry point, not its originator. **Exact
+      branch, so Test (e)'s two fixtures must assert precise values, not just
+      "recognized"/"not recognized":** `cp (hl)` against `0xF3` at `0xE000`, `jr z` SKIPS the
+      clear-to-0 step — so `sysdisk_status` ends at exactly **`1`** when `0xF3` matches
+      (official/PDOS fixture) and exactly **`0`** when it doesn't (JWSDOS fixture, `0x20`) —
+      **and this is the CORRECT, expected result for JWSDOS, not a bug to fix.** Do NOT force
+      an artificial `0xF3` byte into the JWSDOS test image to make the check "pass." This also
+      explains why `sysdisk_status`'s initial value (step 1 above, "no controller/drive/disk...
+      OR PDOS was read") reads as ambiguous in the ROM's own comment: `1` is genuinely
+      overloaded by design — it covers both "never got this far" and "got here, matched PDOS"
+      — only `0` is unambiguous. Remaining open question, not blocking: whether
+      `sysdisk_status` actually gates the launch downstream — evidence now leans further
+      toward "informational, not a hard gate" (a hard gate on `0` would make JWSDOS unbootable,
+      contradicting known reality), but confirm once `getdos`'s caller is sourced.
+      **PDOS itself — NEW, per the owner's external documentation research (2026-07-20):** a
+      real, distinct, official Philips DOS with its own directory system, separate from and not
+      assumed to share `jwsdos5.0.asm`'s directory format (`docs/JWSDOS-format.md` §4). Not
+      yet in this milestone's scope — flagging so a future PDOS-support milestone doesn't
+      silently assume JWSDOS's directory struct applies. M19 as scoped here only needs to boot
+      through `getdos` and check the signature; it does not need to parse a PDOS-formatted
+      disk's directory.
     - **CTC wiring, exact control words (extends M17's `Z80Ctc`, doesn't change it):** ch0
       (disk-complete) `0xD5` (INTEN|counter-mode|rising-edge|TC-follows), TC `0x01`; ch1
       (disk-not-ready) `0xC5` — same shape, **falling edge**, TC `0x01`; both reset via `0x03`
@@ -708,21 +724,34 @@ is NO machine-layer runner milestone here — it's promoted in with the external
       duplicate here, mirrors the MDCR pattern):** 16 sectors/track, 256 B/sector (CONFIRMED
       from `getdos`); JWSDOS 5.0 itself supports **multiple geometries** (35/40/80-track,
       SS/DS) as a per-disk format-time choice — supersedes the reference doc §5d/§3a's
-      "single-sided 35-track" placeholder (reference-doc sync still pending, flagging here so
-      it isn't missed). JWSDOS embeds a self-describing geometry label on-disk
-      (`docs/JWSDOS-format.md` §3) — **but real JWSDOS itself does NOT read this back** to
-      auto-configure its own runtime state (it uses live RAM defaults, changed only via its
-      own format menu, `docs/JWSDOS-format.md` §1). **Design decision:** the emulator's
+      "single-sided 35-track" placeholder (**synced** — reference doc §3a/§5b now reflect the
+      per-disk geometry + self-describing label). JWSDOS embeds a self-describing geometry
+      label on-disk (`docs/JWSDOS-format.md` §3) — **but real JWSDOS itself does NOT read this
+      back** to auto-configure its own runtime state (it uses live RAM defaults, changed only
+      via its own format menu, `docs/JWSDOS-format.md` §1). **Design decision:** the emulator's
       `.dsk` loader SHOULD auto-detect geometry from this label anyway — a deliberate
       emulator-side UX improvement beyond replicating real JWSDOS behavior, not "just
       matching the hardware." Keeps the "raw sector dump, no header" file convention
       (reference doc §3a) intact since the label is real on-disk JWSDOS data.
+      **Auto-detect is two independent fixed-offset single-byte reads, CONFIRMED
+      (`docs/JWSDOS-format.md` §3):** side = ASCII `'D'`/`'S'` at raw offset `0x0FEF`; track
+      count = binary byte **`− 1`** at raw offset `0x0FFF` (e.g. `0x29` = 41 → 40 tracks). No
+      banner-text parsing needed for either field — both are exact-position reads, byte-verified
+      against two independent real images.
     - **Host `.dsk` image API** — mount/eject/create-blank/write-protect/browse, always
       host-speed, independent of `TimingPolicy` (the `.cas` API is the template). Read-only
       directory browsing needs only the 32-byte directory-entry struct (`docs/JWSDOS-format.md`
-      §4) — no allocation logic. Write support (save into a mounted image) needs the
-      gap-reuse/append algorithm (`docs/JWSDOS-format.md` §5) — scope as a later concern
-      unless M19 needs write from the start.
+      §4) — no allocation logic. **Browse ONLY the confirmed active directory: raw
+      `0x1800`–`0x1FFF` (logical sector 25, `dir_side1_prep`'s target, 18 real entries on the
+      `Spel1.dsk` test image) — do NOT parse raw `0x1000`–`0x17FF` (sectors 1–8 of track 2) as
+      directory data.** That region is real, struct-shaped, but stale/unrelated data (a
+      `JWS Systeem Disk` write-path artifact, `docs/JWSDOS-format.md` §2/§7 item 3) — parsing it
+      would surface phantom files that don't belong to the mounted disk. **Side 2's own
+      directory location in a raw `.dsk` file is NOT yet confirmed** (`docs/JWSDOS-format.md` §7
+      item 2) — for a double-sided image, browse side 1 only until that's sourced; don't guess
+      an offset for side 2. Write support (save into a mounted image) needs the gap-reuse/append
+      algorithm (`docs/JWSDOS-format.md` §5) — scope as a later concern unless M19 needs write
+      from the start.
     - **`.state`:** the FDC device block (command/phase state, per-drive motor/head-position/
       selected-drive state) is a new device stream entry → bump `MachineStateFile.
       CurrentVersion`/`MinVersion` to **v4** at build time (reject v3), same discipline as the
@@ -742,10 +771,21 @@ is NO machine-layer runner milestone here — it's promoted in with the external
       INT → CTC ch0 (`0xD5`/TC1) → IM2 vector via `0x6020` → result bytes from `0x8D`;
       (d) FDC INT → CTC ch0 → IM2 vector fires and lands at the correct handler (integration
       test against M17's daisy chain — this is the seam M17 was built for);
-      (e) **RUN gate:** boot with the three-precondition fixture from (a) → `sysdisk_status`
-      ends in the "success" state → the loaded 8 KB is present at bank 1 (`0xE000`–`0xEFFF`/
-      `0xF000`–`0xFFFF`) → bank restored to 0 on return. Resolve the `0xF3`-signature open
-      flag above before locking this fixture's exact bytes. → commit.
+      (e) **RUN gate, two fixtures with two different exact `sysdisk_status` end values (not
+      "recognized"/"not recognized" — assert the precise byte):** boot with the
+      three-precondition fixture from (a), using a JWSDOS image → the loaded 8 KB is present at
+      bank 1 (`0xE000`–`0xEFFF`/`0xF000`–`0xFFFF`) → `sysdisk_status` ends at exactly **`0`**
+      (JWSDOS's `0x20` first byte doesn't match `0xF3`) → bank restored to 0 on return. Repeat
+      with a "Disk BASIC 24K"/PDOS-signed fixture (`0xF3` first byte) → `sysdisk_status` ends
+      at exactly **`1`** instead — same load, opposite branch outcome;
+      (f) **host `.dsk` API, using `Spel1.dsk`/`jwssytem.dsk` as real fixtures:** geometry
+      auto-detect reads raw `0x0FEF` ('D'/'S') and `0x0FFF` (track count `− 1`) and reports
+      40-track/DS for `Spel1.dsk`; directory browse returns exactly the 18 real entries from
+      raw `0x1800`–`0x1FFF` and does **NOT** surface any of the 20 struct-shaped entries
+      sitting at raw `0x1000`–`0x17FF` (the regression guard for the stale-cluster caution
+      above — assert the phantom filenames are absent from the returned listing, not just that
+      the count is 18); `jwssytem.dsk`'s all-zero track 2 browses as an empty directory, not an
+      error. → commit.
 
 ---
 
@@ -1719,9 +1759,9 @@ Two bugs were masking CLOAD success; both confirmed by tracing `Cassette.asm` li
   noise fill and `seed` parameter), `tests/P2000.Machine.Tests/Devices/MiniTapeTests.cs`
   (constructor tests reworked), `tests/P2000.Machine.Tests/Devices/AuthenticCassetteWriteTests.cs`
   (new — 6 tests exercising the real ROM entry points end to end).
-- **Synced:** no (this project's own convention is the human syncs §17 into the reference doc
-  separately — flagging for that pass: reference doc §5b should note blank tape is silence,
-  matching BASIC's "Tape init", superseding the earlier pseudo-noise design).
+- **Synced:** yes (2026-07-14 — into P2000T-reference.md §5b, new bullet in the "MDCR is
+  DIGITAL" list: blank tape is silence not noise, with the `cas_Write` internal-scan root
+  cause and the pseudo-noise design superseded).
 
 ### 2026-07-14 — Fix confirmed live; owner-supplied `Cassette.asm` corrects a claim in the entry above
 - **Owner confirmed in the live app:** the blank-tape-silence fix resolves the reported CSAVE
@@ -1749,5 +1789,10 @@ Two bugs were masking CLOAD success; both confirmed by tracing `Cassette.asm` li
 - **Applies to:** `tests/P2000.Machine.Tests/Devices/AuthenticCassetteWriteTests.cs` (test
   naming/scope caveat, not a code change) / `src/P2000.UI/CLAUDE.md` (parallel entry with the
   live-app confirmation and the UI-side directory-refresh fix this same feedback prompted).
-- **Synced:** no (the replace/append mechanism is BASIC-level policy, not machine hardware —
-  nothing new for the reference doc beyond the blank-tape-silence fact already flagged above).
+- **Synced:** yes (2026-07-14 — turned out worth syncing despite the "BASIC-level policy, not
+  machine hardware" framing: the earlier reference doc phrasing ("physical forward tape search
+  for an existing block's marker") overstated what `Cassette.asm` itself does, which IS
+  hardware/ROM-driver truth worth correcting precisely. Synced into §5b's "Replace vs append"
+  bullet — the CST_NOMARK/CST_WCDON mechanism, no filename comparison in the driver, and the
+  BASIC-vs-driver layering. Also added the `cas_Write` write-then-verify fact as its own
+  CONFIRMED bullet in the same spot.).

@@ -79,4 +79,11 @@ public sealed class MachineConfig
     /// (project CLAUDE.md §5, §7). Reset-to-apply — topology is fixed once the machine
     /// is running (locked decision §2.3).</summary>
     public string? Slot1CartridgePath { get; init; }
+
+    /// <summary>Optional path to a raw <c>.dsk</c> floppy image to mount in FDC drive 0 at
+    /// machine-assembly time (project CLAUDE.md §13 milestone 19). <c>null</c> (the default)
+    /// leaves the drive empty. Only meaningful when <see cref="Board"/> is
+    /// <see cref="InternalBoard.FloppyRam"/>; ignored otherwise. Reset-to-apply, same as
+    /// <see cref="Slot1CartridgePath"/>.</summary>
+    public string? FloppyDiskImagePath { get; init; }
 }

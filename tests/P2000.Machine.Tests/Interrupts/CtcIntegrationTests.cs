@@ -11,7 +11,7 @@ namespace P2000.Machine.Tests.Interrupts;
 public class CtcIntegrationTests
 {
     private static Machine BuildFloppyRamMachine() =>
-        new(new MachineConfig { Board = InternalBoard.FloppyRam });
+        new(new MachineConfig { Board = InternalBoard.FloppyRam, RamVariant = RamVariant.T102 });
 
     // ---- (c) Full IM2 vectoring pipeline ---------------------------------------------------
 

@@ -26,14 +26,19 @@ public static class MachineStateFile
     ///   <item>v3: Interrupts writes a 3rd bool (Lock, milestone 17); an optional Ctc block
     ///     (4 channels + vector base) is appended after Interrupts when the machine's
     ///     internal board is FloppyRam.</item>
+    ///   <item>v4: the optional board block (FloppyRam only) grew a second device — an FDC
+    ///     (<see cref="Devices.Fdc.Upd765"/>) block appended after the Ctc block (milestone 19).
+    ///     The mounted <c>.dsk</c> image's bytes are NOT part of this block (reloaded from
+    ///     <see cref="MachineConfig.FloppyDiskImagePath"/> at machine reconstruction, same
+    ///     precedent as SLOT1 cartridges) — only the chip's transient register/phase state.</item>
     /// </list></summary>
-    public const int CurrentVersion = 3;
+    public const int CurrentVersion = 4;
 
     /// <summary>Oldest <c>.state</c> version accepted by this build. Older files are rejected
     /// because the device-stream layout changed incompatibly without a version bump at the
     /// time (v1→v2: SoundDevice added, NMI bool added to Interrupts; v2→v3: Lock bool added to
-    /// Interrupts, optional Ctc block appended).</summary>
-    private const int MinVersion = 3;
+    /// Interrupts, optional Ctc block appended; v3→v4: FDC block appended after Ctc).</summary>
+    private const int MinVersion = 4;
 
     private static readonly byte[] Magic = "P2ST"u8.ToArray();
 

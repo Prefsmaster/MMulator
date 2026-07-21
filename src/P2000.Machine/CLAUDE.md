@@ -85,20 +85,107 @@ Rules:
 The SAA5050 generate stage writes pixels into a **framebuffer the MACHINE owns**, not an
 ad-hoc array inside the video device. This is the single output surface the video path writes
 and any consumer (Avalonia display, a test, a screenshot writer) reads. Define it explicitly:
-- **Format & size:** a `uint[]` of BGRA pixels (matches the SAA5050 render path). The SAA5050
-  renderer emits **16 pixel-lanes per character** (NOT a naive 6×2=12) — the horizontal rounding
-  is computed at sub-pixel resolution, which is why the glyph tables pack 2 bits/pixel and both
-  jsbeeb and the owner's C# port unroll a 32-bit `chardef` 16× per character. So the framebuffer
-  is **640 × 480** for 40×24 (40 chars × 16 lanes = 640 wide; 24 rows × 20 rendered scanlines =
-  480 high, the 20 being 10 logical lines doubled). Do NOT "simplify" the width to 480 — that
-  discards horizontal smoothing. **NB: NOT 500 high** — the owner's reference video code used
-  640×500 (25 rows), which is **BBC-Micro heritage** (BBC teletext is 25 rows); the P2000T is
-  **24 rows = 480**. Fix the three coupled constants together (buffer height, end-of-field test,
-  field/frame discriminator) — don't copy the 500-based arithmetic.
-- **Fields vs frames (interlaced — model BOTH distinctly):** the P2000T runs **50 fields/sec**,
-  interlaced: an **even field** (sub-scanlines from y=0, `CRS=false`) and an **odd field** (from
-  y=1, `CRS=true`) interleave into the display. The odd field is where the diagonal smoothing
-  lands (CRS/RA0 selects it). Consequences:
+- **Format & size — CHANGED (2026-07-22, owner request): the machine renders the FULL FIELD,
+  not just the active picture.** Full detail and the geometry math live in reference doc §4a
+  ("Full raster geometry") — summary here:
+  - The framebuffer is a `uint[]` of BGRA pixels, now sized **928 × 626** for the complete
+    313-scanline field, minus horizontal retrace (was 640×480, active-picture-only — see
+    history below). **Width CORRECTED (2026-07-22, owner's retrace model, same day as the
+    original full-field decision — see the dated exchange in §17):** the owner does not have a
+    scope to confirm the real video signal directly, but reasons that the chip cuts off
+    emission immediately after char-time 64 (end of line) and the following line's char-times
+    0–5 (6 char-times — flagged 5-vs-6 ambiguity, manual not fully explicit) are genuine
+    **horizontal retrace: the chip emits nothing at all there, not even black.** Only after
+    retrace does it resume emitting blanked/porch signal (renderable as black) up to the
+    active window. Trailing blank is left intact (owner's explicit instruction — retrace is a
+    leading-edge-of-the-NEXT-line phenomenon, not a trailing one). Net effect: leading blank
+    shrinks from 15 to **9 char-times**, width shrinks from 1024 to **928**.
+  - **Horizontal (928 px):** 16 rendered pixel-lanes per char-time (unchanged anti-aliasing
+    lane count) — leading blank (144 px, 9 char-times, retrace's 6 char-times/96 px excluded
+    entirely) + active (640 px, 40 char-times) + trailing blank (144 px, 9 char-times,
+    unchanged).
+  - **Vertical (626 px):** 2 rendered rows/scanline (unchanged CRS line-doubling) × 313
+    scanlines = pre-roll blank (98 px, 49 scanlines) + active (480 px, 240 scanlines) +
+    post-roll blank (48 px, 24 scanlines). (Vertical retrace not yet addressed — the owner's
+    retrace-exclusion request so far only covers horizontal; flag for a future pass if wanted.)
+  - **The active 640×480 "graphics window" sits at a fixed offset (144, 98)** within the full
+    buffer — a constant crop rectangle, same every field (fixed hardware timing, not
+    data-dependent). Horizontally symmetric (144 px border both sides of the 640 px active
+    width) as a side effect of the 6-char-time retrace assumption, not independently confirmed.
+  - **Blanking pixels are always flat black** — no fetch happens there (§4/reference doc: no
+    VRAM access outside the active window), so there's no content to render and no contention
+    possible; just fill black, no `CombineRows` smoothing work needed for those rows.
+  - **Why this is the right owner (continuing the 2026-07-21 ownership correction below):** the
+    machine's job is to produce the complete, truthful raw signal; the UI decides how much of
+    it to show. This extends that same principle from "which field(s)" to "how much of each
+    field, including blanking" — see reference doc §3a's new "Full-Field vs Graphics-window"
+    UI toggle (orthogonal to the existing 4-way display-mode toggle; UI-owned, not this file's
+    concern, same as the 4-way mode).
+  - **history (pre-2026-07-22 framebuffer definition, superseded above but kept for context):**
+    the SAA5050 renderer emits **16 pixel-lanes per character** (NOT a naive 6×2=12) — the
+    horizontal rounding is computed at sub-pixel resolution, which is why the glyph tables pack
+    2 bits/pixel and both jsbeeb and the owner's C# port unroll a 32-bit `chardef` 16× per
+    character. The buffer was **640 × 480** for 40×24 (40 chars × 16 lanes = 640 wide; 24 rows
+    × 20 rendered scanlines = 480 high, the 20 being 10 logical lines doubled) — do NOT
+    "simplify" the width to 480, that discards horizontal smoothing. **NB: NOT 500 high** — the
+    owner's reference video code used 640×500 (25 rows), which is **BBC-Micro heritage** (BBC
+    teletext is 25 rows); the P2000T is **24 rows = 480**. These per-character/per-row scaling
+    facts (16 lanes/char, 2 rows/scanline) are UNCHANGED by the full-field move above — only the
+    buffer's overall extent grew to cover blanking too.
+  - **Downstream impact — NOT swept in this pass, flagged for Claude Code (§17 below has the
+    full list):** this file and `P2000.UI/CLAUDE.md` both mention "640×480" as the framebuffer
+    size in many other places (ownership/observer sections, PAL-aspect-correction notes,
+    existing tests, `WriteableBitmap` allocation, `CorruptionOverlay` coordinate space). Those
+    need a coordinated sweep — see the dated finding below for the concrete list — rather than
+    a piecemeal fix; the definition here is the new source of truth to reconcile the rest
+    against.
+- **Fields vs frames — CORRECTED (2026-07-21, owner-supplied P2000TM Field Service manual +
+  owner clarification): the P2000T is NOT interlaced.** The manual states, for the T-version:
+  *"the signal CRS is active during the even scanlines of the field. In our system we use only
+  the odd scanlines, so no interlacing is used."* There is no real hardware alternation between
+  a differently-fetched "even field" and "odd field" — **every field is a complete, independent
+  313-line refresh at 50 Hz** (reference doc §4/§4a), and CRS/RA0 picks raw-vs-smoothed
+  **sub-scanlines within that one field's already-fetched row data**, not a second field's
+  separately-sourced content. The "interlaced, frame = two fields = 25 Hz" model below was
+  **BBC-Micro heritage carried over from jsbeeb/MAME** (both genuinely interlaced machines),
+  not P2000T hardware fact — flagged and corrected here; the owner agrees.
+
+  **Ownership correction (owner, 2026-07-21): the display-MODE default is a UI setting, not a
+  machine one — this file should not have asserted a "machine default" change.** This file's own
+  pre-existing 2026-07-05 milestone-5 finding (§17 below) already scoped this correctly: *"the
+  four display-mode options... are explicitly UI-presentation concerns... `Video` only produces
+  the [raw per-field] buffer plus the two events a UI layer would need to build any of the
+  four; no mode-switch was added to the machine layer."* That scoping stands. The owner's
+  2026-07-21 decision to default to Odd-only (line-doubled single field) instead of
+  Interlaced/comb — because Odd-only is the one that matches the FSM's "only the odd scanlines,
+  no interlacing" — is a **P2000.UI-owned setting/preference default**, recorded in
+  `src/P2000.UI/CLAUDE.md` §8 and reference doc §3a, not here. This file only needs the
+  underlying hardware-timing fact corrected (done above); it should not restate or own the
+  UI's default value.
+
+  **WITHDRAWN (2026-07-22, owner correction) — the question below was a mistake, do NOT act
+  on it:** this file previously flagged (2026-07-21) whether `Video`'s per-field
+  buffer-composition — "each field writes ONLY its own [alternating] scanlines into one
+  persistent buffer" — should be collapsed into a single-pass-per-field model, reasoning that
+  since there's no true interlace, one field's own data ought to be self-sufficient. **The
+  owner caught that this framing risks Claude Code reverting/simplifying real, working
+  machinery:** the current implementation already computes distinct even/odd field passes, and
+  the existing four display modes (Interlaced/comb, Progressive, Even-only, Odd-only) all
+  depend on that dual-pass machinery being intact — collapsing it to "one field, always
+  complete" would break Progressive and Interlaced/comb, requiring them to be rebuilt later for
+  no benefit. **Correct resolution: change NOTHING about the per-field write/compute pattern.**
+  Odd-only already exists today and already presents exactly the single-field, line-doubled
+  view the FSM describes as authentic — the only actual change needed is which mode is
+  DEFAULT (Interlaced/comb → Odd-only, a preference value in `P2000.UI`, §8/reference doc §3a),
+  not a rendering-code change. Keep all four modes' underlying computation exactly as
+  implemented.
+
+  The original (now-superseded, BBC-heritage) framing is preserved below for context on the
+  internal even/odd sub-scanline mechanism, which likely still has value as an **intra-field**
+  concept (CRS toggling within one field's data) even though it is not a true inter-field
+  alternation:
+  - the P2000T runs **50 fields/sec**; the CRS/RA0-selected **smoothed sub-scanline** ("odd" in
+    the old model) is where the diagonal smoothing lands within each field's own data. Consequences:
   - **Interrupt + CTC trigger fire per FIELD (50 Hz):** the video 50 Hz VBLANK (→ IM1 RST 0x0038,
     §8) and the CTC channel-3 clock (reference doc §5e; when a CTC is present) tick once per
     field. DEW resets on the even field.
@@ -122,17 +209,25 @@ and any consumer (Avalonia display, a test, a screenshot writer) reads. Define i
   - **No inter-field erase = maximum comb (simplest + authentic).** Do NOT model phosphor decay
     /field dimming unless asked — leaving the previous field's lines as-is is both simplest and
     the strongest, most faithful effect.
-  - **Display mode (owner decision) — four options over the SAME rendered scanlines; default
-    interlaced/comb:**
-    1. **Interlaced (comb) — DEFAULT:** both fields, single persistent buffer, present per field,
-       no inter-field clear → authentic comb on fast horizontal motion (as above).
+  - **Display mode — four options over the SAME rendered scanlines. This is a UI-owned
+    setting/preference (see the ownership correction above) — the four options are listed here
+    only as context for what the machine's raw per-field output must support. The current
+    default value and the owner's 2026-07-21 decision to change it live in `P2000.UI/CLAUDE.md`
+    §8 and reference doc §3a, not here.**
+    1. **Interlaced (comb):** both fields, single persistent buffer, present per field, no
+       inter-field clear → the interlace comb artifact on fast horizontal motion (as above).
+       Per the correction above, this is NOT authentic T behaviour (no real hardware interlace)
+       — a legitimate optional/nostalgia mode, not the default (see UI doc for current default).
     2. **Progressive:** both fields composited per frame, no comb, full vertical detail.
     3. **Even-only:** present only the even field (raw sub-scanlines), discard odd.
     4. **Odd-only:** present only the odd field (the SMOOTHED sub-scanlines — CRS/RA0 rounding
-       lands here), discard even.
+       lands here), discard even. This is the FSM-confirmed "true P2000" single-field-repeated
+       rendering: one field's fetched data, line-doubled to fill 480, refreshed every field
+       (50 Hz) — no waiting on/compositing a second field.
     - Even-only vs odd-only are NOT identical: odd-only looks slightly smoother (it's the rounded
       scanlines), even-only slightly harder-edged. Both eliminate comb (single temporal field) at
-      the cost of half the vertical info.
+      the cost of half the vertical info — this is now understood to be the AUTHENTIC vertical
+      resolution the SAA5050 actually renders, not a reduced-fidelity fallback.
     - **Field-only default = line-double** (draw each field line twice to fill 480, gap-free,
       chunky). A scanline-gaps look is achievable via the existing scanline/CRT shader option — do
       NOT add a separate gaps mode.
@@ -843,6 +938,350 @@ marked synced. Do NOT edit the reference doc from this project.
 - **Applies to:** reference doc §… / <file/port>
 - **Synced:** yes (2026-07-05, into P2000T-reference.md + device guides)
 -->
+
+### 2026-07-22 — Milestone 19 IMPLEMENTED: FDC (µPD765) + InternalExtensionBoard
+- **Assumed:** the handoff's own spec (§13.19) was fully ROM-confirmed for ports, the presence
+  probe, the 3-gate boot condition, and the exact command byte sequences — implemented as
+  documented, no corrections needed to those facts.
+- **Found (design decision, not a hardware finding):** refactored `Machine`'s previously-inline
+  `Z80Ctc` construction (milestone 17) into a new `InternalExtensionBoard : IDevice, IIoSlot`
+  object owning both `Z80Ctc` and the new `Upd765`, realizing `IIoSlot`'s own doc comment
+  ("the I/O-mapped side of internal-slot boards (CTC/FDC — deferred, §14)" — no longer
+  deferred). `Machine.Ctc`/`Machine.Fdc` stay as public properties (now computed from
+  `Machine.Board`) so no existing call site (tests, `P2000.UI`) needed to change beyond adding
+  `RamVariant = RamVariant.T102` to `FloppyRam`-board test fixtures (see next finding).
+- **Found (config-validation added, per the handoff's own flag):** `Machine`'s constructor now
+  throws `ArgumentException` if `Board == InternalBoard.FloppyRam` and `RamVariant !=
+  RamVariant.T102` — the ROM's own disk-boot gate treats "banked RAM populated" and "disk
+  drives exist" as the same fact (reference doc §5b `memsize==3`), so the combination is not
+  hardware-plausible. This broke 4 pre-existing M17 tests that built a `FloppyRam` machine with
+  the default `RamVariant.T38` (`CtcIntegrationTests.BuildFloppyRamMachine`,
+  `MachineStateFileTests.StateRoundTrip_CtcAndLock_ArePreserved`) — fixed by adding
+  `RamVariant = RamVariant.T102` to those fixtures, not by relaxing the check.
+- **Found (deliberate scope reduction, documented in `Upd765`'s own XML doc):** READ DATA/WRITE
+  DATA do not implement a formal 7-byte result phase (ST0/ST1/ST2/C/H/R/N) — `getdos` never
+  reads it (the FDC's result INT redirects the polling loop's return address instead, an ISR
+  technique per `docs/JWSDOS-format.md` §6, not a protocol requirement). `ResultReady` fires and
+  the chip returns straight to Idle. Revisit only if a future DOS/driver is found that actually
+  reads a READ/WRITE DATA result phase.
+- **Found (unsourced approximation, flagged honestly):** exact seek-settle and per-byte
+  semi-DMA transfer timing (`SeekTStatesPerTrack`/`HeadSettleTStates`/`ByteTransferTStates` in
+  `Upd765.cs`) are NOT datasheet/ROM-sourced values — no test or doc pins an exact duration,
+  only that Authentic must honour *some* non-zero delay and Turbo must be instant (reference
+  doc §5d "Two-level speed"). Chosen small enough that authentic-mode unit tests stay fast
+  (~100k ticks covers a from-scratch RECALIBRATE settle comfortably). Revisit if a real seek/
+  transfer-rate figure surfaces.
+- **Found (derived, not directly stated by `docs/JWSDOS-format.md`): raw `.dsk` layout is
+  side-major, cylinder-minor**, not per-cylinder side-interleaved. Worked out from the format
+  doc's own confirmed byte ranges (§2): "track 1"/"track 2" (`getdos`'s names for cylinders 0/1)
+  sit at raw `0x0000`/`0x1000`, and the side-1 active directory at raw `0x1800`-`0x1FFF`
+  (cylinder 1, sectors 9-16) has every entry's side byte equal to 0 — only consistent if
+  consecutive cylinders of the SAME side are contiguous in the file. `DskImage.SectorOffset`
+  implements this as `head * Tracks * BytesPerTrack + cylinder * BytesPerTrack + (sector-1) *
+  BytesPerSector`; a `DskImageTests` case pins the `(cylinder=1, head=0, sector=9) → raw 0x1800`
+  identity explicitly so a future contributor doesn't have to re-derive this. **Not yet verified
+  against a real `.dsk` file** (see below) — flag for whoever supplies `Spel1.dsk`/
+  `jwssytem.dsk` to confirm this layout reads the ACTUAL 18-entry directory correctly, not just
+  a synthetic one shaped to match the assumption.
+- **Fixtures arrived mid-implementation (owner supplied `Spel1.dsk`/`jws-sytem.dsk`/
+  `empty-jws.dsk`/`hires_demo.dsk` in `assets/Disks/`) — the derived layout above IS confirmed
+  correct against real data:** both DOS-track reads (cylinder 0 and cylinder 1, head 0) via a
+  real `Upd765` command sequence match `Spel1.dsk`'s raw bytes exactly; `ReadDirectory()` returns
+  precisely the confirmed 18 real active-directory entries in on-disk order and never surfaces
+  any of the 20 stale-cluster filenames; geometry auto-detect reports 40-track/double-sided;
+  `jws-sytem.dsk`'s all-zero track 2 browses as an empty directory, not an error. See
+  `tests/P2000.Machine.Tests/Devices/Fdc/RealFixtureTests.cs`.
+- **Found (doc discrepancy, real-data-confirmed, flagged for the human to reconcile in
+  `docs/JWSDOS-format.md` §2 — not fixed here since this file doesn't edit the reference docs):**
+  `docs/JWSDOS-format.md` §2 claims "both clusters [stale 0x1000 and active 0x1800] have every
+  entry's side-byte (offset 24) equal to 0." Direct byte inspection of the real `Spel1.dsk`
+  shows the OPPOSITE: the stale cluster's entries all have offset-24 = 0, but the ACTIVE
+  directory's 18 entries all have offset-24 = **1**. This doesn't affect anything this milestone
+  built (`DskImage.ReadDirectory()` reads the active region by fixed raw offset, not by filtering
+  on this byte, and the CHS layout derivation above was independently validated against real
+  reads/writes matching raw file bytes) — flagging purely as a correction the human should carry
+  into the reference doc's own pass over `JWSDOS-format.md`.
+- **Attempted, NOT completed — full real-ROM-driven RUN-gate boot test:** built a
+  `FloppyRam`/T102 machine with a needs-DOS SLOT1 cartridge and ticked it through the real
+  embedded monitor ROM, expecting `getdos` to run and load `Spel1.dsk`'s two DOS tracks into
+  bank 1 automatically. It did not — bank 1 stayed at its pre-load zero content after boot
+  settled into SLOT1. Two findings surfaced during debugging, both left unresolved (not enough
+  signal to fix confidently without a disassembly-level trace):
+  1. **The SLOT1 header bits are ACTIVE-LOW**, confirmed empirically (not previously stated
+     explicitly either doc): `assets/BASIC.bin`'s real header byte is `0x5E` — bit0=0 means
+     PRESENT, bit1=1 means "ordinary, no DOS needed" — the reverse of a literal reading of
+     reference doc §5b's "bit0... '1' reads the same as open-bus" phrasing. Confirmed by
+     experiment (a modified `BASIC.bin` with bit1 cleared, real code otherwise intact, still
+     boots into SLOT1 normally).
+  2. **A hand-built all-zero synthetic 16 KB cartridge (any header-bit combination tried) was
+     never recognized as present/executable by the ROM at all** — boot never left ROM within a
+     15M T-state budget, regardless of the header byte. The real, working `BASIC.bin` boots
+     fine; an all-NOP-content image with the identical header byte does not. This means SLOT1
+     presence involves more than "not open-bus + header bits" — unconfirmed what (a checksum? a
+     specific entry-point convention?) — genuinely unsourced in either doc, not guessed at
+     further here. **Workaround used for the tests that follow this finding:** clone real,
+     working `assets/BASIC.bin` and flip only the needs-DOS bit, sidestepping the mystery
+     entirely rather than resolving it.
+  Even with that workaround, the gate itself (memsize==3 / cartridge-present / needs-DOS, or the
+  presence-probe's exact-`0x80` timing) did not visibly trigger `getdos` — bank 1 read back as
+  the pristine zero-fill a fresh `T102` machine starts with, not loaded disk content. **Given the
+  cost of chasing this further without additional ROM disassembly access, this specific
+  end-to-end path is left unverified** — the chip/board/host-API layer underneath it (this
+  milestone's actual deliverable) is independently proven correct via `RealFixtureTests.cs`
+  driving `Upd765` directly with the confirmed command bytes. Whoever revisits this: start by
+  confirming `memsize`'s exact RAM address/encoding and the presence probe's OUT/delay/IN timing
+  against a live trace, rather than re-guessing the header-bit semantics again.
+- **Applies to:** reference doc §5d (FDC ports/commands/presence probe — implemented as
+  documented) / `src/P2000.Machine/Devices/Fdc/Upd765.cs` (new),
+  `src/P2000.Machine/Devices/Fdc/DskImage.cs` (new),
+  `src/P2000.Machine/Devices/InternalExtensionBoard.cs` (new, refactors the M17 CTC wiring),
+  `src/P2000.Machine/Machine.cs` (`Board`/`Ctc`/`Fdc` properties, config validation, wiring),
+  `src/P2000.Machine/MachineConfig.cs` (`FloppyDiskImagePath`),
+  `src/P2000.Machine/State/MachineStateFile.cs` (bumped to v4),
+  `tests/P2000.Machine.Tests/Devices/Fdc/Upd765Tests.cs` (new),
+  `tests/P2000.Machine.Tests/Devices/Fdc/DskImageTests.cs` (new),
+  `tests/P2000.Machine.Tests/Devices/Fdc/RealFixtureTests.cs` (new, real `assets/Disks/*.dsk`
+  fixtures), `tests/P2000.Machine.Tests/Interrupts/FdcIntegrationTests.cs` (new).
+- **Synced:** no (implementation-only; the hardware facts themselves were already synced into
+  the reference doc before this pass, EXCEPT the offset-24/side-byte discrepancy noted above,
+  which the human should fold into `docs/JWSDOS-format.md` §2 directly since it corrects that
+  doc's own claim).
+
+### 2026-07-22 — Flag (not yet implemented): machine renders the FULL FIELD, not just the active window
+- **Trigger — owner's request:** *"I think that we should have the Machine render 'full
+  fields', so all 313 odd/312 even lines but outputting black for the 49 lines preceding, and
+  24 trailing, as well as a black leading part of each line, and a black trailing part. The UI
+  then should have an option to show 'Full-Field' or Graphics window only. On a real P2000 and
+  TV-setup, also only part of the screen contains the active video..."*
+- **Note on "313 odd/312 even":** the owner's phrasing recalls the standard PAL broadcast
+  convention (interlaced fields alternate 313/312 lines to total 625/frame). Per the
+  2026-07-21 correction (this file §3, reference doc §4a), the P2000T itself does NOT
+  interlace — the manual gives a single **313** for "a field," not an alternating pair — so
+  this build uses **313 for every field**, not an alternating 313/312. Flagging the
+  terminology gap rather than silently picking one; if the owner specifically wants genuine
+  313/312 alternation modelled (e.g. for a future composite-sync-accurate output), that's a
+  bigger, separate ask than what's specified below — the geometry here assumes uniform 313.
+- **Numbers used below, and where they came from:** reference doc §4a "Full raster geometry"
+  (new section, 2026-07-22) derives the complete raster from the manual's own figures plus the
+  owner's 49/24 vertical split (§4, corrected same day) and a newly-derived 15/40/9 horizontal
+  leading/active/trailing char-time split (from the manual's "character times 15-55" marker,
+  read with the same half-open convention as the vertical split). The owner's message quotes
+  49 leading / 24 trailing **vertically** — matches exactly. Horizontal leading/trailing
+  (15 µs / 9 µs) was this pass's own derivation, not previously stated by the owner — **since
+  corrected again same day, see below.**
+- **Owner review round 1 (before implementation — "comment first before making changes"):**
+  raised two concerns, addressed before any code was touched:
+  1. **Don't revert the dual even/odd field rendering.** The owner clarified the current
+     implementation already computes distinct even/odd field passes, and the existing 4-way
+     display-mode system depends on that. **RESOLVED — see the WITHDRAWN note above** (this
+     file, 2026-07-21 entry): the speculative "collapse to one field always complete" question
+     is retracted; nothing about `Video`'s per-field computation changes; only the default mode
+     selection does (already covered by the separate 2026-07-21 flag).
+  2. **1024 px width is too wide.** The owner's model (no scope available to confirm the real
+     signal directly): the chip cuts off immediately after char-time 64, and the **start of the
+     next line** (char-times 0–5, 6 char-times — 5-vs-6 ambiguous, manual not fully explicit)
+     is genuine **horizontal retrace — the chip emits nothing at all there, not black, nothing.**
+     Trailing blank is left intact (retrace is a leading-edge phenomenon on the FOLLOWING line,
+     not a trailing one on this line). **RESOLVED — numbers below corrected accordingly**
+     (leading blank 15→9 char-times, width 1024→928).
+- **Full geometry, CORRECTED 2026-07-22 for the retrace exclusion (reference doc §4a has the
+  derivation):**
+  - Full field: **928 × 626 px** (was 640×480 active-only; briefly 1024×626 before the retrace
+    correction above — 928 is current).
+  - Horizontal: 144 px leading blank (9 char-times, retrace's 6 char-times/96 px excluded
+    entirely — not rendered, not even black) + 640 px active + 144 px trailing blank (9
+    char-times, unchanged) = 928.
+  - Vertical: 98 px pre-roll blank + 480 px active + 48 px post-roll blank = 626 (vertical
+    retrace not addressed yet — owner's request so far is horizontal-only; flag for later if
+    wanted).
+  - Active "graphics window" crop rectangle: fixed at **(144, 98)**, size 640×480, every field
+    — horizontally symmetric (144 px both sides) as a side effect of the 6-char-time retrace
+    assumption, not independently confirmed.
+- **Design shape (continuing the 2026-07-21 ownership correction — same principle, applied one
+  level further):** the **machine** always produces the complete 928×626 raster, including
+  flat-black blanking (no fetch occurs there — §4 — so nothing to render, no contention
+  possible, cheap). The **UI** gets a new, second, ORTHOGONAL toggle — **Full-Field vs
+  Graphics-window** — independent of the existing 4-way display-mode toggle (interlaced/
+  progressive/even-only/odd-only): one axis picks the field SOURCE, the other picks how much
+  of the resulting raster to CROP for display. Default: **Graphics-window** (today's familiar
+  640×480 view, no behaviour change for existing users) — **Full-Field** is opt-in
+  authenticity/debug viewing, matching the owner's own framing ("on a real P2000 and TV-setup,
+  also only part of the screen contains the active video" — i.e. Full-Field shows what a real
+  TV's overscan normally hides). See reference doc §3a for the UI-facing spec and CLAUDE_UI.md
+  §8 for the implementation-facing one.
+- **Downstream sweep needed — NOT done in this pass, concrete list for Claude Code:** this
+  file and `P2000.UI/CLAUDE.md` reference "640×480" as THE framebuffer size in many places
+  beyond the primary definition (now corrected, this file §3). Known spots to reconcile,
+  found by searching both files for "640" — not exhaustive, re-search before starting:
+  - This file §3: the observer/ownership prose after the primary definition (persistent-buffer
+    description, "complete image every field" — just updated above), §3b observer
+    surfaces, `RunField()`/snapshot descriptions if any assume the old size.
+  - `P2000.UI/CLAUDE.md` §3.1 "Framebuffer handoff" (states "one persistent 640×480 `uint[]`
+    BGRA buffer" — needs to become 928×626, with the UI's blit path choosing the crop).
+  - `P2000.UI/CLAUDE.md` §8 "Display / rendering" — blit code (`WriteableBitmap` sizing),
+    PAL-aspect-ratio math (already noted in reference doc §4a as extensible to the full
+    buffer, but the UI code doing the math needs updating), the milestone-6 finding's
+    `CorruptionOverlay` coordinate space (overlay indices were relative to the 640×480 active
+    buffer — now need a +144/+98 offset if the overlay is to be drawn against the full-field
+    buffer, or the overlay could stay active-window-sized and get offset only at draw time —
+    Claude Code's call).
+  - Tests: any golden/integration test asserting exact framebuffer dimensions, pixel offsets,
+    or `WriteableBitmap` size (both `P2000.Machine.Tests` and UI-side tests).
+  - **Explicitly UNAFFECTED, no change needed:** the contention model (§4) — still only the
+    active window's fetch slots are ever contention-eligible, blanking is categorically
+    fetch-free regardless of buffer size; the 4-way display-mode logic (odd-only/interlaced/
+    etc.) — orthogonal to this, composes with it rather than being changed by it.
+- **Applies to:** reference doc §3a (Full-Field vs Graphics-window toggle), §4a (Full raster
+  geometry) / `src/P2000.Machine/Devices/Video.cs`, `src/P2000.Machine/Devices/Saa5050/
+  Saa5050Generator.cs`, `src/P2000.UI/Rendering/DisplayMode.cs`, `src/P2000.UI/Rendering/
+  DisplayControl.cs`, `src/P2000.UI/ViewModels/DisplayWindowVm.cs`.
+- **Synced:** yes (2026-07-22, into P2000T-reference.md §3a/§4a) — implementation still
+  outstanding.
+
+### 2026-07-21 — Flag (not yet implemented): RAM should power up non-zero, not all-zero
+- **Trigger — owner's report (real hardware test):** *"When starting up, the display shows
+  'garbage' imagery briefly then it gets cleared by the monitor ROM. This means that the
+  (video) RAM of a P2000 is not all zero's at startup, but contains random bytes. Would be
+  nice to mimic this in the emulator as well."*
+- **Hardware basis (general engineering fact, not manual-sourced — no datasheet specifies an
+  "official" power-on pattern):** volatile SRAM/DRAM content at power-on is unpredictable, not
+  zero. Reference doc §5b now documents this (new section, "RAM power-on content is NOT zero"),
+  cross-referenced against the existing CONFIRMED boot sequence — step 3's monitor-ROM screen
+  write is what clears the garbage, matching the owner's "briefly shown, then cleared" report.
+- **CRITICAL constraint — this MUST respect Locked decision §2.2 ("No `DateTime`/threads/
+  randomness in emulation code"):** do NOT fill RAM with `System.Random` or any nondeterministic
+  source. Use a **fixed-seed deterministic pseudo-random fill** (e.g. a small LCG/xorshift
+  seeded with a compile-time constant, or any reproducible non-zero pattern) — same output
+  every run, so `SaveState`/`LoadState`, golden tests, and replay determinism are unaffected.
+  This mirrors the project's own precedent for "looks random but must stay reproducible" needs
+  (the milestone-9 cassette blank-tape "deterministic pseudo-noise" decision) — though note
+  that specific instance was later reverted (2026-07-14 finding, this file) because real ROM
+  behaviour needed literal silence, not noise, for a *blank* tape specifically; that's a
+  different, tape-specific hardware requirement and does NOT apply here — there's no known
+  "RAM must actually be X" requirement, just "must not be a suspiciously clean zero." Worth
+  reading that entry anyway before implementing, as a reminder to double check ROM/boot-code
+  assumptions don't silently depend on RAM starting at zero (e.g. the RAM-sizing probe, stack
+  usage before init) before flipping the default.
+- **REFINED (2026-07-21, owner follow-up) — how to get TRUE randomness without touching the
+  locked rule:** the owner asked, correctly, whether starting from a fixed/last-used hardware
+  CONFIG and using true randomness for the initial RAM fill would actually violate determinism
+  — **it would not, and there's a clean way to get both.** The owner's own reasoning holds:
+  once the machine is running, everything downstream is already deterministic (single-threaded
+  tick loop, no other randomness source); and `SaveState`/`LoadState` captures the **concrete
+  resulting bytes**, not a formula that produced them — reloading a saved state reproduces the
+  exact machine regardless of how the original RAM content came to be. So reproducibility of a
+  saved session was never actually at risk.
+  - **The one place it WOULD matter: automated tests/CI that construct `new Machine()` directly**
+    (not through a UI boot flow) and expect the same outcome on every run (e.g. the milestone-7
+    boot integration tests below — "reaches cassette-wait loop... in well under 5M T-states").
+    A truly random fill risks rare, hard-to-reproduce flakiness there if any boot-code path is
+    even incidentally sensitive to pre-init RAM content (stack scratch, an uninitialized
+    variable read before write, etc.) — low probability, but the kind of bug that's painful to
+    chase precisely because it wouldn't reproduce on demand.
+  - **Resolution — keep the entropy source OUTSIDE the core, let the core stay a pure function
+    of an explicit seed:** give the RAM-fill routine an optional seed input (e.g.
+    `Reset(ulong? ramSeed = null)` or a `MachineConfig`-adjacent construction parameter) —
+    `null`/omitted → **fixed deterministic default seed** (what every test and any caller that
+    doesn't care gets, keeping CI fully reproducible and Locked decision §2.2 satisfied to the
+    letter: the core itself never calls a nondeterministic API). An **explicit seed** →
+    deterministic-with-that-seed (useful for reproducing a specific bug report that mentions
+    its seed). **`P2000.UI` is free to generate a fresh true-random seed itself** (ordinary
+    `System.Random`/OS entropy, living in the UI project, which is NOT under the "no randomness
+    in emulation code" constraint — that rule scopes to the core) and pass it in at each cold
+    boot / app launch — giving the interactive app genuinely unpredictable garbage every real
+    session while the machine layer remains, by construction, a deterministic function of
+    (config, seed, input events). This is the same shape as the existing `MonitorRomPath`-style
+    optional-override pattern already used elsewhere in this file (null → built-in default,
+    explicit value → override) — not a new architectural idiom.
+  - **The "last-saved HW configuration" part of the owner's proposal is a separate, smaller UI
+    idea** (auto-boot into whatever `.cfg` topology was last used, rather than always bare-by-
+    default) — worth having, but orthogonal to the seed mechanism above: the seed can be
+    injected at ANY cold-boot moment regardless of which config that boot uses (bare-default, a
+    manually loaded `.cfg`, or a hypothetical auto-restored last-used one). Not yet a documented
+    feature — currently `.cfg` load/save is manual via the config window (this file §7/§11,
+    P2000.UI CLAUDE.md §7). Flag as a nice-to-have, not required for the RAM fix.
+- **Scope decision needed (flag, not resolved here):** VRAM-only (matches the owner's directly
+  observed symptom, smallest change) vs. all RAM including base/expansion/banked window (more
+  hardware-faithful, per the general phenomenon — reference doc §5b leans toward this being
+  correct for all RAM, only VRAM being independently visually confirmed). Recommend all-RAM
+  unless a reason emerges to scope it down.
+- **Adjacent finding surfaced by this same question, SEPARATE from the fill-value fix above —
+  flag for owner's call, do not assume in scope:** this file's own 2026-07-07 milestone-15
+  finding (below) states `PageTable.ClearRam()` runs on a full reset and calls this "intentional
+  ... a reset is a full state wipe" — implying **both warm and cold reset currently zero RAM.**
+  On real Z80 hardware, the RESET line does not touch memory chips at all — a warm/soft reset
+  (reset button) leaves RAM contents exactly as they were; only an actual power-cycle (cold
+  boot) would present fresh, unpredictable content. If that's still true of this build, a warm
+  reset today produces a THIRD behaviour that matches neither real warm-reset (untouched RAM)
+  nor real cold-boot (garbage RAM) — it produces clean zeros, which is arguably the least
+  authentic of the three. Fixing the cold-boot fill value without also revisiting whether warm
+  reset should skip `ClearRam()` entirely would leave that inconsistency in place. Flagging both
+  together so they're not solved in a way that talks past each other; scope of the warm-reset
+  half is the owner's call — the user asked specifically about the cold-boot garbage effect.
+- **Applies to:** reference doc §5b (new "RAM power-on content is NOT zero" section) /
+  `src/P2000.Machine/Memory/PageTable.cs` (`ClearRam()`, constructor/`Reset()` fill, new
+  optional seed parameter), `src/P2000.Machine/Machine.cs` (`Reset(ulong? ramSeed)` or
+  equivalent, warm vs cold reset dispatch if that half is taken on too), `src/P2000.UI/`
+  (wherever cold reset / machine construction is triggered — the true-random seed source).
+- **Synced:** yes (2026-07-21, into P2000T-reference.md §5b) — implementation still outstanding.
+
+### 2026-07-19 — Flag (not yet verified against source): VideoFetchUnit vertical/field-position offset
+- **Trigger:** owner reported Ghosthunt display glitches concentrated in the **top ~15%
+  of the screen**, and asked whether contention modelling accounts for the video chip
+  only fetching VRAM during the active display window within a field, not across the
+  whole field.
+- **New sourced fact (owner-supplied P2000TM Field Service manual, "T-VERSION VIDEO
+  GENERATION"):** T-version field = **313 scanlines**; active/displayable window =
+  **scanlines 49–289 (240 lines)**. This means **48 lines (~7,680 T-states) of vertical
+  blank precede the active window**, and ~24–25 lines (~3,840–4,000 T-states) follow it
+  — an asymmetric split, not an even ~36/36. Full detail and T-state math now in
+  reference doc §4 ("Display-start offset") and §4a ("Vertical structure").
+- **Explicit correction from the owner, must not be lost in any fix:** *"assuming that
+  all 50000 cycles are used during the 640×480 area is wrong"* — only ~38,400 of the
+  50,000 T-states/field are inside the active window; the rest must be contention-free
+  regardless of CPU RAM activity during those T-states.
+- **Leading hypothesis (UNVERIFIED — this project's CLAUDE.md instance has not read
+  `VideoFetchUnit.cs`, per the design-doc-maintainer role; needs checking against the
+  real source, not assumed):** if `VideoFetchUnit`'s fetch/contention-eligible window
+  currently starts at field-T-state 0 rather than being offset by ~7,680 T-states
+  (48 lines) into the field, it would incorrectly treat real hardware's pre-roll
+  vertical-blank T-states as fetch-eligible — producing spurious contention/glitches
+  concentrated at the top of the frame. 48/313 ≈ 15.3%, closely matching the reported
+  "top 15%" symptom, which is why this is the leading hypothesis, but **verify against
+  the actual implementation before changing anything** — neither of the two existing
+  milestone-10 findings entries (2026-07-05, 2026-07-06 below) address vertical
+  raster position at all, so this is genuinely unaddressed ground, not a re-litigation
+  of settled work.
+- **If confirmed:** the fix is presumably to gate fetch-slot scheduling (and therefore
+  contention eligibility) so it only runs during field-T-states corresponding to
+  scanlines 49–289 (i.e., skip/no-op the first ~7,680 T-states and the last
+  ~3,840–4,000 T-states of each field), rather than across the full 50,000. Confirm the
+  exact current start/end behaviour first — this note does not assume the bug exists.
+- **RESOLVED (2026-07-21, owner clarification):** the manual's *"no interlacing is
+  used"* statement for the T-version is CONFIRMED correct and the owner agrees — the
+  P2000T has no real even/odd field pairing into a frame; every field is an
+  independent 313-line refresh. This corrected §3 above ("Fields vs frames").
+  **Ownership correction (also 2026-07-21):** the display-mode DEFAULT is a
+  **P2000.UI-owned setting**, not a machine one (§3's own pre-existing milestone-5
+  finding already scoped this correctly — see §3's "Ownership correction" note); the
+  owner's decision to default to Odd-only (line-doubled single field) instead of
+  Interlaced/comb belongs in `src/P2000.UI/CLAUDE.md` §8 and reference doc §3a, both
+  updated. This file (`src/P2000.Machine/CLAUDE.md`) only carries the underlying
+  hardware-timing correction, not the UI default.
+- **RESOLVED (2026-07-21):** `docs/SAA5050-implementation.md` — the owner supplied the
+  actual file content; it now has a local working copy (`SAA5050-implementation.md`,
+  de facto canonical as of this pass) and has been updated in parallel with the same
+  interlacing correction (§5 "Fields, frames, and CRS").
+- **NEW flag, unverified, machine-layer (2026-07-21) — distinct from the UI default
+  question above:** whether `Video`'s raw per-field buffer-composition ("each field
+  writes only its own alternating half-lines into a persistent buffer") still holds
+  now that no true interlace exists — see §3's "Separate, machine-level question" note
+  for detail. This is about what data the machine hands to the UI each field, not
+  which of the 4 modes the UI defaults to presenting.
+- **Applies to:** reference doc §4 (Display-start offset) and §4a (Vertical structure) /
+  `src/P2000.Machine/Contention/VideoFetchUnit.cs`, possibly `src/P2000.Machine/Devices/Video.cs`.
+- **Synced:** yes (2026-07-19, into P2000T-reference.md §4/§4a) — implementation-side
+  verification and any resulting fix still outstanding.
 
 ### 2026-07-02 — Milestone 2: page table
 - **Assumed:** nothing to confirm on the ROM/RAM/expansion/open-bus shape — those are all

@@ -156,7 +156,7 @@ public class MachineStateFileTests
     [Fact]
     public void StateRoundTrip_CtcAndLock_ArePreserved()
     {
-        var machine = new Machine(new MachineConfig { Board = InternalBoard.FloppyRam });
+        var machine = new Machine(new MachineConfig { Board = InternalBoard.FloppyRam, RamVariant = RamVariant.T102 });
         machine.Ports.Write(0x88, 0x20);       // CTC vector base
         machine.Ports.Write(0x8B, 0xD5);       // ch3: counter mode, INTEN, TCNEXT, rising trig
         machine.Ports.Write(0x8B, 0x01);       // TC = 1

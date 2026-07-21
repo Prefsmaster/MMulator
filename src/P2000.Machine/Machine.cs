@@ -4,6 +4,7 @@ using P2000.Machine.Debug;
 using P2000.Machine.Devices;
 using P2000.Machine.Devices.Cassette;
 using P2000.Machine.Devices.Ctc;
+using P2000.Machine.Devices.Fdc;
 using P2000.Machine.Interrupts;
 using P2000.Machine.Io;
 using P2000.Machine.Memory;
@@ -59,13 +60,21 @@ public sealed class Machine
     /// source fires yet (front-panel soft-reset and SLOT1 pin 1A are wired later).</summary>
     public InterruptAggregator Interrupts { get; } = new();
 
-    /// <summary>Z80-CTC (project CLAUDE.md §13 milestone 17), present only when
-    /// <see cref="MachineConfig.Board"/> is <see cref="InternalBoard.FloppyRam"/> — the only
-    /// board that carries a CTC (reference doc §5d/§5e). <c>null</c> for a bare T or a
-    /// RAM-only board, matching "absent CTC = genuine silence" (ports 0x88-0x8B answer open
-    /// bus, no INT is ever asserted, and the ROM's presence probe auto-falls-through to the
-    /// video 50 Hz IM1 tick).</summary>
-    public Z80Ctc? Ctc { get; }
+    /// <summary>The floppy+RAM internal-extension board (project CLAUDE.md §13 milestones
+    /// 17/19), present only when <see cref="MachineConfig.Board"/> is
+    /// <see cref="InternalBoard.FloppyRam"/> — the only board that carries a CTC + FDC
+    /// (reference doc §5d/§5e). <c>null</c> for a bare T or a RAM-only board.</summary>
+    public InternalExtensionBoard? Board { get; }
+
+    /// <summary>The board's Z80-CTC, or <c>null</c> when no board is fitted — matching "absent
+    /// CTC = genuine silence" (ports 0x88-0x8B answer open bus, no INT is ever asserted, and the
+    /// ROM's presence probe auto-falls-through to the video 50 Hz IM1 tick).</summary>
+    public Z80Ctc? Ctc => Board?.Ctc;
+
+    /// <summary>The board's µPD765 FDC (project CLAUDE.md §13 milestone 19), or <c>null</c>
+    /// when no board is fitted. Absent-FDC = open-bus 0x8C/0x8D/0x90, matching the CTC's
+    /// "genuine silence" fallback pattern (reference doc §5d).</summary>
+    public Upd765? Fdc => Board?.Fdc;
 
     /// <summary>SLOT1 cartridge (0x1000–0x4FFF, reference doc §5c), or <c>null</c> when the
     /// machine is bare (cassette-wait boot). Constructed from
@@ -161,36 +170,46 @@ public sealed class Machine
         // Wire the 50 Hz field boundary → Sound sample-block synthesis.
         Video.FieldComplete += Sound.OnFieldComplete;
 
-        // Floppy+RAM internal-extension board (project CLAUDE.md §13 milestone 17, reference
-        // doc §5d/§5e): the only board that carries a CTC. Board-agnostic chip; wiring here is
-        // the "owning board"'s job, per the design decision (no separate board class needed
-        // until a second CTC-bearing board is real).
+        // Floppy+RAM internal-extension board (project CLAUDE.md §13 milestones 17/19,
+        // reference doc §5d/§5e): the only board that carries a CTC + FDC. Board-agnostic
+        // chips; wiring here is the "owning board"'s job (InternalExtensionBoard.RegisterPorts
+        // handles the port-mapping half; the field-pulse and result-INT feeds are Machine's
+        // job since they cross device boundaries the board object doesn't otherwise touch).
         if (Config.Board == InternalBoard.FloppyRam)
         {
-            Ctc = new Z80Ctc();
+            // Config-validation (project CLAUDE.md §13.19): the ROM's own disk-boot gate ties
+            // "banked RAM at 0xE000-0xFFFF populated" to "disk drives exist" (memsize==3,
+            // reference doc §5b) — an FDC-equipped board without T102's banked RAM is not a
+            // hardware-plausible combination, so reject it at assembly time rather than let it
+            // silently misbehave at boot.
+            if (Config.RamVariant != RamVariant.T102)
+                throw new ArgumentException(
+                    "InternalBoard.FloppyRam requires RamVariant.T102 (memsize==3) — the " +
+                    "monitor ROM's disk-boot gate treats banked-RAM presence and disk-drive " +
+                    "presence as the same fact (reference doc §5b).", nameof(config));
 
-            for (var ch = 0; ch < Z80Ctc.ChannelCount; ch++)
-            {
-                var channel = ch;
-                var port = (byte)(Z80Ctc.PortBase + ch);
-                Ports.RegisterWrite(port, v => Ctc.WritePort(channel, v));
-                Ports.RegisterRead(port, () => Ctc.ReadPort(channel));
-            }
+            Board = new InternalExtensionBoard();
+            Board.RegisterPorts(Ports);
 
             // ch3 CLK/TRG ← the video 50 Hz field pulse (reference doc §5e: the CTC-as-
             // system-tick wiring; confirmed from the owner's working video code).
-            Video.FieldComplete += () => Ctc.ClkTrg(3);
+            Video.FieldComplete += () => Board.Ctc.ClkTrg(3);
 
             // IM2 daisy chain: CTC channels register in priority order, ch0 highest
-            // (reference doc §5d/§5e).
+            // (reference doc §5d/§5e). The FDC's own INT-to-ch0 wiring lives inside
+            // InternalExtensionBoard's constructor (it's a fixed fact of this board, not
+            // something Machine needs to know about).
             var daisyChain = new DaisyChain();
-            foreach (var device in Ctc.DaisyChainDevices)
+            foreach (var device in Board.Ctc.DaisyChainDevices)
                 daisyChain.Register(device);
             Interrupts.AttachDaisyChain(daisyChain);
 
             // Lock (internal-slot pin 35): an active extension board suppresses the onboard
             // video 50 Hz INT so only the CTC drives INT (reference doc §5e "hardware arbiter").
             Interrupts.SetLock(true);
+
+            if (Config.FloppyDiskImagePath is not null)
+                Board.Fdc.MountDisk(0, new DskImage(Config.FloppyDiskImagePath));
         }
 
         Cpu.Reset();
@@ -238,7 +257,7 @@ public sealed class Machine
         Keyboard.Reset();
         Mdcr.Reset();
         Sound.Reset();
-        Ctc?.Reset();
+        Board?.Reset();
         Slot1?.Reset();
         _pins = 0;
         _lastM1WasEd = false;
@@ -470,10 +489,10 @@ public sealed class Machine
         if ((_pins & Pins.MREQ) != 0 && Memory.IsVideoRamAddress(Pins.GetAddress(_pins)))
             Video.CorruptLastFetch();
 
-        // Advance master-clock devices (cassette bit engine; CTC timer-mode channels —
-        // machine CLAUDE.md §3 step 5).
+        // Advance master-clock devices (cassette bit engine; CTC timer-mode channels + FDC
+        // seek/transfer pacing — machine CLAUDE.md §3 step 5).
         Mdcr.Tick(1);
-        Ctc?.Tick();
+        Board?.Tick();
     }
 
     // ── Command queue drain (project CLAUDE.md §3b.3, milestone 15) ──────────────────────
@@ -655,7 +674,7 @@ public sealed class Machine
         Mdcr.SaveState(writer);
         Sound.SaveState(writer);
         Interrupts.SaveState(writer);
-        Ctc?.SaveState(writer);
+        Board?.SaveState(writer);
     }
 
     /// <summary>Restores runtime state saved by <see cref="SaveState"/>. Intended to be
@@ -674,7 +693,7 @@ public sealed class Machine
         Mdcr.LoadState(reader);
         Sound.LoadState(reader);
         Interrupts.LoadState(reader);
-        Ctc?.LoadState(reader);
+        Board?.LoadState(reader);
     }
 
     // ---- CPU register serialization (Z80.Core has no IStateWriter dependency) -------------

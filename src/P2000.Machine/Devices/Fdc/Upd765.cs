@@ -224,11 +224,27 @@ public sealed class Upd765 : IDevice
         _enabled = (value & CtrlEnable) != 0;
         _motorOn = (value & CtrlMotor) != 0;
 
-        if ((value & CtrlReset) != 0)
+        if ((value & CtrlReset) != 0 && _phase == Phase.Idle)
         {
             // Chip reset is synchronous — no settle delay of its own. The ROM's ~1.3 ms DJNZ
             // delay before probing MSR is a pure CPU busy-loop (reference doc §5d); the chip
             // must already read back as idle (0x80) the instant this returns.
+            //
+            // ONLY takes effect from Idle — confirmed necessary against the real ROM driver
+            // (docs/Monitor Documented Disassembly/Disk.asm), which writes this same RESET bit
+            // WHILE a command is still active in TWO separate confirmed places, and both are
+            // ordinary, working code, not an error path:
+            //   - `read_status_bytes` writes RESET|MOTOR (0x0C) WHILE a SENSE INTERRUPT STATUS
+            //     result phase is still pending readout (`read_dsk_status`'s `out (DSKSTAT),
+            //     0x08` just before) — if RESET discarded it, those bytes would never be valid.
+            //   - `read_track` writes RESET|MOTOR|ENABLE (0x0D) to ARM the semi-DMA transfer
+            //     immediately AFTER `disk_send_command` already dispatched the 9-byte READ DATA
+            //     command (putting the chip in ExecutionPhase) — if RESET aborted that transfer,
+            //     the subsequent `wait_next_trk_byte` busy-poll would find MSR idle forever
+            ///    (reproduced live: this exact sequence hung a boot test at that poll loop).
+            // Two independent confirmed sites writing RESET mid-command, in real working code,
+            // is strong enough evidence that this bit simply has no effect once a command is
+            // already in flight — it's the presence-probe/initial-power-on reset only.
             _phase = Phase.Idle;
             _commandBuffer.Clear();
             _pending = PendingAction.None;
@@ -246,9 +262,13 @@ public sealed class Upd765 : IDevice
         }
     }
 
-    /// <summary>Advances master-clock-driven delays: seek/recalibrate settle time and
-    /// per-byte semi-DMA pacing (both Authentic-only — Turbo completes synchronously at
-    /// dispatch time, see <see cref="Dispatch"/>/<see cref="StartByteDelay"/>).</summary>
+    /// <summary>Advances master-clock-driven delays: seek/recalibrate settle time and per-byte
+    /// semi-DMA pacing. Authentic honours a realistic delay for both. Turbo still defers
+    /// SEEK/RECALIBRATE completion by <see cref="MinimumTurboSeekTStates"/> — NOT
+    /// synchronous with the command dispatch, see that constant's doc comment for why (a real,
+    /// found-via-boot-hang bug). Per-byte semi-DMA readiness stays synchronous under Turbo
+    /// (<see cref="StartByteDelay"/>) since the ROM only ever busy-polls for it, never waits on
+    /// it via an interrupt/HALT — no equivalent lost-wakeup risk there.</summary>
     public void Tick()
     {
         if (_delayCounter <= 0) return;
@@ -259,6 +279,9 @@ public sealed class Upd765 : IDevice
         {
             case PendingAction.SeekSettle:
                 _pending = PendingAction.None;
+                _phase = Phase.Idle; // was missing — the seek's ExecutionPhase never actually
+                                     // ended on this (Tick()-driven) completion path, leaving
+                                     // MSR permanently reporting busy after a completed seek.
                 _cylinder[_pendingDrive] = _pendingCylinder;
                 _selectedDrive = _pendingDrive;
                 _seekInterruptPending = true;
@@ -310,6 +333,21 @@ public sealed class Upd765 : IDevice
         BeginSeek(drive, target);
     }
 
+    /// <summary>Minimum settle delay under Turbo, in T-states. NOT zero — real bug, found via
+    /// a live boot-test hang and fixed here: the ROM always sends the SEEK/RECALIBRATE command
+    /// bytes and THEN executes an explicit `halt` a few instructions later, expecting to be
+    /// woken by ITS OWN completion interrupt (Disk.asm `disk_recall`/`disk_do_search`). If the
+    /// chip fires <see cref="ResultReady"/> SYNCHRONOUSLY inside the command dispatch (i.e.
+    /// before the ROM ever reaches that `halt`), the interrupt is accepted and fully serviced
+    /// (IM2 vector → ISR → RETI) at the very next instruction boundary — often still inside
+    /// `disk_send_command`'s own loop — and is gone by the time `halt` actually executes. A
+    /// real one-shot, level-cleared-on-Acknowledge interrupt that fires and is consumed BEFORE
+    /// the intended waiter ever looks is a lost wakeup: the CPU halts forever waiting for an
+    /// event that already happened. This constant only needs to safely outlast the handful of
+    /// T-states between command dispatch and the ROM's own `halt` (a RET + a few fetches,
+    /// nowhere near this many) — it is not meant to model a real seek time.</summary>
+    private const int MinimumTurboSeekTStates = 200;
+
     private void BeginSeek(int drive, int targetCylinder)
     {
         _phase = Phase.ExecutionPhase;
@@ -321,14 +359,7 @@ public sealed class Upd765 : IDevice
         var distance = Math.Abs(targetCylinder - _cylinder[drive]);
         if (Policy == TimingPolicy.Turbo)
         {
-            // Instant: apply immediately, no Tick()-driven delay.
-            _pending = PendingAction.None;
-            _phase = Phase.Idle;
-            _cylinder[drive] = targetCylinder;
-            _selectedDrive = drive;
-            _seekInterruptPending = true;
-            _lastCompletedDrive = drive;
-            ResultReady?.Invoke();
+            _delayCounter = MinimumTurboSeekTStates;
         }
         else
         {
@@ -351,7 +382,18 @@ public sealed class Upd765 : IDevice
     private void DispatchReadWrite(bool isWrite)
     {
         var drive = _commandBuffer[1] & 0x03;
-        var cylinder = _commandBuffer[2];
+        // The command's OWN cylinder byte is NOT used for addressing — confirmed against the
+        // real ROM driver (docs/Monitor Documented Disassembly/Disk.asm `getdos`/`read_track`):
+        // the READ DATA command template is copied to RAM ONCE and its cylinder field is never
+        // updated between the two DOS-track reads (both send the identical hardcoded byte),
+        // while the ACTUAL cylinder read differs (track 1 vs track 2) purely because a
+        // separate SEEK command physically repositioned the head in between. Real µPD765
+        // hardware reads/writes at wherever the head physically IS (tracked via prior SEEK/
+        // RECALIBRATE) — the command's C field is for ID-field verification against the
+        // medium, not addressing. This emulator has no separate per-sector ID-field model, so
+        // the most faithful equivalent is: address the mounted image using the FDC's own
+        // internally-tracked <see cref="_cylinder"/>, not the command byte.
+        var cylinder = _cylinder[drive];
         var head = _commandBuffer[3] & 0x01;
         var startSector = _commandBuffer[4];
         var sizeCode = _commandBuffer[5];

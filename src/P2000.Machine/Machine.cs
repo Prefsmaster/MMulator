@@ -214,7 +214,14 @@ public sealed class Machine
             Interrupts.SetLock(true);
 
             if (Config.FloppyDiskImagePath is not null)
-                Board.Fdc.MountDisk(0, new DskImage(Config.FloppyDiskImagePath));
+                // Drive index 1, NOT 0 — confirmed real bug, found via a boot test that reached
+                // SLOT1 but loaded all-zero data: the ROM's own FDC commands hardcode unit
+                // select "01" throughout (Disk.asm disk_constants: "drive #" bytes are all
+                // 0x01, and disk_recall_cmd's own comment says "device # at disk_recall_device
+                // (default 1)") — it never addresses unit 0. Mounting on index 0 left the drive
+                // the ROM actually reads from unmounted, so every READ DATA silently served
+                // zero-filled transfer buffers instead of throwing.
+                Board.Fdc.MountDisk(1, new DskImage(Config.FloppyDiskImagePath));
         }
 
         Cpu.Reset();

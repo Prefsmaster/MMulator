@@ -72,8 +72,18 @@ public class Upd765Tests
 
     // ---- RECALIBRATE / SEEK / SENSE INTERRUPT STATUS -----------------------------------------
 
+    /// <summary>
+    /// Turbo still defers completion by a small, fixed number of T-states — NOT literally zero.
+    /// Real bug, found via a live boot-test hang: if RECALIBRATE/SEEK fired their completion
+    /// interrupt SYNCHRONOUSLY inside the command dispatch, the interrupt gets accepted and
+    /// fully serviced (IM2 vector → ISR → RETI) before the ROM ever reaches its own subsequent
+    /// `halt` (Disk.asm `disk_recall`/`disk_do_search` always send the command, THEN halt,
+    /// expecting to be woken by that same completion) — a lost wakeup, since the one-shot
+    /// interrupt is already consumed by the time the intended waiter starts waiting. See
+    /// <see cref="Upd765.MinimumTurboSeekTStates"/>'s doc comment for the full trace.
+    /// </summary>
     [Fact]
-    public void Recalibrate_Turbo_CompletesSynchronously_FiresResultReady()
+    public void Recalibrate_Turbo_CompletesAfterAFewTStates_FiresResultReady()
     {
         var fdc = new Upd765 { Policy = TimingPolicy.Turbo };
         var fired = false;
@@ -82,6 +92,8 @@ public class Upd765Tests
         fdc.WriteData(0x07); // RECALIBRATE
         fdc.WriteData(0x01); // unit
 
+        Assert.False(fired); // not synchronous — see the doc comment above
+        for (var i = 0; i < 300; i++) fdc.Tick();
         Assert.True(fired);
         Assert.Equal(0x80, fdc.ReadStatus()); // back to idle, ready for Sense Interrupt Status
     }
@@ -111,6 +123,7 @@ public class Upd765Tests
         fdc.WriteData(0x0F); // SEEK
         fdc.WriteData(0x01); // unit
         fdc.WriteData(0x05); // target cylinder 5
+        for (var i = 0; i < 300; i++) fdc.Tick(); // let the (now deferred) seek complete
 
         fdc.WriteData(0x08); // SENSE INTERRUPT STATUS
         Assert.Equal(0x21, fdc.ReadData()); // ST0: seek-end (0x20) | unit 1
@@ -205,6 +218,15 @@ public class Upd765Tests
 
         var fired = false;
         fdc.ResultReady += () => fired = true;
+
+        // SEEK to cylinder 2 first — READ/WRITE DATA addresses wherever the head physically
+        // IS (tracked via prior SEEK/RECALIBRATE), not the command's own cylinder byte (see
+        // Upd765.DispatchReadWrite's doc comment; confirmed against the real ROM driver).
+        fdc.WriteData(0x0F);
+        fdc.WriteData(0x00);
+        fdc.WriteData(0x02);
+        for (var i = 0; i < 300; i++) fdc.Tick(); // let the (deferred) seek actually complete
+        fired = false; // reset — only care about WRITE DATA's own completion below
 
         // WRITE DATA: unit=0, cylinder=2, head=0, sector=1, N=1, EOT=1.
         fdc.WriteData(0x45);

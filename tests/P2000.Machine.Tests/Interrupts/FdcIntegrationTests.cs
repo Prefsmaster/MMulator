@@ -58,7 +58,11 @@ public class FdcIntegrationTests
         Emit(0x3E, 0x07);       // LD A,0x07        ; RECALIBRATE opcode
         Emit(0xD3, 0x8D);       // OUT (0x8D),A
         Emit(0x3E, 0x01);       // LD A,0x01        ; unit
-        Emit(0xD3, 0x8D);       // OUT (0x8D),A     ; Turbo: FDC.ResultReady fires here, synchronously
+        Emit(0xD3, 0x8D);       // OUT (0x8D),A     ; Turbo: FDC.ResultReady fires ~200 T-states
+                                // later (Upd765.MinimumTurboSeekTStates), not synchronously — a
+                                // real bug fix: firing inside the dispatch would let the ROM's
+                                // own subsequent HALT miss its one-shot wakeup (see the machine
+                                // CLAUDE.md §17 finding and Upd765Tests for the full story).
         Emit(0xFB);             // EI
         Emit(0x76);             // HALT
 
@@ -70,7 +74,7 @@ public class FdcIntegrationTests
         machine.Memory.Write(0x6020, 0x00);
         machine.Memory.Write(0x6021, 0x01);
 
-        for (var i = 0; i < 200; i++) machine.Tick();
+        for (var i = 0; i < 400; i++) machine.Tick();
 
         // A was last loaded 0x01 (the unit byte) before HALT; the ISR's INC A makes it 0x02
         // only if the FDC's completion actually vectored through ch0's IM2 table entry.

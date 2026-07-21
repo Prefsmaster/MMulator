@@ -939,6 +939,91 @@ marked synced. Do NOT edit the reference doc from this project.
 - **Synced:** yes (2026-07-05, into P2000T-reference.md + device guides)
 -->
 
+### 2026-07-22 — Milestone 19: real-ROM RUN-gate test now GREEN — 4 real bugs found and fixed via `docs/Monitor Documented Disassembly/`
+- **Trigger:** the owner pointed at `docs/Monitor Documented Disassembly/Startup.asm` +
+  `Disk.asm` — the actual monitor-ROM source the earlier FDC pass (below) didn't have access
+  to — asking why the real-ROM disk-boot test failed. It was fully diagnosable and IS now
+  fixed: all 4 `DiskBootTests` pass, `getdos` boots the real ROM against a real `Spel1.dsk` and
+  loads both DOS tracks byte-identical. Four independent real bugs, found by reading the
+  actual source and then confirming each hypothesis with a targeted diagnostic test (reflection
+  into private chip state, a disassembly trace of the live PC) rather than guessing further:
+  1. **SLOT1 header bit1 ("needs DOS") was inverted.** `Startup.asm`'s gate is `bit 1,a; jr
+     z,prep_status_display` — bit1=**1** triggers disk boot, bit1=**0** skips it (the opposite
+     of the earlier pass's assumption). `assets/BASIC.bin`'s real header byte (0x5E) already
+     has bit1=1 — no cartridge cloning/modification needed at all for the test; the earlier
+     "clone BASIC.bin and clear bit1" workaround was clearing the exact bit that mattered.
+  2. **READ/WRITE DATA must address the FDC's own tracked cylinder, not the command's own C
+     byte.** `Disk.asm`'s `read_track` copies its command template to RAM ONCE and never
+     updates the cylinder field between the two DOS-track reads (both are byte-identical) —
+     the actual cylinder differs only because a separate SEEK physically moved the head first.
+     Real µPD765 hardware reads/writes wherever the head IS; C is for ID-field verification,
+     not addressing. Fixed in `Upd765.DispatchReadWrite` (uses `_cylinder[drive]` now, not the
+     command byte) — confirmed correct by cross-checking both loaded tracks against the raw
+     `Spel1.dsk` bytes exactly.
+  3. **RESET (0x90 OUT bit2) only actually takes effect from `Phase.Idle`,** not "anytime
+     except ResultPhase" as first patched. TWO separate confirmed real-code sites write this
+     bit while a command is still active, in ordinary working code: `read_status_bytes` writes
+     RESET|MOTOR (0x0C) while a SENSE INTERRUPT STATUS result phase is still pending readout,
+     and `read_track` writes RESET|MOTOR|ENABLE (0x0D) to arm the transfer immediately AFTER
+     dispatching READ DATA (putting the chip in `ExecutionPhase`) — reproduced live: this
+     second case silently discarded an in-flight semi-DMA transfer, leaving the busy-poll loop
+     spinning on a permanently-idle MSR forever. Two independent real sites doing this in
+     working code is strong enough evidence the bit simply has no effect once a command is
+     already in flight.
+  4. **Turbo's "instant" SEEK/RECALIBRATE completion was a lost-wakeup race, found by tracing a
+     genuine CPU halt via the disassembler.** Firing `ResultReady` SYNCHRONOUSLY inside the
+     command dispatch meant the completion interrupt was accepted and fully serviced (IM2 →
+     ISR → RETI) at the very next instruction boundary — often still inside
+     `disk_send_command`'s own loop — before the ROM ever reached the `halt` it places right
+     after sending the command specifically to wait for that same completion
+     (`disk_recall`/`disk_do_search`, both: send command, THEN halt). By the time the ROM
+     halted, the one-shot interrupt was already gone, and nothing else could wake it (Lock
+     suppresses the video INT; ch3/keyboard isn't armed yet at this point in boot). Fixed by
+     giving Turbo a small-but-nonzero deferred delay (`Upd765.MinimumTurboSeekTStates = 200`,
+     via the same `Tick()`-driven mechanism Authentic already used) — long enough to safely
+     outlast the handful of T-states between dispatch and the ROM's own `halt`, but negligible
+     in wall-clock terms. Diagnosed by adding a temporary reflection-based scan of
+     `Cpu.AtInstructionBoundary` across millions of ticks (confirmed the CPU was genuinely
+     halted, not just off-sampled) plus a `Z80.Disassembler`-based PC trace (confirmed exactly
+     where — `disk_recall`'s own `halt` instruction) — this combination (boundary-state
+     sampling + real disassembly, not print-statement guessing) is what made the race
+     diagnosable at all; recorded here as the technique to reach for first next time a boot
+     test hangs rather than times out cleanly.
+  5. **Separate bug, same investigation: `MdcrDevice`-style drive indexing was wrong —
+     `Machine.cs` mounted the disk image on FDC drive index 0, but the ROM's own disk commands
+     hardcode unit-select "01" throughout** (`Disk.asm`'s `disk_constants`: every "drive #"
+     byte is `0x01`; `disk_recall_cmd`'s own comment: "device # at disk_recall_device (default
+     1)") — it never addresses unit 0. The mounted image sat on a drive the ROM never read
+     from, so every READ DATA silently served a zero-filled transfer buffer (no exception,
+     since an unmounted-drive read is a documented no-op, not an error). Fixed by mounting on
+     drive index 1 in `Machine.cs`. This one was the most confusing to isolate precisely
+     because it produced NO error and NO hang — boot completed successfully and reached SLOT1,
+     just with all-zero data — only caught by directly comparing the loaded bytes against the
+     source file byte-for-byte (exactly what the milestone's own test list asked for) rather
+     than only checking "did boot complete."
+- **Working test order that got here (useful precedent for the next hang like this):**
+  (1) confirm the CPU is genuinely stuck, not just slow — sample `AtInstructionBoundary` across
+  a wide tick range, not a single snapshot; a real halt shows it permanently false, a slow-but-
+  live CPU shows it flipping constantly. (2) once confirmed stuck, disassemble the exact PC
+  (`Z80.Disassembler`, already in this solution) to name the routine, don't guess from address
+  arithmetic. (3) cross-reference that routine's real source in
+  `docs/Monitor Documented Disassembly/` line by line against the chip's actual port
+  read/write sequence. (4) once unstuck, verify the RESULT, not just that it completed — a
+  successful-looking boot can still be silently wrong (finding 5 above produced a completed
+  boot with zero data).
+- **Applies to:** `src/P2000.Machine/Devices/Fdc/Upd765.cs` (`DispatchReadWrite` cylinder fix,
+  `WriteControl`'s RESET guard, `MinimumTurboSeekTStates` + the `Tick()`-driven seek completion,
+  the `PendingAction.SeekSettle` case in `Tick()` now correctly setting `_phase = Idle`),
+  `src/P2000.Machine/Machine.cs` (`MountDisk(1, ...)`),
+  `tests/P2000.Machine.Tests/Boot/DiskBootTests.cs` (new — 4 tests, real ROM + real fixture),
+  `tests/P2000.Machine.Tests/Devices/Fdc/Upd765Tests.cs` (updated for the new deferred-Turbo
+  timing), `tests/P2000.Machine.Tests/Devices/Fdc/RealFixtureTests.cs` (added the SEEK-before-
+  READ sequencing the cylinder fix now requires),
+  `tests/P2000.Machine.Tests/Interrupts/FdcIntegrationTests.cs` (tick budget increased to
+  cover the new deferred completion).
+- **Synced:** no (implementation-only bug fixes; closes the "attempted, not completed" gap the
+  entry below left open).
+
 ### 2026-07-22 — Milestone 19 IMPLEMENTED: FDC (µPD765) + InternalExtensionBoard
 - **Assumed:** the handoff's own spec (§13.19) was fully ROM-confirmed for ports, the presence
   probe, the 3-gate boot condition, and the exact command byte sequences — implemented as
@@ -1001,36 +1086,22 @@ marked synced. Do NOT edit the reference doc from this project.
   on this byte, and the CHS layout derivation above was independently validated against real
   reads/writes matching raw file bytes) — flagging purely as a correction the human should carry
   into the reference doc's own pass over `JWSDOS-format.md`.
-- **Attempted, NOT completed — full real-ROM-driven RUN-gate boot test:** built a
-  `FloppyRam`/T102 machine with a needs-DOS SLOT1 cartridge and ticked it through the real
-  embedded monitor ROM, expecting `getdos` to run and load `Spel1.dsk`'s two DOS tracks into
-  bank 1 automatically. It did not — bank 1 stayed at its pre-load zero content after boot
-  settled into SLOT1. Two findings surfaced during debugging, both left unresolved (not enough
-  signal to fix confidently without a disassembly-level trace):
-  1. **The SLOT1 header bits are ACTIVE-LOW**, confirmed empirically (not previously stated
-     explicitly either doc): `assets/BASIC.bin`'s real header byte is `0x5E` — bit0=0 means
-     PRESENT, bit1=1 means "ordinary, no DOS needed" — the reverse of a literal reading of
-     reference doc §5b's "bit0... '1' reads the same as open-bus" phrasing. Confirmed by
-     experiment (a modified `BASIC.bin` with bit1 cleared, real code otherwise intact, still
-     boots into SLOT1 normally).
-  2. **A hand-built all-zero synthetic 16 KB cartridge (any header-bit combination tried) was
-     never recognized as present/executable by the ROM at all** — boot never left ROM within a
-     15M T-state budget, regardless of the header byte. The real, working `BASIC.bin` boots
-     fine; an all-NOP-content image with the identical header byte does not. This means SLOT1
-     presence involves more than "not open-bus + header bits" — unconfirmed what (a checksum? a
-     specific entry-point convention?) — genuinely unsourced in either doc, not guessed at
-     further here. **Workaround used for the tests that follow this finding:** clone real,
-     working `assets/BASIC.bin` and flip only the needs-DOS bit, sidestepping the mystery
-     entirely rather than resolving it.
-  Even with that workaround, the gate itself (memsize==3 / cartridge-present / needs-DOS, or the
-  presence-probe's exact-`0x80` timing) did not visibly trigger `getdos` — bank 1 read back as
-  the pristine zero-fill a fresh `T102` machine starts with, not loaded disk content. **Given the
-  cost of chasing this further without additional ROM disassembly access, this specific
-  end-to-end path is left unverified** — the chip/board/host-API layer underneath it (this
-  milestone's actual deliverable) is independently proven correct via `RealFixtureTests.cs`
-  driving `Upd765` directly with the confirmed command bytes. Whoever revisits this: start by
-  confirming `memsize`'s exact RAM address/encoding and the presence probe's OUT/delay/IN timing
-  against a live trace, rather than re-guessing the header-bit semantics again.
+- **Attempted, NOT completed at the time (superseded — see the 2026-07-22 "real-ROM RUN-gate
+  test now GREEN" entry above):** a first pass at a full real-ROM-driven RUN-gate boot test
+  built a `FloppyRam`/T102 machine with a needs-DOS SLOT1 cartridge and ticked it through the
+  real embedded monitor ROM, expecting `getdos` to run and load `Spel1.dsk`'s two DOS tracks
+  into bank 1 automatically. It did not, at the time — bank 1 stayed at its pre-load zero
+  content after boot settled into SLOT1, and two findings were logged as unresolved: an
+  "ACTIVE-LOW header bits" empirical observation (bit0=0 present, bit1=1 no-DOS-needed), and an
+  all-zero synthetic cartridge never being recognized as present at all. Once
+  `docs/Monitor Documented Disassembly/` (`Startup.asm`/`Disk.asm`) became available, both were
+  resolved properly: the header bit was in fact bit1=1 → boot from disk (this entry's own
+  "ACTIVE-LOW" framing had the polarity of that one bit backwards), and the "never recognized"
+  synthetic-cartridge mystery was sidestepped for good by testing against the real, unmodified
+  `assets/BASIC.bin` rather than a hand-built image. The actual reason `getdos` still loaded
+  nothing (even once the gate opened) turned out to be four separate real bugs in `Upd765`/
+  `Machine.cs`, not a gate-condition problem at all — see the entry above for the full list.
+  This bullet is kept for history; treat the entry above as authoritative.
 - **Applies to:** reference doc §5d (FDC ports/commands/presence probe — implemented as
   documented) / `src/P2000.Machine/Devices/Fdc/Upd765.cs` (new),
   `src/P2000.Machine/Devices/Fdc/DskImage.cs` (new),

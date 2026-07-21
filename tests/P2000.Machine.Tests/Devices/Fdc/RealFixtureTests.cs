@@ -11,18 +11,13 @@ namespace P2000.Machine.Tests.Devices.Fdc;
 /// <see cref="Upd765"/>/<see cref="DskImage"/> level rather than by driving the real monitor
 /// ROM's boot sequence end to end.
 ///
-/// <b>Scope note (why not a full real-ROM `getdos` boot test):</b> a full boot-driven RUN-gate
-/// test was attempted first (constructing a `FloppyRam`/T102 machine with a needs-DOS cartridge
-/// and ticking through the real embedded ROM's boot code). It did not reach a state where
-/// <c>getdos</c> visibly ran — bank 1 stayed at its pre-load zero content after boot completed.
-/// The 3-gate condition and command bytes are ROM-disassembly-CONFIRMED per the reference doc,
-/// but the exact SLOT1 cartridge-presence/needs-DOS validation the ROM performs turned out to
-/// need more than the header-byte bits alone (an all-zero synthetic cartridge was never
-/// recognized as present/executable at all, for reasons not sourced in either doc) — reproducing
-/// the full pipeline needs either a real needs-DOS 24K-disk-BASIC cartridge image (not available)
-/// or a disassembly-level trace neither doc provides. Flagged rather than forced; these tests
-/// instead exercise the SAME real disk data through the already-verified <see cref="Upd765"/>
-/// command surface directly.
+/// <b>Scope note:</b> a full real-ROM-driven `getdos` RUN-gate boot test now exists —
+/// see <c>tests/P2000.Machine.Tests/Boot/DiskBootTests.cs</c> — once
+/// `docs/Monitor Documented Disassembly/` (`Startup.asm`/`Disk.asm`) resolved the SLOT1
+/// header-bit polarity and the FDC cylinder-tracking/RESET-guard/Turbo-timing bugs that had
+/// blocked it (see machine CLAUDE.md §17). These tests remain at the chip/board level on
+/// purpose — they pin the SAME real disk data against the <see cref="Upd765"/> command surface
+/// directly, independent of the ROM boot path.
 /// </summary>
 public class RealFixtureTests
 {
@@ -184,6 +179,14 @@ public class RealFixtureTests
         var disk = new DskImage(path);
         var fdc = new Upd765 { Policy = TimingPolicy.Turbo };
         fdc.MountDisk(0, disk);
+
+        // SEEK to cylinder 1 first — matches the real ROM driver's own sequence (getdos calls
+        // disk_gotrack/SEEK between track reads; READ DATA addresses wherever the head
+        // physically is, not its own hardcoded cylinder byte — see Upd765.DispatchReadWrite).
+        fdc.WriteData(0x0F);
+        fdc.WriteData(0x00);
+        fdc.WriteData(0x01);
+        for (var i = 0; i < 300; i++) fdc.Tick(); // let the (deferred) seek actually complete
 
         // Cylinder 1 ("track 2" in getdos's own naming) — the SECOND DOS track load.
         fdc.WriteData(0x42);

@@ -19,8 +19,15 @@ public sealed record PauseCommand : MachineCommand;
 /// <summary>Warm reset: CPU and all devices reset; RAM contents are preserved.</summary>
 public sealed record WarmResetCommand : MachineCommand;
 
-/// <summary>Cold reset: CPU and all devices reset plus all RAM zeroed.</summary>
-public sealed record ColdResetCommand : MachineCommand;
+/// <summary>Cold reset: CPU and all devices reset plus all RAM refilled with deterministic
+/// non-zero "garbage" (project CLAUDE.md §17, 2026-07-21/22 finding — real volatile RAM
+/// doesn't power up to zero). <paramref name="RamSeed"/> is optional: <c>null</c> falls back to
+/// <see cref="MachineConfig.RamSeed"/>, then to <see cref="Memory.PageTable.DefaultRamSeed"/> —
+/// the same null-means-default convention as <see cref="MachineConfig.MonitorRomPath"/>.
+/// <see cref="P2000.UI"/> generates a genuinely random seed per real user-triggered cold reset
+/// and passes it here so each one gets fresh unpredictable content, while a bare
+/// <c>new ColdResetCommand()</c> (what any test gets) stays fully deterministic.</summary>
+public sealed record ColdResetCommand(ulong? RamSeed = null) : MachineCommand;
 
 // ── Single-instruction stepping ────────────────────────────────────────────────────────
 

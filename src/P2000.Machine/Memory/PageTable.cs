@@ -212,16 +212,46 @@ public sealed class PageTable
         }
     }
 
-    /// <summary>Zeroes all mutable DRAM (VRAM, base RAM, expansion RAM, banked window) without
-    /// touching the ROM or cartridge. Used by <see cref="Machine"/> for a cold reset
-    /// (project CLAUDE.md §3b.3 <c>ColdResetCommand</c>).</summary>
-    public void ClearRam()
+    /// <summary>Fixed default seed for <see cref="FillRam"/> when no explicit seed is given —
+    /// what every test/CI run and any caller that doesn't care gets, keeping the locked "no
+    /// randomness in emulation code" rule (root CLAUDE.md §2.2) satisfied to the letter: the
+    /// core itself never calls a nondeterministic API. Exposed so a test can construct a second
+    /// same-seeded fill and assert determinism without hardcoding the resulting byte pattern.</summary>
+    public const ulong DefaultRamSeed = 0x50325054_5F524147; // ASCII "P2PT_RAG" — arbitrary, stable
+
+    /// <summary>Fills all mutable DRAM (VRAM, base RAM, expansion RAM, banked window) with
+    /// deterministic non-zero "garbage" derived from <paramref name="seed"/> — real volatile
+    /// RAM doesn't power up to all-zero (project CLAUDE.md §17, 2026-07-21/22 finding). Used by
+    /// <see cref="Machine"/>'s constructor (initial cold-start) and for a cold reset
+    /// (project CLAUDE.md §3b.3 <c>ColdResetCommand</c>). The same seed always produces the
+    /// same fill — <see cref="P2000.UI"/> supplies a genuinely random seed per real cold boot;
+    /// omitting it (any test/CI caller) gets the fixed <see cref="DefaultRamSeed"/> instead.</summary>
+    public void FillRam(ulong seed)
     {
-        Array.Clear(_videoRam);
-        Array.Clear(_baseRam);
-        if (_expansionRam is not null) Array.Clear(_expansionRam);
-        foreach (var bank in _banks) Array.Clear(bank);
+        // xorshift64* has a fixed point at 0 (stays 0 forever) — guard so a caller-supplied
+        // seed of exactly 0 still produces non-zero "garbage," not an accidental all-zero fill.
+        var rng = seed == 0 ? DefaultRamSeed : seed;
+        FillWithPseudoRandom(_videoRam, ref rng);
+        FillWithPseudoRandom(_baseRam, ref rng);
+        if (_expansionRam is not null) FillWithPseudoRandom(_expansionRam, ref rng);
+        foreach (var bank in _banks) FillWithPseudoRandom(bank, ref rng);
         _bankIndex = 0;
+    }
+
+    /// <summary>xorshift64* — a small, self-contained, deterministic PRNG. Not cryptographic;
+    /// only needs to look non-uniform to the eye and be perfectly reproducible for a given seed.</summary>
+    private static void FillWithPseudoRandom(byte[] buffer, ref ulong state)
+    {
+        for (var i = 0; i < buffer.Length; i++)
+        {
+            if ((i & 7) == 0)
+            {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+            }
+            buffer[i] = (byte)(state >> ((i & 7) * 8));
+        }
     }
 
     /// <summary>Serializes the runtime RAM contents (project CLAUDE.md §11). The embedded

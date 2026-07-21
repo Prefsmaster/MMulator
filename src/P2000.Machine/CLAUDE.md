@@ -1298,6 +1298,68 @@ marked synced. Do NOT edit the reference doc from this project.
   (wherever cold reset / machine construction is triggered — the true-random seed source).
 - **Synced:** yes (2026-07-21, into P2000T-reference.md §5b) — implementation still outstanding.
 
+### 2026-07-22 — IMPLEMENTED: RAM power-on non-zero fill + warm-reset RAM preservation (closes the flag above)
+- **Scope decisions taken (owner's call, both per the plan's recommended options):** ALL
+  populated RAM fills, not just VRAM (base RAM, expansion RAM, banked window, plus VRAM);
+  warm reset now leaves RAM completely untouched (only `Reset()`'s existing devices-only walk
+  runs) — only cold reset (construction or `ColdResetCommand`) refills it.
+- **`PageTable.FillRam(ulong seed)`** replaces `ClearRam()` outright (not kept alongside it —
+  nothing else called `ClearRam`, confirmed by grep before removing). Fills `_videoRam`,
+  `_baseRam`, `_expansionRam` (if fitted), each populated bank, then resets `_bankIndex = 0` —
+  same shape `ClearRam()` had, `Array.Clear` calls replaced with a small self-contained
+  xorshift64* PRNG seeded from the seed and threaded through each region in turn (so different
+  regions get different-looking, not repeating, content from one seed). `PageTable.DefaultRamSeed`
+  is a fixed public constant — what a bare `new Machine()`/any test gets.
+- **Found (edge case guarded, not just assumed away):** xorshift64* has a fixed point at seed=0
+  (state stays 0 forever, producing an all-zero "fill" — silently defeating the whole feature
+  for that one seed value). `FillRam` substitutes `DefaultRamSeed` internally whenever the
+  caller-supplied seed is exactly 0, so `FillRam(0)` still produces real garbage. Covered by a
+  dedicated test (`FillRam_SeedZero_StillProducesNonZeroContent`).
+- **Seed resolution chain, three levels (mirrors the `MonitorRomPath` null-means-default
+  convention, as specified):** `ColdResetCommand.RamSeed` (per-command override) →
+  `MachineConfig.RamSeed` (per-machine/config override) → `PageTable.DefaultRamSeed` (fixed
+  fallback). `Machine`'s constructor calls `Memory.FillRam(Config.RamSeed ??
+  PageTable.DefaultRamSeed)` — covers the previously-missing case where a bare `new Machine()`
+  silently zero-started with no fill at all (confirmed during exploration: the constructor never
+  called `ClearRam()` either, so this is a genuine behavior addition, not just a rename).
+  `ColdResetCommand` gained an optional `ulong? RamSeed` parameter (record positional, default
+  `null`); the `DrainCommandQueue` case resolves `coldReset.RamSeed ?? Config.RamSeed ??
+  PageTable.DefaultRamSeed`.
+- **`MachineConfig.RamSeed`** (`ulong?`, `init`, default `null`) added alongside
+  `MonitorRomPath`/`Slot1CartridgePath`/`FloppyDiskImagePath` as the fourth null-means-default
+  override on that file.
+- **`P2000.UI` wiring (the actual entropy source — outside the core, per locked decision §2.2):**
+  `EmulationRunner.NewRandomRamSeed()` (`Random.Shared.NextBytes` over 8 bytes) is called (a)
+  in `MakeConfig()` for the app-launch machine, (b) in `Reconfigure(config)` whenever the
+  caller's config doesn't already pin a seed (a topology change is a real cold start too) — note
+  `MachineConfig` is a plain class with `init`-only properties, not a `record`, so injecting the
+  seed needs an explicit field-by-field reconstruction, not a `with` expression, and (c) in
+  `DisplayWindowVm.ColdReset()`, attached to the enqueued `ColdResetCommand` fresh on EVERY
+  user-triggered cold reset (not just once at launch) — matches "at each real cold boot," so
+  repeated cold resets show genuinely different garbage each time, not the same one repeated.
+- **Test updates (existing test corrected, not just new ones added):**
+  `CommandQueueTests.ColdResetCommand_ResetsRegistersAndClearsRam` renamed to
+  `...AndRefillsRamDeterministically` — the old `Assert.Equal(0x00, ...)` literally cannot pass
+  anymore; replaced with "sentinel is gone" + "reproducible against a second same-seeded
+  machine" (not a hardcoded expected byte, which would be fragile against the PRNG's own
+  internals). New tests: `PageTableTests` (FillRam non-zero/deterministic/seed-sensitivity/
+  seed-zero-guard/bank-index-reset, 5 tests), `MachineTests` (constructor fill, cross-machine
+  determinism, `MachineConfig.RamSeed` override, `ColdResetCommand.RamSeed` overriding the
+  config seed, 4 tests), `EmulationRunnerStateTests` (`Reconfigure` gets a fresh random seed
+  when none given / preserves an explicit one, 2 tests, `P2000.UI.Tests`).
+- **Applies to:** `src/P2000.Machine/Memory/PageTable.cs` (`FillRam`, `DefaultRamSeed`,
+  `FillWithPseudoRandom`), `src/P2000.Machine/Machine.cs` (constructor fill,
+  `ColdResetCommand` handling), `src/P2000.Machine/MachineConfig.cs` (`RamSeed`),
+  `src/P2000.Machine/Debug/MachineCommand.cs` (`ColdResetCommand(ulong? RamSeed = null)`),
+  `src/P2000.UI/Runner/EmulationRunner.cs` (`NewRandomRamSeed`, `MakeConfig`, `Reconfigure`),
+  `src/P2000.UI/ViewModels/DisplayWindowVm.cs` (`ColdReset`),
+  `tests/P2000.Machine.Tests/Memory/PageTableTests.cs`,
+  `tests/P2000.Machine.Tests/MachineTests.cs`,
+  `tests/P2000.Machine.Tests/Debug/CommandQueueTests.cs`,
+  `tests/P2000.UI.Tests/Runner/EmulationRunnerStateTests.cs`.
+- **Synced:** no (implementation-only; the RAM-power-on hardware fact and the seed-mechanism
+  design were already synced above).
+
 ### 2026-07-19 — Flag (not yet verified against source): VideoFetchUnit vertical/field-position offset
 - **Trigger:** owner reported Ghosthunt display glitches concentrated in the **top ~15%
   of the screen**, and asked whether contention modelling accounts for the video chip

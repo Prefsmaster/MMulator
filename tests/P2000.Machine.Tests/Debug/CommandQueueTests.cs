@@ -128,8 +128,13 @@ public class CommandQueueTests
         Assert.Equal(0xAB, m.Memory.Read(ramAddr)); // RAM preserved (warm)
     }
 
+    /// <summary>Cold reset now refills RAM with deterministic non-zero "garbage" instead of
+    /// zeroing it (project CLAUDE.md §17, 2026-07-21/22 finding) — asserts the sentinel is gone
+    /// (not preserved, unlike warm reset above) AND that the fill is reproducible: a second,
+    /// separately-constructed machine using the same default seed produces byte-identical RAM,
+    /// rather than hardcoding the exact fill value by hand.</summary>
     [Fact]
-    public void ColdResetCommand_ResetsRegistersAndClearsRam()
+    public void ColdResetCommand_ResetsRegistersAndRefillsRamDeterministically()
     {
         var m = MakeWithRom([0x00, 0x18, 0xFE]);
         const ushort ramAddr = PageTable.BaseRamStart;
@@ -139,7 +144,14 @@ public class CommandQueueTests
         m.Tick(); // drains and executes one T-state of the reset ROM
 
         Assert.True(m.Cpu.Reg.PC <= 1, $"Expected PC near 0 after cold reset, got 0x{m.Cpu.Reg.PC:X4}");
-        Assert.Equal(0x00, m.Memory.Read(ramAddr)); // RAM zeroed
+        Assert.NotEqual(0xAB, m.Memory.Read(ramAddr)); // sentinel gone — cold reset doesn't preserve RAM
+
+        // Determinism: a second machine, cold-reset the same way (same default seed), must
+        // read back identically — not just "some non-zero byte."
+        var reference = MakeWithRom([0x00, 0x18, 0xFE]);
+        reference.Enqueue(new ColdResetCommand());
+        reference.Tick();
+        Assert.Equal(reference.Memory.Read(ramAddr), m.Memory.Read(ramAddr));
     }
 
     // ── SingleStep ────────────────────────────────────────────────────────────────────

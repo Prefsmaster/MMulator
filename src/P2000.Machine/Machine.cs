@@ -144,6 +144,11 @@ public sealed class Machine
             : null;
 
         Memory = new PageTable(Config, Slot1);
+        // Cold-start RAM fill (project CLAUDE.md §17, 2026-07-21/22 finding): real volatile RAM
+        // doesn't power up all-zero. Deterministic-by-default (DefaultRamSeed) so tests/CI stay
+        // reproducible; P2000.UI supplies a genuinely random seed via MachineConfig.RamSeed at
+        // each real app launch.
+        Memory.FillRam(Config.RamSeed ?? PageTable.DefaultRamSeed);
         Video = new Video(Memory);
         Keyboard = new KeyboardDevice(CpOut);
         Mdcr = new MdcrDevice(CpOut);
@@ -523,9 +528,12 @@ public sealed class Machine
                     _commandQueue.Clear(); // drop pre-reset commands
                     return;
 
-                case ColdResetCommand:
+                case ColdResetCommand coldReset:
                     Reset();
-                    Memory.ClearRam();
+                    // Real cold boot: fresh non-zero garbage RAM (project CLAUDE.md §17,
+                    // 2026-07-21/22 finding) — cmd's own seed wins, then the config's, then the
+                    // fixed deterministic default (mirrors the constructor's own fallback chain).
+                    Memory.FillRam(coldReset.RamSeed ?? Config.RamSeed ?? PageTable.DefaultRamSeed);
                     _commandQueue.Clear();
                     return;
 

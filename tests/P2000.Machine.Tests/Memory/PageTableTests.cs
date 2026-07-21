@@ -217,4 +217,77 @@ public class PageTableTests
         pageTable.SelectBank(200); // far beyond the configured 10 banks - open bus, not masked into range
         Assert.Equal(PageTable.OpenBus, pageTable.Read(PageTable.BankedWindowStart));
     }
+
+    // ---- FillRam (project CLAUDE.md §17, 2026-07-21/22 finding: RAM powers up non-zero) ------
+
+    [Fact]
+    public void FillRam_ProducesNonZeroContent_InAllPopulatedRegions()
+    {
+        var pageTable = Create(new MachineConfig { RamVariant = RamVariant.T102 }); // base+expansion+banks
+
+        pageTable.FillRam(PageTable.DefaultRamSeed);
+
+        Assert.NotEqual(0x00, pageTable.Read(PageTable.VideoRamStart));
+        Assert.NotEqual(0x00, pageTable.Read(PageTable.BaseRamStart));
+        Assert.NotEqual(0x00, pageTable.Read(PageTable.ExpansionRamStart));
+        pageTable.SelectBank(0);
+        Assert.NotEqual(0x00, pageTable.Read(PageTable.BankedWindowStart));
+    }
+
+    [Fact]
+    public void FillRam_SameSeed_ProducesByteIdenticalContent()
+    {
+        var a = Create(new MachineConfig { RamVariant = RamVariant.T102 });
+        var b = Create(new MachineConfig { RamVariant = RamVariant.T102 });
+
+        a.FillRam(0x1234);
+        b.FillRam(0x1234);
+
+        for (ushort addr = PageTable.BaseRamStart; addr < PageTable.BaseRamStart + 64; addr++)
+        {
+            Assert.Equal(a.Read(addr), b.Read(addr));
+        }
+    }
+
+    [Fact]
+    public void FillRam_DifferentSeeds_ProduceDifferentContent()
+    {
+        var a = Create();
+        var b = Create();
+
+        a.FillRam(0x1111);
+        b.FillRam(0x2222);
+
+        var different = false;
+        for (ushort addr = PageTable.BaseRamStart; addr < PageTable.BaseRamStart + 64; addr++)
+        {
+            if (a.Read(addr) != b.Read(addr)) { different = true; break; }
+        }
+        Assert.True(different, "Two different seeds produced byte-identical RAM content.");
+    }
+
+    [Fact]
+    public void FillRam_SeedZero_StillProducesNonZeroContent()
+    {
+        // xorshift64* has a fixed point at 0 (stays 0 forever) — FillRam must guard this so an
+        // explicit seed of exactly 0 doesn't silently degrade to an all-zero fill.
+        var pageTable = Create();
+
+        pageTable.FillRam(0);
+
+        Assert.NotEqual(0x00, pageTable.Read(PageTable.BaseRamStart));
+    }
+
+    [Fact]
+    public void FillRam_ResetsBankIndexToZero()
+    {
+        var pageTable = Create(new MachineConfig { RamVariant = RamVariant.T102 });
+        pageTable.SelectBank(3);
+
+        pageTable.FillRam(PageTable.DefaultRamSeed);
+        pageTable.Write(PageTable.BankedWindowStart, 0x77); // writes wherever bank index now is
+
+        pageTable.SelectBank(0);
+        Assert.Equal(0x77, pageTable.Read(PageTable.BankedWindowStart));
+    }
 }

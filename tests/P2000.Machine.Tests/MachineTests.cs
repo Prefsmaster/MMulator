@@ -1,4 +1,5 @@
 using P2000.Machine.Contention;
+using P2000.Machine.Debug;
 using P2000.Machine.Io;
 using P2000.Machine.Memory;
 
@@ -301,5 +302,47 @@ public class MachineTests
         machine.Reset();
 
         Assert.False(machine.Keyboard.IsKeyPressed(0, 0));
+    }
+
+    // ---- RAM power-on fill (project CLAUDE.md §17, 2026-07-21/22 finding) -------------------
+
+    [Fact]
+    public void Constructor_FillsRamWithNonZeroContent_NotZeroInitialized()
+    {
+        var machine = new Machine();
+        Assert.NotEqual(0x00, machine.Memory.Read(PageTable.BaseRamStart));
+    }
+
+    [Fact]
+    public void Constructor_NoExplicitSeed_IsDeterministic_AcrossSeparateMachines()
+    {
+        var a = new Machine();
+        var b = new Machine();
+
+        Assert.Equal(a.Memory.Read(PageTable.BaseRamStart), b.Memory.Read(PageTable.BaseRamStart));
+    }
+
+    [Fact]
+    public void Constructor_ExplicitRamSeed_OverridesDefault_AndIsReproducible()
+    {
+        var a = new Machine(new MachineConfig { RamSeed = 0xABCDEF });
+        var b = new Machine(new MachineConfig { RamSeed = 0xABCDEF });
+        var withDefault = new Machine();
+
+        Assert.Equal(a.Memory.Read(PageTable.BaseRamStart), b.Memory.Read(PageTable.BaseRamStart));
+        Assert.NotEqual(withDefault.Memory.Read(PageTable.BaseRamStart), a.Memory.Read(PageTable.BaseRamStart));
+    }
+
+    [Fact]
+    public void ColdResetCommand_ExplicitSeed_OverridesConfigSeed()
+    {
+        var configSeeded = new Machine(new MachineConfig { RamSeed = 0x1111 });
+        configSeeded.Enqueue(new ColdResetCommand(RamSeed: 0x2222));
+        configSeeded.Tick();
+
+        var directlySeeded = new Machine(new MachineConfig { RamSeed = 0x2222 });
+
+        Assert.Equal(directlySeeded.Memory.Read(PageTable.BaseRamStart),
+            configSeeded.Memory.Read(PageTable.BaseRamStart));
     }
 }

@@ -86,4 +86,14 @@ public sealed class MachineConfig
     /// <see cref="InternalBoard.FloppyRam"/>; ignored otherwise. Reset-to-apply, same as
     /// <see cref="Slot1CartridgePath"/>.</summary>
     public string? FloppyDiskImagePath { get; init; }
+
+    /// <summary>Optional seed for the RAM power-on garbage fill (project CLAUDE.md §17,
+    /// 2026-07-21/22 finding — real volatile RAM doesn't power up all-zero). <c>null</c> (the
+    /// default) uses <see cref="Memory.PageTable.DefaultRamSeed"/> — a fixed, deterministic
+    /// value, so tests/CI and any caller that doesn't care stay fully reproducible (locked
+    /// decision §2.2: no randomness in emulation code). Set this to reproduce a specific bug
+    /// report that names its seed, or leave it null and let <see cref="P2000.UI"/> supply a
+    /// genuinely random value at each real cold boot / app launch. Same null-means-default
+    /// convention as <see cref="MonitorRomPath"/>.</summary>
+    public ulong? RamSeed { get; init; }
 }

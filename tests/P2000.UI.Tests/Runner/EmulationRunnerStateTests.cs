@@ -100,6 +100,50 @@ public class EmulationRunnerStateTests
         runner.Dispose();   // must return cleanly
     }
 
+    // ── RAM seed injection (project CLAUDE.md §17, 2026-07-21/22 finding) ──────────
+
+    [AvaloniaFact]
+    public async Task Reconfigure_WithNoExplicitRamSeed_GetsAFreshRandomSeed_NotTheFixedDefault()
+    {
+        var runner1 = new EmulationRunner();
+        var runner2 = new EmulationRunner();
+        runner1.Start();
+        runner2.Start();
+        await Task.Delay(20);
+
+        runner1.Reconfigure(new P2000.Machine.MachineConfig());
+        runner2.Reconfigure(new P2000.Machine.MachineConfig());
+        await Task.Delay(60); // let the swap land on the emulation thread
+
+        // Two independently-generated random seeds landing on the exact same base-RAM byte
+        // is astronomically unlikely — this is the regression guard that Reconfigure actually
+        // injects a fresh seed rather than always falling back to the fixed test/CI default.
+        Assert.NotEqual(
+            runner1.Machine.Memory.Read(P2000.Machine.Memory.PageTable.BaseRamStart),
+            runner2.Machine.Memory.Read(P2000.Machine.Memory.PageTable.BaseRamStart));
+
+        runner1.Dispose();
+        runner2.Dispose();
+    }
+
+    [AvaloniaFact]
+    public async Task Reconfigure_WithExplicitRamSeed_PreservesIt_NotOverwrittenWithRandom()
+    {
+        var runner = new EmulationRunner();
+        runner.Start();
+        await Task.Delay(20);
+
+        runner.Reconfigure(new P2000.Machine.MachineConfig { RamSeed = 0xCAFEF00D });
+        await Task.Delay(60);
+
+        var reference = new P2000.Machine.Machine(new P2000.Machine.MachineConfig { RamSeed = 0xCAFEF00D });
+        Assert.Equal(
+            reference.Memory.Read(P2000.Machine.Memory.PageTable.BaseRamStart),
+            runner.Machine.Memory.Read(P2000.Machine.Memory.PageTable.BaseRamStart));
+
+        runner.Dispose();
+    }
+
     // ── Version-mismatch path (machine-layer, exercised without a running runner) ──
 
     [Fact]

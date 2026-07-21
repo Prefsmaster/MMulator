@@ -98,9 +98,29 @@ public sealed class EmulationRunner : IDisposable
     /// <summary>Rebuilds the machine with <paramref name="config"/> and cold-resets into it.
     /// Blocks the caller (~20 ms max) until the emulation thread acknowledges the swap at the
     /// next field boundary. Safe to call from the UI thread. The cassette is not preserved —
-    /// the new machine starts with an empty deck (topology change = reset-to-apply).</summary>
+    /// the new machine starts with an empty deck (topology change = reset-to-apply). A real
+    /// topology change is a real cold start, so a config with no explicit
+    /// <see cref="MachineConfig.RamSeed"/> gets a fresh random one here (project CLAUDE.md §17)
+    /// — pass a config with <c>RamSeed</c> already set (e.g. loaded from a <c>.cfg</c> file
+    /// that intentionally pins one) to keep that value instead.</summary>
     public void Reconfigure(MachineConfig config)
     {
+        if (config.RamSeed is null)
+        {
+            // MachineConfig is a plain class with init-only properties (not a record), so
+            // there's no `with` expression — reconstruct explicitly, copying every other axis.
+            config = new MachineConfig
+            {
+                Model = config.Model,
+                Board = config.Board,
+                RamVariant = config.RamVariant,
+                BankCount = config.BankCount,
+                MonitorRomPath = config.MonitorRomPath,
+                Slot1CartridgePath = config.Slot1CartridgePath,
+                FloppyDiskImagePath = config.FloppyDiskImagePath,
+                RamSeed = NewRandomRamSeed(),
+            };
+        }
         var next = new MachineCore(config);
         next.Video.FieldComplete += OnFieldComplete;
         next.BreakHit += OnBreakHit;
@@ -138,19 +158,34 @@ public sealed class EmulationRunner : IDisposable
     // Locate BASIC.bin relative to the executable (assets/ in the repo root).
     private static MachineConfig MakeConfig()
     {
+        var ramSeed = NewRandomRamSeed();
+
         // Trim trailing separator so GetDirectoryName reliably walks up one level per call.
         var dir = AppContext.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
         for (int i = 0; i < 8; i++)
         {
             var candidate = Path.Combine(dir, "assets", "BASIC.bin");
             if (File.Exists(candidate))
-                return new MachineConfig { Slot1CartridgePath = candidate };
+                return new MachineConfig { Slot1CartridgePath = candidate, RamSeed = ramSeed };
             var parent = Path.GetDirectoryName(dir);
             if (parent is null || parent == dir) break;
             dir = parent;
         }
         // No BASIC found → bare machine (cassette-wait screen).
-        return new MachineConfig();
+        return new MachineConfig { RamSeed = ramSeed };
+    }
+
+    /// <summary>Generates a genuinely random 64-bit RAM-fill seed (project CLAUDE.md §17,
+    /// 2026-07-21/22 finding). Lives here, outside `P2000.Machine`, deliberately — the core
+    /// itself never calls a nondeterministic API (locked decision §2.2); only the UI, which
+    /// is not under that constraint, does. A machine built with no seed at all (any test/CI
+    /// caller) stays fully deterministic via
+    /// <see cref="P2000.Machine.Memory.PageTable.DefaultRamSeed"/>.</summary>
+    private static ulong NewRandomRamSeed()
+    {
+        Span<byte> bytes = stackalloc byte[8];
+        Random.Shared.NextBytes(bytes);
+        return BitConverter.ToUInt64(bytes);
     }
 
     public void Start()

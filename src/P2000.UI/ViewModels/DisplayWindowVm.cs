@@ -184,7 +184,15 @@ public sealed partial class DisplayWindowVm : ObservableObject, IDisposable
     [RelayCommand]
     private void ColdReset()
     {
-        Runner.Machine.Enqueue(new ColdResetCommand());
+        // A fresh random seed per real user-triggered cold reset (project CLAUDE.md §17,
+        // 2026-07-21/22 finding) — "at each real cold boot," not just once at app launch, so
+        // repeated cold resets show genuinely different garbage each time, matching what a
+        // real power-cycle would look like.
+        Span<byte> seedBytes = stackalloc byte[8];
+        Random.Shared.NextBytes(seedBytes);
+        var ramSeed = BitConverter.ToUInt64(seedBytes);
+
+        Runner.Machine.Enqueue(new ColdResetCommand(RamSeed: ramSeed));
         StateText = "Running";
         RunPauseHeader = "Pause";
         StepCommand.NotifyCanExecuteChanged();

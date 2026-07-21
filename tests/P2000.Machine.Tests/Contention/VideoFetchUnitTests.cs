@@ -4,12 +4,23 @@ namespace P2000.Machine.Tests.Contention;
 
 public class VideoFetchUnitTests
 {
+    /// <summary>Ticks past the 49-line vertical-blank pre-roll (project CLAUDE.md §17,
+    /// 2026-07-22 correction) so a test starts right at the active window's first T-state.</summary>
+    private static void AdvanceToActiveWindowStart(VideoFetchUnit unit)
+    {
+        for (var i = 0; i < VideoFetchUnit.VerticalBlankLines * VideoFetchUnit.TStatesPerLine; i++)
+        {
+            unit.Tick();
+        }
+    }
+
     // ---- Column fetch scheduling within one active line -----------------------------------
 
     [Fact]
     public void Tick_OneActiveLine_FiresColumnFetch40Times_InOrder()
     {
         var unit = new VideoFetchUnit();
+        AdvanceToActiveWindowStart(unit);
         var columns = new List<int>();
         unit.ColumnFetch += columns.Add;
 
@@ -22,9 +33,10 @@ public class VideoFetchUnitTests
     }
 
     [Fact]
-    public void Tick_ColumnZero_FetchesOnTheLinesFirstTState()
+    public void Tick_ColumnZero_FetchesOnTheActiveWindowsFirstTState()
     {
         var unit = new VideoFetchUnit();
+        AdvanceToActiveWindowStart(unit);
         var fired = false;
         unit.ColumnFetch += column => fired |= column == 0;
 
@@ -37,6 +49,7 @@ public class VideoFetchUnitTests
     public void Tick_LastColumn_FetchesWithinTheActiveWindow()
     {
         var unit = new VideoFetchUnit();
+        AdvanceToActiveWindowStart(unit);
         var lastColumnTState = -1;
         unit.ColumnFetch += column =>
         {
@@ -101,26 +114,47 @@ public class VideoFetchUnitTests
         Assert.Equal(VideoFetchUnit.ActiveLines * VideoFetchUnit.Columns, fetchCount);
     }
 
+    /// <summary>Project CLAUDE.md §17, 2026-07-19/2026-07-22: the 49-line vertical-blank
+    /// pre-roll must never fetch — this is the fix for the reported Ghosthunt
+    /// top-of-screen glitch (fetch scheduling previously started at field-T-state 0, treating
+    /// these lines as fetch-eligible).</summary>
     [Fact]
-    public void Tick_VblankLines_NeverFetch()
+    public void Tick_PreRollLines_NeverFetch()
     {
         var unit = new VideoFetchUnit();
-        var fetchedDuringVblank = false;
+        var fetchedDuringPreRoll = false;
+        unit.ColumnFetch += _ => fetchedDuringPreRoll = true;
 
-        // Run past the active display (240 lines) into vblank and watch for stray fetches.
-        for (var i = 0; i < VideoFetchUnit.ActiveLines * VideoFetchUnit.TStatesPerLine; i++)
+        for (var i = 0; i < VideoFetchUnit.VerticalBlankLines * VideoFetchUnit.TStatesPerLine; i++)
         {
             unit.Tick();
         }
 
-        unit.ColumnFetch += _ => fetchedDuringVblank = true;
+        Assert.False(fetchedDuringPreRoll);
+    }
 
-        for (var i = 0; i < (VideoFetchUnit.TStatesPerField - VideoFetchUnit.ActiveLines * VideoFetchUnit.TStatesPerLine); i++)
+    /// <summary>The post-roll lines (after the 240-line active window) must also never fetch —
+    /// unchanged behaviour from before the pre-roll fix, re-asserted at the new offset.</summary>
+    [Fact]
+    public void Tick_PostRollLines_NeverFetch()
+    {
+        var unit = new VideoFetchUnit();
+        var linesBeforePostRoll = VideoFetchUnit.VerticalBlankLines + VideoFetchUnit.ActiveLines;
+
+        for (var i = 0; i < linesBeforePostRoll * VideoFetchUnit.TStatesPerLine; i++)
         {
             unit.Tick();
         }
 
-        Assert.False(fetchedDuringVblank);
+        var fetchedDuringPostRoll = false;
+        unit.ColumnFetch += _ => fetchedDuringPostRoll = true;
+
+        for (var i = 0; i < VideoFetchUnit.TStatesPerField - linesBeforePostRoll * VideoFetchUnit.TStatesPerLine; i++)
+        {
+            unit.Tick();
+        }
+
+        Assert.False(fetchedDuringPostRoll);
     }
 
     [Fact]

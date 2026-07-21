@@ -65,15 +65,28 @@ does three things through the machine, and nothing else: **it reads frames, it r
 snapshots, and it submits input + commands.** Keep every window on this side of the seam.
 
 ### 3.1 What the machine ALREADY exposes (bind to these — do not reinvent)
-- **Framebuffer handoff.** The machine owns **one persistent** 640×480 `uint[]` BGRA buffer.
-  Each field writes only its own scanlines (even→even lines, odd→odd) with **no inter-field
-  clear**, so the interlace **comb is baked into that single buffer** — there is **NO front/back
-  swap chain** (machine CLAUDE.md §3 / reference §4). At each **field boundary (50 Hz)** the
-  machine hands the UI a **read-only view or a fast copy** of the whole buffer; the UI blits that
-  into a `WriteableBitmap` and the machine keeps writing the next field into the same buffer.
-  Never read mid-render — only take the view/copy at the boundary. **Present per field**; the
-  display-mode toggle (§8) chooses which field(s)/cadence to present, it does NOT change the
-  machine's timing.
+- **Framebuffer handoff — SIZE CHANGED (2026-07-22, owner request: the machine now renders the
+  FULL FIELD, not just the active picture; width CORRECTED same day to exclude horizontal
+  retrace — see machine CLAUDE.md §17 for the two-round owner review).** The machine owns **one
+  persistent** buffer, now **928 × 626** `uint[]` BGRA (was 640×480, active-only — see machine
+  CLAUDE.md §3 and reference doc §4a "Full raster geometry" for the full derivation; the
+  horizontal retrace's 6 char-times are excluded entirely, not rendered). The active 640×480
+  "graphics window" sits at a **fixed offset (144, 98)** inside it, every field — a constant
+  crop rectangle, not data-dependent. Blanking pixels (the margins outside that rectangle) are
+  always flat black; the machine fills them cheaply since no fetch/contention ever happens
+  there. Each field writes only its own scanlines (even→even lines, odd→odd) with **no
+  inter-field clear**, so the interlace **comb is baked into that single buffer** — there is
+  **NO front/back swap chain** (machine CLAUDE.md §3 / reference §4). **Keep this dual even/odd
+  per-field write pattern exactly as implemented** — do not collapse it to a single-pass model;
+  it's what the 4-way display mode below depends on (machine CLAUDE.md §17, 2026-07-22 WITHDRAWN
+  note). At each **field boundary (50 Hz)** the machine hands the UI a **read-only view or a
+  fast copy** of the whole buffer; the UI blits either the whole thing or just the
+  (144, 98)–(784, 578) sub-rectangle into a `WriteableBitmap`, depending on the new Full-Field
+  vs Graphics-window toggle (§8) — and the
+  machine keeps writing the next field into the same buffer. Never read mid-render — only take
+  the view/copy at the boundary. **Present per field**; the display-mode toggle (§8) chooses
+  which field(s)/cadence to present, and the new Full-Field/Graphics-window toggle chooses how
+  much of the raster to show — neither changes the machine's timing.
 - **Config = topology.** `MachineConfig` (JSON, camelCase properties, enum values in declared
   casing e.g. `"T54"`/`"P2000T"`). Applying a changed topology = build a new machine from the
   config (`new Machine(config)`) — reset-to-apply. `.cfg` load/save is already a machine concern.
@@ -252,21 +265,69 @@ extension); cassette = `.cas` (primary) / `.p2000t`; config = `.cfg`; state = `.
 
 ## 8. Display / rendering
 
-- **Blit:** copy the machine's framebuffer view (640×480 BGRA) into a `WriteableBitmap`;
-  present in an `Image`; **nearest-neighbour** scaling for crisp pixels. Present on the UI
-  thread at display refresh; source is swapped by the machine at 50 Hz.
+- **Blit — UPDATED (2026-07-22, width corrected same day, see below):** copy either the
+  machine's full framebuffer view (928×626 BGRA) or just its fixed (144, 98)–(784, 578)
+  active-window sub-rectangle (640×480), depending on the Full-Field/Graphics-window toggle
+  below, into a `WriteableBitmap` sized to match; present in an `Image`; **nearest-neighbour**
+  scaling for crisp pixels. Present on the UI thread at display refresh; source is swapped by
+  the machine at 50 Hz.
 - **Four display modes** (reference doc §3a / machine §3) — a **UI presentation choice over the
-  same rendered scanlines**, never a change to machine timing (interrupt/CTC stay per-field):
-  1. **Interlaced (comb) — DEFAULT:** present per field, no inter-field clear → authentic comb.
+  same rendered scanlines**, never a change to machine timing (interrupt/CTC stay per-field).
+  **DEFAULT CHANGED (2026-07-21, owner decision):** the P2000TM Field Service manual's
+  T-VERSION VIDEO GENERATION section states *"the signal CRS is active during the even
+  scanlines of the field. In our system we use only the odd scanlines, so no interlacing is
+  used."* Real T hardware has no even/odd field pairing — every field is an independent
+  313-line refresh (reference doc §4/§4a). The prior "Interlaced (comb) — DEFAULT" framing was
+  BBC-Micro heritage carried over from jsbeeb/MAME (genuinely interlaced machines), not P2000T
+  fact. **New default: Odd-only** (mode 4) — it's the one that matches the FSM. This is a
+  **P2000.UI-owned setting/preference default**; the machine (`P2000.Machine/CLAUDE.md` §3) only
+  needs to expose the raw per-field buffer + `FieldComplete`/`IsOddField` events this depends on
+  — it does not own or assert a default itself. Flag for Claude Code: verify/apply this default
+  in `DisplayMode.cs` / `DisplayWindowVm.cs` (milestone 6); not yet checked against the actual
+  implementation. **IMPORTANT, owner-confirmed 2026-07-22: this is a DEFAULT-VALUE change
+  only — do NOT touch the underlying even/odd per-field rendering machinery.** The four modes'
+  existing dual-pass computation stays exactly as implemented; Odd-only already produces the
+  correct single-field view today. See machine CLAUDE.md §17 (2026-07-22 WITHDRAWN note) for
+  the full context — an earlier flag speculating that the per-field write pattern could be
+  collapsed to "always a complete image" was retracted specifically to prevent this kind of
+  revert.
+  1. **Interlaced (comb):** present per field, no inter-field clear → the comb artifact on fast
+     motion. No longer authentic-default (no real hardware interlace) — kept as a legitimate
+     opt-in extra/nostalgia mode.
   2. **Progressive:** both fields composited per frame, no comb.
-  3. **Even-only** / **4. Odd-only:** single field (odd = the smoothed sub-scanlines); field-only
-     defaults to **line-doubling** to fill 480.
-- **Toggles:** integer-scaling (crisp vs smoothed), **PAL aspect-ratio correction** (at 640×480
-  pixels are near-square on 4:3 — close to a straight integer scale, not a stretch), optional
-  **scanline/CRT shader** (the only "scanline gaps" path — do not add a separate gaps mode),
-  **show contention glitches**, and a **corrupted-cell debug overlay** (highlights cells the
-  machine flagged this frame — the same hook the VRAM window uses).
-- **Screenshot:** serialize the current framebuffer view.
+  3. **Even-only** / **4. Odd-only — NEW DEFAULT:** single field (odd = the smoothed
+     sub-scanlines, matching the FSM's "only the odd scanlines"); field-only defaults to
+     **line-doubling** to fill 480. This is now understood to be the AUTHENTIC vertical
+     resolution the SAA5050 actually renders (one field's fetched data, line-doubled), not a
+     reduced-fidelity fallback.
+- **Full-Field vs Graphics-window — NEW (2026-07-22, owner request), a SECOND toggle,
+  ORTHOGONAL to the 4-way mode above** (reference doc §3a has the UI-facing spec; machine
+  CLAUDE.md §3 / reference doc §4a have the geometry):
+  1. **Graphics-window (DEFAULT):** the familiar 640×480 active-picture crop, no visible change
+     for existing users.
+  2. **Full-Field:** the complete 928×626 raster, including the black leading/trailing
+     horizontal margins (9/9 char-times, retrace's 6 char-times excluded entirely — not
+     rendered) and black pre-roll/post-roll vertical margins (49/24 scanlines) — what a real
+     P2000 + PAL TV also only partially displays as "active video," normally hidden by CRT
+     overscan. Authenticity/debug viewing, not the everyday view.
+  - Purely a crop choice over whichever buffer the 4-way mode above produced — composes freely
+    with all four of those modes, does not interact with or change them.
+- **Toggles:** integer-scaling (crisp vs smoothed), **PAL aspect-ratio correction** — **scope
+  CORRECTED (2026-07-22, owner catch): applies to Graphics-window only, a no-op in Full-Field
+  mode.** Aspect correction reproduces the active picture's standardized real-world relationship
+  to a 4:3 CRT tube (at 640×480 pixels are already near-square on 4:3 — close to a straight
+  integer scale, not a stretch); the blanking margins have no equivalent standard to correct
+  toward (real CRTs never show retrace — beam physically off-screen — and hide most of the
+  porch behind bezel/overscan by a set-specific, non-standardized amount). In Full-Field mode,
+  disable/grey out this toggle and show the buffer at native pixel geometry instead — see
+  reference doc §3a/§4a for the full reasoning (an earlier draft of this doc claimed the
+  correction extends cleanly to the full buffer; that was wrong, walked back same day),
+  optional **scanline/CRT shader** (the only "scanline gaps" path — do not add a separate gaps
+  mode), **show contention glitches**, and a **corrupted-cell debug overlay** (highlights cells
+  the machine flagged this frame — the same hook the VRAM window uses; overlay coordinates are
+  relative to the active window, so a +144/+98 offset applies when drawing it in Full-Field
+  mode — flag for Claude Code, not yet implemented).
+- **Screenshot:** serialize the current framebuffer view (whichever crop is currently shown).
 
 ---
 
@@ -753,6 +814,100 @@ project.
 - **Applies to:** reference doc §3a / <file>
 - **Synced:** yes (YYYY-MM-DD)
 -->
+
+### 2026-07-22 — Flag (not yet implemented): Full-Field vs Graphics-window UI toggle
+- **Trigger — owner's request:** the machine should render the complete field (black blanking
+  margins included), and the UI should get an option to show "Full-Field" or "Graphics window
+  only" — see `src/P2000.Machine/CLAUDE.md` §17 (2026-07-22 entry) and reference doc §3a/§4a
+  for the full geometry derivation and design shape.
+- **Found (scope confirmation, same pattern as the 2026-07-21 display-mode-default entry
+  below):** this is a second, orthogonal UI-owned toggle, not a machine setting — the machine
+  produces the full raster unconditionally; the UI decides how much to crop. No machine-layer
+  mode needed for this either.
+- **Owner review round 1 (before implementation) — two corrections, both resolved before any
+  code was touched:**
+  1. **Do not revert the dual even/odd field rendering machinery** — see the "IMPORTANT,
+     owner-confirmed 2026-07-22" note on the four-display-mode entry above, and machine
+     CLAUDE.md §17's WITHDRAWN note. No rendering-code change here, default-value only.
+  2. **Full-field width corrected from 1024 to 928 px** — the owner's retrace model (chip
+     emits nothing for 6 char-times at the start of each line; trailing blank left intact)
+     excludes horizontal retrace from the buffer entirely. Crop rectangle offset is now
+     (144, 98), not (240, 98). See machine CLAUDE.md §17 and reference doc §4a for the full
+     derivation and the flagged 5-vs-6-char-time ambiguity.
+- **Not yet done:** `DisplayMode.cs` / `DisplayControl.cs` / `DisplayWindowVm.cs` need the new
+  toggle, the `WriteableBitmap` sizing needs to follow whichever crop is active (928×626 or
+  640×480), and the `CorruptionOverlay` draw path needs a coordinate offset when Full-Field is
+  active (overlay indices are relative to the 640×480 active window, not the full buffer) —
+  this is a flag for Claude Code, not a confirmed implementation.
+- **Applies to:** reference doc §3a (Full-Field vs Graphics-window) / `src/P2000.UI/Rendering/
+  DisplayMode.cs`, `src/P2000.UI/Rendering/DisplayControl.cs`,
+  `src/P2000.UI/ViewModels/DisplayWindowVm.cs`.
+- **Synced:** yes (2026-07-22, into P2000T-reference.md §3a) — implementation-side change still
+  outstanding.
+
+### 2026-07-22 — IMPLEMENTED: Full-Field/Graphics-window crop toggle + Odd-only default (closes both flags below/above)
+- **`DisplayCrop` enum** (new file `Rendering/DisplayCrop.cs`): `GraphicsWindow` (default) /
+  `FullField`. `DisplayControl.Crop` reallocates its backing `WriteableBitmap` to the crop's
+  pixel size on change; `DisplayWindowVm.Crop` is the bindable VM-side property (default
+  `GraphicsWindow`, with `IsCropGraphicsWindow`/`IsCropFullField`/`SetCropCommand` following the
+  exact same pattern as the existing 4-way `DisplayMode`).
+- **Corruption overlay offset — resolved the handoff's own open implementation choice
+  ("offset at draw time, or store overlay full-buffer-sized — both are fine") in favour of
+  offset-at-draw-time:** `DrawCorruptionOverlay` computes the active window's own origin as a
+  sub-rect of `_destRect`, adding `ActiveOffsetX/Y` (scaled to destRect units) only when
+  `Crop == FullField`; zero offset in `GraphicsWindow` since the whole destRect already IS the
+  active window. No change to the overlay's own storage shape (stays 40×24, machine-side).
+- **PAL aspect — implemented as "always letterbox using the crop's own true aspect ratio when
+  Full-Field, regardless of the PalAspect toggle's value," not a silent no-op:** added
+  `DisplayWindowVm.CanTogglePalAspect` (`Crop == GraphicsWindow`), bound to the View-menu item's
+  `IsEnabled` so the toggle visibly greys out in Full-Field rather than doing nothing invisibly.
+  `DisplayControl.ComputeDestRect`'s letterbox branch now fires on `PalAspect || Crop ==
+  FullField` — for Full-Field this produces native-pixel-geometry letterboxing (928:626 isn't
+  4:3, so this is genuinely different math from the Graphics-window PAL correction, not the same
+  branch reused coincidentally).
+- **Display-mode default flip (closes the 2026-07-21 flag below) — confirmed TWO separate
+  defaults needed changing, not one:** `DisplayControl.Mode` and `DisplayWindowVm._displayMode`
+  are independent fields with their own `= DisplayMode.Interlaced` initializers; both flipped to
+  `DisplayMode.OddOnly`. Per the owner-confirmed "default-value change only" instruction, no
+  per-field rendering code was touched. The View menu's "(default)" label moved from the
+  Interlaced entry to the Odd-only entry.
+- **Screenshot updated to respect the current crop** (`DisplayWindowVm.Screenshot()`) — it
+  previously always serialized the full machine buffer unconditionally; now crops exactly like
+  `DisplayControl.CopyToWriteableBitmap` does, using the same offset math.
+- **Not done this pass (tooling limitation):** could not get computer-use to attach to an
+  ad-hoc `dotnet run`-launched dev window for a live visual check (it only resolves
+  Start-Menu-registered/tracked apps). Verified via `P2000.UI.Tests` (97, including 5 new
+  `DisplayWindowVmTests`) + full `P2000.Machine.Tests` (401) instead. Flagging so a future pass
+  does the actual eyes-on-screen check (see the parallel entry in `src/P2000.Machine/CLAUDE.md`
+  §17 for the specific checklist).
+- **Applies to:** `src/P2000.UI/Rendering/DisplayCrop.cs` (new),
+  `src/P2000.UI/Rendering/DisplayControl.cs`, `src/P2000.UI/ViewModels/DisplayWindowVm.cs`,
+  `src/P2000.UI/Views/DisplayWindow.axaml(.cs)`, `src/P2000.UI/Runner/EmulationRunner.cs` (doc
+  comments only), `tests/P2000.UI.Tests/ViewModels/DisplayWindowVmTests.cs` (new).
+- **Synced:** no (implementation-only; the design facts were already synced above).
+
+### 2026-07-21 — Flag (not yet verified): display-mode default should change to Odd-only
+- **Trigger:** owner-supplied P2000TM Field Service manual states, for the T-version: *"the
+  signal CRS is active during the even scanlines of the field. In our system we use only the
+  odd scanlines, so no interlacing is used."* Confirmed correct by the owner. See
+  `src/P2000.Machine/CLAUDE.md` §17 (2026-07-19/21 entries) and `docs/SAA5050-implementation.md`
+  §5 for the full hardware-timing correction (real T hardware has no even/odd field pairing;
+  every field is an independent 313-line refresh).
+- **Found (scope confirmation):** this project's own 2026-07-07 milestone-6 finding below
+  already correctly built the four display modes as a pure UI-presentation layer over the
+  machine's raw per-field events (`FieldComplete`/`IsOddField`) — no machine changes needed.
+  Only the DEFAULT selection needs revisiting.
+- **Owner decision, 2026-07-21:** default should move from **Interlaced (comb)** to
+  **Odd-only** (mode 4, line-doubled single field) — it's the mode that matches the FSM's "only
+  the odd scanlines, no interlacing." Interlaced/comb remains available as a legitimate
+  opt-in/nostalgia mode, just no longer presented as authentic-default T behaviour.
+- **Not yet done:** the actual default value in `DisplayMode.cs` / `DisplayWindowVm.cs`
+  (milestone 6, below) has not been checked or changed in this pass — this is a flag for
+  Claude Code, not a confirmed fix.
+- **Applies to:** reference doc §3a (display mode) / `src/P2000.UI/Rendering/DisplayMode.cs`,
+  `src/P2000.UI/ViewModels/DisplayWindowVm.cs`.
+- **Synced:** yes (2026-07-21, into P2000T-reference.md §3a) — implementation-side change still
+  outstanding.
 
 ### 2026-07-07 — Milestone 4: cassette deck + CLOAD end-to-end
 - **Assumed:** the `.cas` tape block structure was MARK + HEADER (32 B) + DATA (1024 B) as three

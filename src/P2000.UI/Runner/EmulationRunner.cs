@@ -46,7 +46,8 @@ public sealed class EmulationRunner : IDisposable
     public event Action<BreakEvent>? BreakHit;
 
     /// <summary>Fired on the UI thread at each 50 Hz field boundary.
-    /// <c>pixels</c> is a stable BGRA copy (640×480) owned by the runner.
+    /// <c>pixels</c> is a stable BGRA copy of the machine's full-field buffer (928×626,
+    /// project CLAUDE.md §17 2026-07-22 full-field change) owned by the runner.
     /// <c>fieldWasOdd</c> is true when the odd field just completed (useful for Progressive /
     /// EvenOnly / OddOnly display modes). <c>corruption</c> is a stable 40×24 snapshot of the
     /// machine's CorruptionOverlay for that field.
@@ -174,7 +175,8 @@ public sealed class EmulationRunner : IDisposable
     public void EnqueueKey(int row, int col, bool pressed)
         => _inputQueue.Enqueue((row, col, pressed));
 
-    /// <summary>Returns a snapshot copy of the most recent rendered frame (BGRA 640×480).
+    /// <summary>Returns a snapshot copy of the most recent rendered frame (BGRA, the machine's
+    /// full 928×626 field buffer — project CLAUDE.md §17 2026-07-22 full-field change).
     /// Allocates a new array; safe to call from any thread.</summary>
     public uint[] GetCurrentFrame()
     {

@@ -7,10 +7,13 @@ namespace P2000.Machine.Devices;
 
 /// <summary>
 /// The SAA5050 + fetch-timing video device (project CLAUDE.md §7/§9, reference doc §5/§5f).
-/// Owns the machine's framebuffer (§3 framebuffer contract: 640×480 BGRA, a SINGLE persistent
-/// buffer - the P2000T is interlaced at 50 fields/sec, not 50 progressive frames/sec) and
-/// wires the fetch-timing unit (<see cref="VideoFetchUnit"/>, the SAA5020's role) to the
-/// character generator (<see cref="Saa5050Generator"/>, the SAA5050's role) exactly along the
+/// Owns the machine's framebuffer (§3 framebuffer contract, CHANGED 2026-07-22: the machine
+/// renders the FULL FIELD — 928×626 BGRA, including blanking — not just the 640×480 active
+/// picture; see <see cref="ActiveOffsetX"/>/<see cref="ActiveOffsetY"/>/<see cref="ActiveWidth"/>/
+/// <see cref="ActiveHeight"/> below for the fixed crop rectangle. A SINGLE persistent buffer -
+/// the P2000T is interlaced at 50 fields/sec, not 50 progressive frames/sec) and wires the
+/// fetch-timing unit (<see cref="VideoFetchUnit"/>, the SAA5020's role) to the character
+/// generator (<see cref="Saa5050Generator"/>, the SAA5050's role) exactly along the
 /// fetch/generate split `docs/SAA5050-implementation.md` §6 calls for: the fetch unit issues a
 /// real VRAM read every column slot on the master clock (the future contention seam,
 /// milestone 10); the generator only ever consumes the byte it's handed.
@@ -23,15 +26,28 @@ namespace P2000.Machine.Devices;
 /// three are a UI-presentation concern, not a machine one, since "the toggle only affects UI
 /// presentation"). <see cref="FieldComplete"/> fires every field (50 Hz - drives the
 /// interrupt/CTC cadence); <see cref="FrameComplete"/> fires only after the odd field, once
-/// every two fields, marking a complete 640×480 image.
+/// every two fields, marking a complete full-field image.
 /// </summary>
 public sealed class Video : IDevice
 {
-    public const int Width = 640;
-    public const int Height = 480;
+    /// <summary>Full field width: 144 px leading blank (9 char-times, the horizontal retrace's
+    /// 6 char-times already excluded entirely — reference doc §4a) + 640 px active (40
+    /// char-times) + 144 px trailing blank (9 char-times) = 928.</summary>
+    public const int Width = 928;
+
+    /// <summary>Full field height: 98 px pre-roll blank (49 scanlines × 2 rows/scanline) + 480
+    /// px active (240 scanlines × 2) + 48 px post-roll blank (24 scanlines × 2) = 626.</summary>
+    public const int Height = 626;
+
+    /// <summary>Fixed crop rectangle — the "graphics window" — within the full field buffer
+    /// (reference doc §4a): constant every field, not data-dependent.</summary>
+    public const int ActiveOffsetX = 144;
+    public const int ActiveOffsetY = 98;
+    public const int ActiveWidth = 640;
+    public const int ActiveHeight = 480;
 
     /// <summary>40 columns × 24 rows = 960 character cells per field.</summary>
-    public const int CharRows = Height / 20; // 480 / (10 scanlines × 2 output rows)
+    public const int CharRows = ActiveHeight / 20; // 480 / (10 scanlines × 2 output rows)
 
     /// <summary>Screen buffer is 2 screens wide × 24 rows (reference doc §5): 80 columns per
     /// row, panned by <see cref="PanX"/> to select which 40-wide slice is visible.</summary>
@@ -113,10 +129,10 @@ public sealed class Video : IDevice
     {
         if (!_fetchUnit.IsFetchTick) return;
         var col = _fetchUnit.LastFetchColumn;
-        var line = _fetchUnit.LastFetchLine;
-        var charRow = line / 10;
-        var row = line * 2 + (_oddField ? 1 : 0);
-        _framebuffer.AsSpan(row * Width + col * 16, 16).Clear();
+        var activeLine = _fetchUnit.LastFetchLine - VideoFetchUnit.VerticalBlankLines;
+        var charRow = activeLine / 10;
+        var row = ActiveOffsetY + activeLine * 2 + (_oddField ? 1 : 0);
+        _framebuffer.AsSpan(row * Width + ActiveOffsetX + col * 16, 16).Clear();
         _corruptionOverlay[charRow * VideoFetchUnit.Columns + col] = true;
     }
 
@@ -126,7 +142,8 @@ public sealed class Video : IDevice
 
     private void OnColumnFetch(int column)
     {
-        var charRow = _fetchUnit.Line / 10;
+        var activeLine = _fetchUnit.Line - VideoFetchUnit.VerticalBlankLines;
+        var charRow = activeLine / 10;
         var bufferColumn = (PanX + column) % BufferColumns;
         var address = (ushort)(PageTable.VideoRamStart + charRow * BufferColumns + bufferColumn);
         var data = _memory.Read(address);
@@ -135,8 +152,10 @@ public sealed class Video : IDevice
 
         // Interlaced (project CLAUDE.md §3): this field pass owns only ITS rows (even or odd),
         // not both - the other field's rows are left untouched from ~20 ms ago (the comb).
-        var row = _fetchUnit.Line * 2 + (_oddField ? 1 : 0);
-        var pixelX = column * 16;
+        // Offset into the active "graphics window" crop rectangle within the full-field buffer
+        // (reference doc §4a) - blanking pixels around it are never touched, staying flat black.
+        var row = ActiveOffsetY + activeLine * 2 + (_oddField ? 1 : 0);
+        var pixelX = ActiveOffsetX + column * 16;
         _generator.RenderField(_framebuffer, row * Width + pixelX, oddField: _oddField);
     }
 

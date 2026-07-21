@@ -72,13 +72,29 @@ public sealed partial class DisplayWindowVm : ObservableObject, IDisposable
     [NotifyPropertyChangedFor(
         nameof(IsModeInterlaced), nameof(IsModeProgressive),
         nameof(IsModeEvenOnly),   nameof(IsModeOddOnly))]
-    private DisplayMode _displayMode = DisplayMode.Interlaced;
+    private DisplayMode _displayMode = DisplayMode.OddOnly;
 
     // Computed bools for menu IsChecked bindings (ConverterParameter+x:Static is unreliable in AXAML).
     public bool IsModeInterlaced  => DisplayMode == DisplayMode.Interlaced;
     public bool IsModeProgressive => DisplayMode == DisplayMode.Progressive;
     public bool IsModeEvenOnly    => DisplayMode == DisplayMode.EvenOnly;
     public bool IsModeOddOnly     => DisplayMode == DisplayMode.OddOnly;
+
+    /// <summary>Full-Field vs Graphics-window (project CLAUDE.md §8, 2026-07-22) — orthogonal
+    /// to <see cref="DisplayMode"/> above. Default Graphics-window: no visible change for
+    /// existing users.</summary>
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(
+        nameof(IsCropGraphicsWindow), nameof(IsCropFullField), nameof(CanTogglePalAspect))]
+    private DisplayCrop _crop = DisplayCrop.GraphicsWindow;
+
+    public bool IsCropGraphicsWindow => Crop == DisplayCrop.GraphicsWindow;
+    public bool IsCropFullField      => Crop == DisplayCrop.FullField;
+
+    /// <summary>PAL aspect-ratio correction only makes sense for the Graphics-window crop
+    /// (reference doc §3a/§4a: the blanking margins have no equivalent real-world standard to
+    /// correct toward) — greyed out in Full-Field mode rather than silently ignored.</summary>
+    public bool CanTogglePalAspect => Crop == DisplayCrop.GraphicsWindow;
 
     [ObservableProperty] private bool _integerScale;
     [ObservableProperty] private bool _palAspect = true;
@@ -205,6 +221,9 @@ public sealed partial class DisplayWindowVm : ObservableObject, IDisposable
     private void SetDisplayMode(DisplayMode mode) => DisplayMode = mode;
 
     [RelayCommand]
+    private void SetCrop(DisplayCrop crop) => Crop = crop;
+
+    [RelayCommand]
     private void ToggleIntegerScale() => IntegerScale = !IntegerScale;
 
     [RelayCommand]
@@ -293,9 +312,17 @@ public sealed partial class DisplayWindowVm : ObservableObject, IDisposable
     [RelayCommand]
     private unsafe void Screenshot()
     {
+        // Serialize whichever crop is currently shown (project CLAUDE.md §8: "screenshot
+        // serializes the current framebuffer view"), not always the full machine buffer.
         var pixels = Runner.GetCurrentFrame();
+        var fullField = Crop == DisplayCrop.FullField;
+        int width  = fullField ? Video.Width  : Video.ActiveWidth;
+        int height = fullField ? Video.Height : Video.ActiveHeight;
+        int offsetX = fullField ? 0 : Video.ActiveOffsetX;
+        int offsetY = fullField ? 0 : Video.ActiveOffsetY;
+
         var bitmap = new WriteableBitmap(
-            new Avalonia.PixelSize(Video.Width, Video.Height),
+            new Avalonia.PixelSize(width, height),
             new Avalonia.Vector(96, 96),
             PixelFormats.Bgra8888,
             AlphaFormat.Opaque);
@@ -304,12 +331,13 @@ public sealed partial class DisplayWindowVm : ObservableObject, IDisposable
         {
             fixed (uint* src = pixels)
             {
-                int srcStride = Video.Width * sizeof(uint);
-                if (fb.RowBytes == srcStride)
-                    Buffer.MemoryCopy(src, fb.Address.ToPointer(), (long)fb.RowBytes * fb.Size.Height, (long)srcStride * Video.Height);
-                else
-                    for (int row = 0; row < Video.Height; row++)
-                        Buffer.MemoryCopy((byte*)src + row * srcStride, (byte*)fb.Address + row * fb.RowBytes, srcStride, srcStride);
+                int copyStride = width * sizeof(uint);
+                var dstPtr = (byte*)fb.Address;
+                for (int row = 0; row < height; row++)
+                {
+                    var srcPtr = (byte*)(src + (row + offsetY) * Video.Width + offsetX);
+                    Buffer.MemoryCopy(srcPtr, dstPtr + row * fb.RowBytes, fb.RowBytes, copyStride);
+                }
             }
         }
 

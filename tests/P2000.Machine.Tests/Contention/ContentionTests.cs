@@ -105,6 +105,34 @@ public class ContentionTests
         Assert.InRange(corruptedCount, 1, totalCells - 1);
     }
 
+    // ---- Pre-roll vertical blank: never contended (2026-07-22 fix) -------------------------
+
+    /// <summary>
+    /// Project CLAUDE.md §17 (2026-07-19/2026-07-22): the 49-line vertical-blank pre-roll must
+    /// be fetch-free, so hammering VRAM confined to ONLY that window must never corrupt a cell
+    /// — the fix for the reported Ghosthunt top-of-screen glitch. Confined by tick-count, not
+    /// by relying on the loop naturally stopping — the same VRAM-write loop as the speckle test,
+    /// run for exactly the pre-roll's T-state budget then halted.
+    /// </summary>
+    [Fact]
+    public void ContentionDuringPreRollVblank_NeverCorrupts()
+    {
+        var machine = new Machine();
+
+        machine.Memory.LoadRom(new byte[]
+        {
+            0x21, 0x00, 0x50, // LD HL, 0x5000
+            0x74,             // LD (HL), H
+            0x18, 0xFD,       // JR -3
+        });
+
+        var preRollTStates = VideoFetchUnit.VerticalBlankLines * VideoFetchUnit.TStatesPerLine;
+        for (var i = 0; i < preRollTStates; i++)
+            machine.Tick();
+
+        Assert.All(machine.Video.CorruptionOverlay, c => Assert.False(c));
+    }
+
     // ---- Overlay reset ---------------------------------------------------------------------
 
     [Fact]

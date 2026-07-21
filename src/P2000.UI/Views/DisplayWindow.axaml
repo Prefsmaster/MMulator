@@ -64,10 +64,10 @@
             </MenuItem>
             <MenuItem Header="_View">
                 <!-- Display mode — bullet icon on the active item acts as radio indicator -->
-                <MenuItem Header="Mode: _Interlaced (default)"
+                <MenuItem Header="Mode: _Interlaced"
                           Command="{Binding SetDisplayModeCommand}"
                           CommandParameter="{x:Static rendering:DisplayMode.Interlaced}"
-                          ToolTip.Tip="Present every 50 Hz field — authentic interlace comb on fast motion">
+                          ToolTip.Tip="Present every 50 Hz field — authentic interlace comb on fast motion. Legitimate opt-in/nostalgia mode; not authentic T behaviour (no real hardware interlace)">
                     <MenuItem.Icon>
                         <TextBlock Text="●" IsVisible="{Binding IsModeInterlaced}" />
                     </MenuItem.Icon>
@@ -88,12 +88,30 @@
                         <TextBlock Text="●" IsVisible="{Binding IsModeEvenOnly}" />
                     </MenuItem.Icon>
                 </MenuItem>
-                <MenuItem Header="Mode: _Odd field only (smoothed)"
+                <MenuItem Header="Mode: _Odd field only (smoothed, default)"
                           Command="{Binding SetDisplayModeCommand}"
                           CommandParameter="{x:Static rendering:DisplayMode.OddOnly}"
-                          ToolTip.Tip="Show only the odd (CRS-smoothed) field, line-doubled">
+                          ToolTip.Tip="Show only the odd (CRS-smoothed) field, line-doubled — matches the Field Service manual's &quot;no interlacing is used&quot; T-version behaviour">
                     <MenuItem.Icon>
                         <TextBlock Text="●" IsVisible="{Binding IsModeOddOnly}" />
+                    </MenuItem.Icon>
+                </MenuItem>
+                <Separator />
+                <!-- Full-Field vs Graphics-window — orthogonal to the 4-way mode above -->
+                <MenuItem Header="Crop: _Graphics window (default)"
+                          Command="{Binding SetCropCommand}"
+                          CommandParameter="{x:Static rendering:DisplayCrop.GraphicsWindow}"
+                          ToolTip.Tip="640×480 active picture only — no visible change for existing users">
+                    <MenuItem.Icon>
+                        <TextBlock Text="●" IsVisible="{Binding IsCropGraphicsWindow}" />
+                    </MenuItem.Icon>
+                </MenuItem>
+                <MenuItem Header="Crop: _Full field"
+                          Command="{Binding SetCropCommand}"
+                          CommandParameter="{x:Static rendering:DisplayCrop.FullField}"
+                          ToolTip.Tip="Complete 928×626 raster incl. blanking margins — what a real TV's overscan normally hides">
+                    <MenuItem.Icon>
+                        <TextBlock Text="●" IsVisible="{Binding IsCropFullField}" />
                     </MenuItem.Icon>
                 </MenuItem>
                 <Separator />
@@ -107,7 +125,8 @@
                 </MenuItem>
                 <MenuItem Header="PAL _aspect ratio (4:3)"
                           Command="{Binding TogglePalAspectCommand}"
-                          ToolTip.Tip="Maintain 4:3 ratio (letterbox); off = stretch to fill">
+                          IsEnabled="{Binding CanTogglePalAspect}"
+                          ToolTip.Tip="Maintain 4:3 ratio (letterbox); off = stretch to fill. Graphics-window only — no equivalent standard for the Full-Field blanking margins, so this is disabled there">
                     <MenuItem.Icon>
                         <TextBlock Text="✓" IsVisible="{Binding PalAspect}" />
                     </MenuItem.Icon>

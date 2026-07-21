@@ -26,6 +26,15 @@ public sealed class VideoFetchUnit : IDevice
     /// <summary>24 rows × 10 scanlines (reference doc §4a).</summary>
     public const int ActiveLines = 240;
 
+    /// <summary>Scanlines preceding the active window within a 313-line field (reference doc
+    /// §4/§4a, owner-supplied Field Service manual: active window is scanlines 49-289) —
+    /// CORRECTED 2026-07-22 (project CLAUDE.md §17, 2026-07-19 finding): fetch scheduling
+    /// previously started at field-T-state 0 with no pre-roll offset at all, treating real
+    /// hardware's vertical-blank T-states as fetch-eligible — the leading hypothesis for the
+    /// reported Ghosthunt top-of-screen glitch (48/313 ≈ 15.3% ≈ "top 15%"). 49 pre-roll +
+    /// 240 active + 24 post-roll = 313 lines total (unchanged field length).</summary>
+    public const int VerticalBlankLines = 49;
+
     /// <summary>40 µs active fetch / 64 µs line (reference doc §4a): 100 of the 160
     /// T-states/line are the fetch window; the rest is horizontal blank.</summary>
     public const int ActiveTStatesPerLine = 100;
@@ -44,7 +53,7 @@ public sealed class VideoFetchUnit : IDevice
 
     public int LineTState { get; private set; }
 
-    public bool IsActiveLine => Line < ActiveLines;
+    public bool IsActiveLine => Line >= VerticalBlankLines && Line < VerticalBlankLines + ActiveLines;
 
     /// <summary>True for the T-state immediately after a <see cref="ColumnFetch"/> fired -
     /// i.e., this tick a VRAM display fetch was issued. <see cref="Machine"/> reads this

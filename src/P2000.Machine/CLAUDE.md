@@ -1138,6 +1138,79 @@ marked synced. Do NOT edit the reference doc from this project.
 - **Synced:** yes (2026-07-22, into P2000T-reference.md §3a/§4a) — implementation still
   outstanding.
 
+### 2026-07-22 — IMPLEMENTED: full-field framebuffer + 49-line pre-roll fetch fix (closes the flag above)
+- **Full-field resize:** `Video.Width`/`Height` changed 640×480 → 928×626; added
+  `ActiveOffsetX=144`/`ActiveOffsetY=98`/`ActiveWidth=640`/`ActiveHeight=480` constants (the
+  fixed crop rectangle). `OnColumnFetch`/`CorruptLastFetch` now compute the pixel-write offset
+  as `ActiveOffsetY + activeRelativeLine*2 + parity` / `ActiveOffsetX + column*16` instead of
+  `line*2+parity` / `column*16` directly — blanking pixels are simply never written, staying
+  flat black from the existing `Array.Clear` in `Reset()` (no extra fill loop needed, confirming
+  the flag's own prediction).
+- **Also fixed the SEPARATE 2026-07-19 `VideoFetchUnit` bug in the same pass** (confirmed real,
+  not just hypothesized, by reading the actual source before changing anything): added
+  `VideoFetchUnit.VerticalBlankLines = 49` and changed `IsActiveLine` from `Line < ActiveLines`
+  (fetching from field-T-state 0) to `Line >= VerticalBlankLines && Line < VerticalBlankLines +
+  ActiveLines` — gating fetch scheduling to lines 49-288 (240 active), leaving lines 0-48
+  (pre-roll) and 289-312 (post-roll) fetch-free. This is the fix for the reported Ghosthunt
+  top-of-screen glitch. `Video.cs`'s charRow/pixel-row math now subtracts
+  `VideoFetchUnit.VerticalBlankLines` from `Line` before use.
+- **Found (pre-existing quirk, NOT introduced or fixed by this pass, flagging for awareness):**
+  `TStatesPerField` (50,000) does not divide evenly by `TStatesPerLine` (160) into exactly 313
+  lines (313×160 = 50,080 ≠ 50,000) — the field's last raw line only gets 80 T-states instead
+  of 160 before wrapping. This predates both fixes above (Line was always computed as
+  `_fieldTState / TStatesPerLine`); nothing here changes it, and no test depends on the field
+  containing exactly 313 full-width lines. Worth a look if exact 313-line fidelity is ever
+  wanted.
+- **Test updates (existing tests corrected, not just new ones added):** `VideoFetchUnitTests.cs`
+  — tests written against the old "active window starts at line 0" assumption now advance past
+  the 49-line pre-roll first (`AdvanceToActiveWindowStart` helper); `Tick_VblankLines_NeverFetch`
+  split into `Tick_PreRollLines_NeverFetch`/`Tick_PostRollLines_NeverFetch` since vblank is no
+  longer a single contiguous tail. `VideoTests.cs` — every hardcoded pixel-offset assertion (`0`,
+  `Video.Width`) now goes through `ActiveOrigin`/`OddRowOrigin` constants computed from the new
+  offset fields, instead of assuming the active window starts at framebuffer offset 0.
+  `ContentionTests.cs` — added `ContentionDuringPreRollVblank_NeverCorrupts`, hammering VRAM for
+  exactly the pre-roll's T-state budget and confirming zero corruption (the contention
+  stress-test case the handoff asked for, confined to the fixed window).
+- **UI side (`P2000.UI`):** added `DisplayCrop` enum (`GraphicsWindow` default / `FullField`) and
+  a `DisplayControl.Crop` property that reallocates the backing `WriteableBitmap` to the current
+  crop's size. Line-doubling (Even/OddOnly modes) still operates on the FULL buffer unconditionally
+  — cropping happens only at the final blit (`CopyToWriteableBitmap`), which copies either the
+  whole buffer or just the `(ActiveOffsetX, ActiveOffsetY)`-`(ActiveWidth, ActiveHeight)`
+  sub-rectangle depending on `Crop`. `DrawCorruptionOverlay` computes the active window's own
+  origin as a sub-rect of `_destRect` (offset by `ActiveOffsetX/Y` scaled to destRect units only
+  when `Crop == FullField`; zero offset in `GraphicsWindow` since the whole destRect already IS
+  the active window) — implements the "offset at draw time" option the handoff left as an
+  implementation-detail choice, rather than storing a full-buffer-sized overlay. PAL aspect
+  correction is forced OFF (native-pixel-geometry letterbox using the crop's own true aspect
+  ratio) whenever `Crop == FullField`, regardless of the `PalAspect` toggle's own value — the
+  menu item's `IsEnabled` is bound to a `CanTogglePalAspect` computed property so it visibly
+  greys out rather than silently doing nothing.
+- **`DisplayMode` default flipped Interlaced → OddOnly** in BOTH places that had their own
+  default (`DisplayControl.Mode` and `DisplayWindowVm._displayMode`) — confirmed both needed the
+  change independently (they're separate fields, not one shared source), per the 2026-07-21
+  flag below. The underlying per-field even/odd computation was NOT touched, per the WITHDRAWN
+  note's explicit instruction.
+- **Not done this pass (tooling limitation, not a scope decision):** could not get computer-use
+  to attach to an ad-hoc `dotnet run`-launched window (it only resolves against
+  Start-Menu-registered/already-tracked apps, not arbitrary dev processes) to take a live
+  screenshot confirming the visual result. Verified via the full `P2000.Machine.Tests` (401) +
+  `P2000.UI.Tests` (97) suites instead — every existing pixel-offset/dimension assertion was
+  found and updated, not just newly-added ones, which is the strongest signal available without
+  eyes on the actual rendered window. Whoever next touches this area should do a real visual
+  pass (Graphics-window looks unchanged, Full-Field shows margins + correct picture position,
+  Odd-only is the fresh-launch default, overlay lines up in both crop modes).
+- **Applies to:** `src/P2000.Machine/Devices/Video.cs`,
+  `src/P2000.Machine/Contention/VideoFetchUnit.cs`,
+  `tests/P2000.Machine.Tests/Devices/VideoTests.cs`,
+  `tests/P2000.Machine.Tests/Contention/VideoFetchUnitTests.cs`,
+  `tests/P2000.Machine.Tests/Contention/ContentionTests.cs`,
+  `src/P2000.UI/Rendering/DisplayCrop.cs` (new), `src/P2000.UI/Rendering/DisplayControl.cs`,
+  `src/P2000.UI/ViewModels/DisplayWindowVm.cs`, `src/P2000.UI/Views/DisplayWindow.axaml(.cs)`,
+  `src/P2000.UI/Runner/EmulationRunner.cs` (stale doc comments only — buffer allocation was
+  already parametric on `Video.Width`/`Height`, needed no code change),
+  `tests/P2000.UI.Tests/ViewModels/DisplayWindowVmTests.cs` (new).
+- **Synced:** no (implementation-only; the hardware/design facts were already synced above).
+
 ### 2026-07-21 — Flag (not yet implemented): RAM should power up non-zero, not all-zero
 - **Trigger — owner's report (real hardware test):** *"When starting up, the display shows
   'garbage' imagery briefly then it gets cleared by the monitor ROM. This means that the

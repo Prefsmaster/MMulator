@@ -7,6 +7,14 @@ namespace P2000.Machine.Tests.Devices;
 
 public class VideoTests
 {
+    /// <summary>Flat pixel offset of VRAM row 0/column 0's EVEN sub-scanline within the
+    /// full-field buffer — the active "graphics window" crop rectangle's origin (project
+    /// CLAUDE.md §17, 2026-07-22 full-field change; reference doc §4a).</summary>
+    private const int ActiveOrigin = Video.ActiveOffsetY * Video.Width + Video.ActiveOffsetX;
+
+    /// <summary>Same cell's ODD sub-scanline (one output row below the even one).</summary>
+    private const int OddRowOrigin = (Video.ActiveOffsetY + 1) * Video.Width + Video.ActiveOffsetX;
+
     private static (Video Video, PageTable Memory) Create(MachineConfig? config = null)
     {
         var memory = new PageTable(config ?? new MachineConfig());
@@ -27,8 +35,12 @@ public class VideoTests
         var (video, _) = Create();
 
         Assert.Equal(Video.Width * Video.Height, video.Framebuffer.Length);
-        Assert.Equal(640, Video.Width);
-        Assert.Equal(480, Video.Height);
+        Assert.Equal(928, Video.Width);
+        Assert.Equal(626, Video.Height);
+        Assert.Equal(144, Video.ActiveOffsetX);
+        Assert.Equal(98, Video.ActiveOffsetY);
+        Assert.Equal(640, Video.ActiveWidth);
+        Assert.Equal(480, Video.ActiveHeight);
     }
 
     [Fact]
@@ -42,11 +54,11 @@ public class VideoTests
         Assert.True(video.IsOddField); // toggled already, ready for the NEXT field to be odd
         var expected = ExpectedCellRow(Saa5050GlyphTables.Normal, '@', row: 0, fg: 7, bg: 0);
         var actualEvenRow = new uint[16];
-        Array.Copy(video.Framebuffer, 0, actualEvenRow, 0, 16); // y=0, the even row
+        Array.Copy(video.Framebuffer, ActiveOrigin, actualEvenRow, 0, 16);
         Assert.Equal(expected, actualEvenRow);
 
         // The odd row (y=1) has not been touched by this field at all - still zero.
-        for (var pixel = Video.Width; pixel < Video.Width + 16; pixel++)
+        for (var pixel = OddRowOrigin; pixel < OddRowOrigin + 16; pixel++)
         {
             Assert.Equal(0u, video.Framebuffer[pixel]);
         }
@@ -60,19 +72,19 @@ public class VideoTests
 
         RunOneField(video); // even field
         var evenRowSnapshot = new uint[16];
-        Array.Copy(video.Framebuffer, 0, evenRowSnapshot, 0, 16);
+        Array.Copy(video.Framebuffer, ActiveOrigin, evenRowSnapshot, 0, 16);
 
         RunOneField(video); // odd field
 
         // The even field's row is untouched (the "comb": no inter-field clear).
         var actualEvenRow = new uint[16];
-        Array.Copy(video.Framebuffer, 0, actualEvenRow, 0, 16);
+        Array.Copy(video.Framebuffer, ActiveOrigin, actualEvenRow, 0, 16);
         Assert.Equal(evenRowSnapshot, actualEvenRow);
 
         // The odd row (y=1, glyph scan-line 1) is now populated.
         var expectedOddRow = ExpectedCellRow(Saa5050GlyphTables.Normal, '@', row: 1, fg: 7, bg: 0);
         var actualOddRow = new uint[16];
-        Array.Copy(video.Framebuffer, Video.Width, actualOddRow, 0, 16);
+        Array.Copy(video.Framebuffer, OddRowOrigin, actualOddRow, 0, 16);
         Assert.Equal(expectedOddRow, actualOddRow);
     }
 
@@ -89,12 +101,12 @@ public class VideoTests
 
         var expectedStaleEvenRow = ExpectedCellRow(Saa5050GlyphTables.Normal, 'A', row: 0, fg: 7, bg: 0);
         var actualEvenRow = new uint[16];
-        Array.Copy(video.Framebuffer, 0, actualEvenRow, 0, 16);
+        Array.Copy(video.Framebuffer, ActiveOrigin, actualEvenRow, 0, 16);
         Assert.Equal(expectedStaleEvenRow, actualEvenRow); // still 'A' - the comb
 
         var expectedFreshOddRow = ExpectedCellRow(Saa5050GlyphTables.Normal, 'B', row: 1, fg: 7, bg: 0);
         var actualOddRow = new uint[16];
-        Array.Copy(video.Framebuffer, Video.Width, actualOddRow, 0, 16);
+        Array.Copy(video.Framebuffer, OddRowOrigin, actualOddRow, 0, 16);
         Assert.Equal(expectedFreshOddRow, actualOddRow);
     }
 
@@ -108,7 +120,7 @@ public class VideoTests
         var expectedIndex = (byte)((0 << 5) | (7 << 2)); // default fg=7, bg=0, blank glyph
         var expected = Saa5050Palette.ColorTable[expectedIndex];
 
-        for (var pixel = 0; pixel < 16; pixel++)
+        for (var pixel = ActiveOrigin; pixel < ActiveOrigin + 16; pixel++)
         {
             Assert.Equal(expected, video.Framebuffer[pixel]);
         }
@@ -125,7 +137,7 @@ public class VideoTests
 
         var expected = ExpectedCellRow(Saa5050GlyphTables.Normal, 'Z', row: 0, fg: 7, bg: 0);
         var actual = new uint[16];
-        Array.Copy(video.Framebuffer, 0, actual, 0, 16); // panned into on-screen column 0
+        Array.Copy(video.Framebuffer, ActiveOrigin, actual, 0, 16); // panned into on-screen column 0
 
         Assert.Equal(expected, actual);
     }

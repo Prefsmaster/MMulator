@@ -45,6 +45,7 @@ public partial class DisplayWindow : Window
             _frameReadyHandler = (pixels, fieldWasOdd, corruption) =>
             {
                 Display.Mode             = _vm.DisplayMode;
+                Display.Crop             = _vm.Crop;
                 Display.IntegerScale     = _vm.IntegerScale;
                 Display.PalAspect        = _vm.PalAspect;
                 Display.ShowScanlines    = _vm.ShowScanlines;

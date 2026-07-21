@@ -884,7 +884,9 @@ project.
   `src/P2000.UI/Rendering/DisplayControl.cs`, `src/P2000.UI/ViewModels/DisplayWindowVm.cs`,
   `src/P2000.UI/Views/DisplayWindow.axaml(.cs)`, `src/P2000.UI/Runner/EmulationRunner.cs` (doc
   comments only), `tests/P2000.UI.Tests/ViewModels/DisplayWindowVmTests.cs` (new).
-- **Synced:** no (implementation-only; the design facts were already synced above).
+- **Synced:** yes (2026-07-21, implementation-only — confirmed no reference-doc action needed;
+  the crop/display-mode design facts were already synced into the reference doc before this
+  pass).
 
 ### 2026-07-21 — Flag (not yet verified): display-mode default should change to Odd-only
 - **Trigger:** owner-supplied P2000TM Field Service manual states, for the T-version: *"the

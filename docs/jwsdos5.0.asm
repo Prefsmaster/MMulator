@@ -1109,7 +1109,7 @@ dir_side1_prep:
     ld (DE_filelen),hl                  ; in working header
     ld h,0f0h                           ; destination address f000h
     ld (DE_transfer),hl
-    ld hl,00019h                        ; start sector = 19h = sector 9 track 2
+    ld hl,00019h                        ; start sector = 19h = 25 = sector 9 track 2
     ld (DE_start_sector),hl
     xor a                               ; side 1 (0)
     ld (DE_head),a

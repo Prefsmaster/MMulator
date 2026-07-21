@@ -1021,8 +1021,14 @@ marked synced. Do NOT edit the reference doc from this project.
   READ sequencing the cylinder fix now requires),
   `tests/P2000.Machine.Tests/Interrupts/FdcIntegrationTests.cs` (tick budget increased to
   cover the new deferred completion).
-- **Synced:** no (implementation-only bug fixes; closes the "attempted, not completed" gap the
-  entry below left open).
+- **Synced:** yes (2026-07-21) — three of the four bugs were real hardware/ROM-behavior facts,
+  not just implementation lessons, and are now folded into `P2000T-reference.md` §5d: bit2
+  `RESET` only takes effect from `Phase.Idle`; the ROM always addresses drive/unit 1, never 0;
+  READ/WRITE DATA's C byte is for ID-field verification only, not addressing (actual head
+  position governs reads/writes). The SLOT1 header bit1 polarity fix required NO reference-doc
+  change — the doc's existing §5b text already had the correct polarity (bit1=1 triggers disk
+  boot). The Turbo lost-wakeup race and the drive-mounting bug remain implementation-only (no
+  hardware fact to record — pure emulation-timing/wiring bugs).
 
 ### 2026-07-22 — Milestone 19 IMPLEMENTED: FDC (µPD765) + InternalExtensionBoard
 - **Assumed:** the handoff's own spec (§13.19) was fully ROM-confirmed for ports, the presence
@@ -1113,10 +1119,13 @@ marked synced. Do NOT edit the reference doc from this project.
   `tests/P2000.Machine.Tests/Devices/Fdc/DskImageTests.cs` (new),
   `tests/P2000.Machine.Tests/Devices/Fdc/RealFixtureTests.cs` (new, real `assets/Disks/*.dsk`
   fixtures), `tests/P2000.Machine.Tests/Interrupts/FdcIntegrationTests.cs` (new).
-- **Synced:** no (implementation-only; the hardware facts themselves were already synced into
-  the reference doc before this pass, EXCEPT the offset-24/side-byte discrepancy noted above,
-  which the human should fold into `docs/JWSDOS-format.md` §2 directly since it corrects that
-  doc's own claim).
+- **Synced:** yes (2026-07-22) — most hardware facts were already in the reference doc; the two
+  items that belonged in `docs/JWSDOS-format.md` (the offset-24/side-byte discrepancy and the
+  confirmed side-major/cylinder-minor `.dsk` raw layout formula) are now folded into that file
+  directly (§2, §4, §7, §8), once it was supplied. The side-byte item surfaced a real open
+  tension in that doc's own narrative (the active directory reads side-byte=1, not the 0 this
+  doc's earlier text assumed) — flagged there, not resolved, since it needs `jwsdos5.0.asm`
+  access this pass didn't have.
 
 ### 2026-07-22 — Flag (not yet implemented): machine renders the FULL FIELD, not just the active window
 - **Trigger — owner's request:** *"I think that we should have the Machine render 'full
@@ -1256,7 +1265,8 @@ marked synced. Do NOT edit the reference doc from this project.
   not a screenshot.
 - **Applies to:** `src/P2000.Machine/Devices/Video.cs` (`OnLineComplete`),
   `tests/P2000.Machine.Tests/Devices/VideoTests.cs` (new regression test).
-- **Synced:** no (implementation-only bug fix).
+- **Synced:** yes (2026-07-21, implementation-only — no reference-doc action needed; the pre-roll
+  design fact this bug fixes against was already synced separately).
 
 ### 2026-07-22 — IMPLEMENTED: full-field framebuffer + 49-line pre-roll fetch fix (closes the flag above)
 - **Full-field resize:** `Video.Width`/`Height` changed 640×480 → 928×626; added
@@ -1329,7 +1339,9 @@ marked synced. Do NOT edit the reference doc from this project.
   `src/P2000.UI/Runner/EmulationRunner.cs` (stale doc comments only — buffer allocation was
   already parametric on `Video.Width`/`Height`, needed no code change),
   `tests/P2000.UI.Tests/ViewModels/DisplayWindowVmTests.cs` (new).
-- **Synced:** no (implementation-only; the hardware/design facts were already synced above).
+- **Synced:** yes (2026-07-21, implementation-only — confirmed no reference-doc action needed;
+  the full-field geometry and pre-roll design facts were already synced into the reference doc
+  before this pass).
 
 ### 2026-07-21 — Flag (not yet implemented): RAM should power up non-zero, not all-zero
 - **Trigger — owner's report (real hardware test):** *"When starting up, the display shows
@@ -1393,30 +1405,81 @@ marked synced. Do NOT edit the reference doc from this project.
     manually loaded `.cfg`, or a hypothetical auto-restored last-used one). Not yet a documented
     feature — currently `.cfg` load/save is manual via the config window (this file §7/§11,
     P2000.UI CLAUDE.md §7). Flag as a nice-to-have, not required for the RAM fix.
-- **Scope decision needed (flag, not resolved here):** VRAM-only (matches the owner's directly
-  observed symptom, smallest change) vs. all RAM including base/expansion/banked window (more
-  hardware-faithful, per the general phenomenon — reference doc §5b leans toward this being
-  correct for all RAM, only VRAM being independently visually confirmed). Recommend all-RAM
-  unless a reason emerges to scope it down.
-- **Adjacent finding surfaced by this same question, SEPARATE from the fill-value fix above —
-  flag for owner's call, do not assume in scope:** this file's own 2026-07-07 milestone-15
-  finding (below) states `PageTable.ClearRam()` runs on a full reset and calls this "intentional
-  ... a reset is a full state wipe" — implying **both warm and cold reset currently zero RAM.**
-  On real Z80 hardware, the RESET line does not touch memory chips at all — a warm/soft reset
-  (reset button) leaves RAM contents exactly as they were; only an actual power-cycle (cold
-  boot) would present fresh, unpredictable content. If that's still true of this build, a warm
-  reset today produces a THIRD behaviour that matches neither real warm-reset (untouched RAM)
-  nor real cold-boot (garbage RAM) — it produces clean zeros, which is arguably the least
-  authentic of the three. Fixing the cold-boot fill value without also revisiting whether warm
-  reset should skip `ClearRam()` entirely would leave that inconsistency in place. Flagging both
-  together so they're not solved in a way that talks past each other; scope of the warm-reset
-  half is the owner's call — the user asked specifically about the cold-boot garbage effect.
+- **MAINTAINER NOTE (2026-07-21, design-doc pass): this section had silently reverted to an
+  earlier "flag, not resolved" state, dropping RESOLVED content that the reference doc already
+  reflects — restored below per the divergence-caution discipline (diff against the last known
+  copy, re-apply what a partial merge dropped, flag it).** The restored text below matches
+  `P2000T-reference.md` §5b exactly; nothing is newly decided here, it was just missing from this
+  copy of the log.
+- **RESOLVED (2026-07-23, owner decision): all RAM, not VRAM-only.** *"All memory contains
+  garbage at startup; it is all Dynamic ram."* Settles the scope question this file had left
+  open (VRAM-only vs all-RAM) — every populated RAM region (base RAM, banked window, VRAM) gets
+  the non-zero cold-boot fill, not just the visibly-observed VRAM.
+  - **Expansion-card RAM is explicitly OUT of this blanket rule — it's each device's own call:**
+    *"Maybe some memory on expansion cards behaves differently, but then we can make that a
+    responsibility of that 'device.'"* This maps directly onto the existing `IDevice` pattern
+    (§4: every device implements its own `Reset()`) — the base-machine RAM fill described here
+    is `PageTable`'s default behaviour, not a machine-wide mandate. A future RAM-bearing
+    expansion device (RAM-only board, PTC-96K, floppy+RAM board's RAM axis, §14/§20) is free to
+    implement `Reset()` differently if a hardware reason ever surfaces — build it the same way
+    (non-zero garbage fill) until/unless a specific card's hardware says otherwise.
+  - **CONCRETE example, not hypothetical (owner-supplied, 2026-07-23; slot placement CORRECTED
+    2026-07-24):** the **M2200 multi-function board** has a **real-time clock with a small
+    battery-backed memory** for time, date, and alarms. **Plugs into the internal extension
+    slot family (reference doc §5c "Daisy-chaining on the M"), NOT SLOT2** — an earlier version
+    of this note mis-placed it on SLOT2; corrected per the owner citing the Field Service
+    Manual's §3.8.1/§3.8.11 connector pinouts directly. On a T it plugs straight into the
+    internal slot; on an M it plugs into the video board's own downstream connector (the M
+    genuinely daisy-chains: CPU board → video board → further extension board — a real finding
+    in its own right, not just a correction). That memory is non-volatile BY DESIGN — the whole
+    point of the battery is to survive power loss with its contents intact — so it must NOT get
+    the garbage-at-cold-boot treatment; a future RTC device's `Reset()` should preserve/restore
+    it across power cycles instead (analogous to a PC's CMOS RTC). This slot family and SLOT2
+    are both deferred (§14) — this is captured for when that work starts, not an active item
+    now. Replaces the earlier placeholder "(battery-backed SRAM, different chip technology,
+    etc.)" example with a sourced, real one. **Superseded by fuller detail as of 2026-07-21 — see
+    `docs/M2200-implementation.md` (new) and reference doc §5c for the full confirmed M2200 port
+    map (RTC, RAM disk, Serial/SIO, Centronics, plus its FDC/bank-switch ports shared with the
+    plain floppy+RAM board).**
+- **RESOLVED (2026-07-23, owner-supplied period P2000 newsletter): warm reset must NOT clear
+  RAM. CONFIRMED, decided, and already instructed directly to Claude Code — this file is
+  catching up to that instruction, not originating it.** The adjacent finding below (originally
+  flagged 2026-07-21 as "owner's call, do not assume in scope") is now resolved in favor of the
+  fix: real hardware's warm/soft reset leaves RAM contents exactly as they were, matching the
+  general Z80-RESET-doesn't-touch-memory-chips reasoning already laid out below, now backed by
+  a period-accurate primary-ish source rather than just general engineering inference.
+  - **New fact from the same source, not previously known — worth capturing even though the
+    owner has already actioned the main point:** *holding* the warm reset button too long can
+    **damage/erase memory**, because P2000 RAM is **Dynamic RAM (DRAM)** and holding RESET
+    **disables refresh** — DRAM cells leak their charge without periodic refresh, so a
+    held-too-long reset causes real bit-rot, not just a stuck CPU. This is useful confirmation
+    that the RAM in question is genuinely DRAM (strengthens the general "volatile memory
+    doesn't power up to zero" reasoning in the 2026-07-21 entry above and reference doc §5b,
+    which had hedged "SRAM/DRAM").
+  - **Optional follow-on feature, NOT required, flag only:** modeling "hold warm reset too long
+    → progressive RAM decay" would be a neat, sourced authenticity feature (e.g. a held-reset
+    duration threshold after which some RAM bytes start reverting to garbage) but is pure
+    trivia/polish, not a correctness fix like the "don't clear on warm reset" point above. Not
+    scoping or designing this further unless asked — flagging the sourced fact so it's not lost,
+    not proposing an implementation.
+  - Original reasoning, still valid, now confirmed rather than inferred: this file's own
+    2026-07-07 milestone-15 finding (below) states `PageTable.ClearRam()` runs on a full reset
+    and calls this "intentional... a reset is a full state wipe" — that "both warm and cold
+    reset zero RAM" behavior is what's being corrected. A warm reset that still zeroed RAM would
+    have produced a third behavior matching neither real warm-reset (untouched) nor real
+    cold-boot (garbage), the least authentic of the three.
 - **Applies to:** reference doc §5b (new "RAM power-on content is NOT zero" section) /
   `src/P2000.Machine/Memory/PageTable.cs` (`ClearRam()`, constructor/`Reset()` fill, new
   optional seed parameter), `src/P2000.Machine/Machine.cs` (`Reset(ulong? ramSeed)` or
-  equivalent, warm vs cold reset dispatch if that half is taken on too), `src/P2000.UI/`
-  (wherever cold reset / machine construction is triggered — the true-random seed source).
-- **Synced:** yes (2026-07-21, into P2000T-reference.md §5b) — implementation still outstanding.
+  equivalent, warm vs cold reset dispatch), `src/P2000.UI/` (wherever cold reset / machine
+  construction is triggered — the true-random seed source).
+- **Status:** fully decided, nothing left open on the design side. **Implementation landed
+  2026-07-22 — see the "IMPLEMENTED: RAM power-on non-zero fill + warm-reset RAM preservation"
+  entry below; this is no longer outstanding.**
+- **Synced:** yes (2026-07-21, into P2000T-reference.md §5b; warm-reset + all-RAM-scope
+  resolutions 2026-07-23; M2200 detail superseded 2026-07-21 into `docs/M2200-implementation.md`)
+  — implementation complete as of 2026-07-22, nothing further to fold into the reference doc from
+  this entry.
 
 ### 2026-07-22 — IMPLEMENTED: RAM power-on non-zero fill + warm-reset RAM preservation (closes the flag above)
 - **Scope decisions taken (owner's call, both per the plan's recommended options):** ALL
@@ -1477,8 +1540,10 @@ marked synced. Do NOT edit the reference doc from this project.
   `tests/P2000.Machine.Tests/MachineTests.cs`,
   `tests/P2000.Machine.Tests/Debug/CommandQueueTests.cs`,
   `tests/P2000.UI.Tests/Runner/EmulationRunnerStateTests.cs`.
-- **Synced:** no (implementation-only; the RAM-power-on hardware fact and the seed-mechanism
-  design were already synced above).
+- **Synced:** yes (2026-07-21, implementation-only — the RAM-power-on hardware fact and the
+  seed-mechanism design were already synced into the reference doc; this entry also closes out
+  the "implementation still outstanding" status on that earlier finding, see the MAINTAINER NOTE
+  above).
 
 ### 2026-07-19 — Flag (not yet verified against source): VideoFetchUnit vertical/field-position offset
 - **Trigger:** owner reported Ghosthunt display glitches concentrated in the **top ~15%

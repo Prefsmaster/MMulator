@@ -148,17 +148,30 @@ Config changes that alter hardware topology **require a machine reset to take ef
   from a RAM-only or floppy+RAM extension board.
 - **Internal-slot board (three-way): none / RAM-only / floppy+RAM** (§5). Determines upper
   memory AND whether the FDC/CTC + disk exist. "More RAM" (RAM-only board) is separable from
-  "disk present" (floppy+RAM board).
+  "disk present" (floppy+RAM board). **T-scoped model — flag for whenever M support is
+  undertaken (currently deferred, §14):** the M's internal slot genuinely daisy-chains (video
+  board, then a further extension board behind it — §5c "Daisy-chaining on the M", confirmed
+  from the Field Service Manual's §3.8.1/§3.8.11 connector pinouts) rather than being a single
+  mutually-exclusive board choice — this three-way T model will need extending, not just
+  reusing, when M support starts.
 - **Slot population** (three typed slots, §5c): **SLOT1** (external, memory-mapped ROMs:
   BASIC, DB manager, other ROM carts); **SLOT2** (external, I/O-mapped expansion hardware);
   **internal extension** (floppy/CTC card — populated in M, optional on T).
 - **Disk interface present?** (internal-slot floppy/CTC card) + mounted disk image(s).
 - **Cassette:** `.cas` file selectable via file dialog (also drag-and-drop).
-- **Display mode (4-way, over the same rendered scanlines):** **interlaced (comb)** — authentic
-  default (per-field persistent non-erased buffer → reproduces comb in fast motion);
-  **progressive** — both fields composited per frame, smooth; **even-only** / **odd-only** —
-  present a single field (discard the other), no comb, half vertical detail. Odd-only is slightly
-  smoother (the CRS/RA0 rounding lands on odd sub-scanlines); field-only defaults to line-doubling.
+- **Display mode (4-way, over the same rendered scanlines) — DEFAULT CORRECTED (2026-07-21,
+  owner decision, per the P2000TM Field Service manual's "no interlacing is used" finding —
+  see §4/§4a): default is now odd-only** (line-doubled single field — matches the FSM: real
+  T hardware has no even/odd field pairing, every field is an independent 313-line refresh, and
+  CRS/RA0 selects the smoothed sub-scanline within that one field's own data). **interlaced
+  (comb)** — per-field persistent non-erased buffer → reproduces comb in fast motion; no longer
+  presented as "authentic," since real hardware doesn't interlace — kept as a legitimate opt-in
+  extra/nostalgia mode, not the default; **progressive** — both fields composited per frame,
+  smooth; **even-only** / **odd-only** — present a single field (discard the other), no comb,
+  half vertical detail (now understood to be the AUTHENTIC vertical resolution the SAA5050
+  actually renders, not a reduced-fidelity fallback). Odd-only is slightly
+  smoother (the CRS/RA0 rounding lands on odd sub-scanlines) and is the **new default**;
+  field-only defaults to line-doubling.
   (Consumer contract: when `FieldComplete` fires, `Video.IsOddField` has ALREADY toggled to the
   next field, so the field just completed is **`!IsOddField`** — gate even-only/odd-only/progressive
   presentation on that. Confirmed P2000.UI ms6.)
@@ -166,6 +179,35 @@ Config changes that alter hardware topology **require a machine reset to take ef
   optional scanline/CRT shader, **"show contention glitches"
   toggle**, and a debug overlay highlighting which character cells were corrupted this
   frame (turns the headline feature into something visible/testable).
+- **Full-Field vs Graphics-window — NEW (2026-07-22, owner request), a SECOND, ORTHOGONAL
+  toggle over the 4-way display mode above** (both axes compose freely — Full-Field/
+  Graphics-window controls the CROP, the 4-way mode controls the FIELD SOURCE):
+  - **Graphics-window (DEFAULT):** the familiar 640×480 active-picture crop — what's shown
+    today, no visible change for existing users.
+  - **Full-Field:** shows the machine's complete raw raster — the full 928×626 buffer (§4a
+    "Full raster geometry"), including the black leading/trailing horizontal margins (retrace
+    itself excluded — see below) and the black pre-roll/post-roll vertical margins. On a real
+    P2000 + PAL TV, only part of the transmitted signal is the visible graphics window too —
+    the rest is blanking, normally invisible because a real CRT's overscan hides it. This mode
+    is for authenticity/curiosity/debugging (e.g. visualizing exactly where the active window
+    sits relative to the full field), not the everyday view.
+  - **Ownership, same discipline as the 4-way mode:** the **machine** always renders the full
+    928×626 buffer (machine CLAUDE.md §3) — it does not know or care which crop the UI shows;
+    the **UI** decides whether to blit the whole buffer or just the fixed (144, 98)–(784, 578)
+    sub-rectangle. No machine-layer "mode" exists for this either.
+  - **PAL aspect-ratio correction does NOT apply to Full-Field — CORRECTED (2026-07-22, owner
+    catch, walking back §4a's earlier claim):** PAL aspect correction reproduces how the
+    ACTIVE PICTURE fills a real 4:3 CRT tube — a standardized broadcast target. The blanking
+    margins have no such standard: real CRTs never display retrace at all (beam physically
+    off-screen) and typically hide most of the porch behind the bezel/overscan, with exactly
+    how much depending on each individual set's brightness/geometry adjustment — there's no
+    "correct" real-world size for the margins to reproduce. So in Full-Field mode, PAL aspect
+    correction should be a no-op (disabled/greyed out) — show the buffer at its native pixel
+    geometry (integer-scaled like everything else, just without the extra aspect stretch).
+    Applying the same correction factor across the whole buffer would be geometrically
+    self-consistent (every pixel is still an equal time-slice) but wouldn't correspond to
+    anything a real viewer ever actually saw, since no real screen shows the margins at any
+    standardized size.
 - **Audio:** mute + volume (minor for a 1-bit beeper, but present).
 
 ### Debugger (DECIDED: full debugger in the first implementation)
@@ -539,10 +581,64 @@ in the precise mode once captured.
   video across the ENTIRE array (shared RAS/CAS over all chips), the wider scope would hold —
   but the separate-2K×8 note argues against it. Confirm from schematic only if the VRAM-only
   behaviour ever looks wrong.
-- **Display-start offset:** where in the ~312 lines the 240 active lines begin fixes
-  **when VBLANK fires relative to the display window** — which the panning tricks
-  depend on. (Contention timing itself is implemented; last-fetch slot LineTState 97, line
-  boundary 159 — see machine md milestone-10 finding.)
+- **Display-start offset — CONFIRMED (2026-07-19, owner-supplied P2000TM Field Service
+  manual, "T-VERSION VIDEO GENERATION" section):** the manual states the T-version field
+  rate counter counts **313 scanlines**, and *"the displayable area of this is from
+  scanline 49 to 289, 240 scanlines to be used to display 24 rows of 10 scanlines
+  each."* This resolves the open question directly and asymmetrically:
+  **CORRECTED (2026-07-22, owner decision on scanline-counter indexing):** the split below
+  changed from an earlier ≈48/25 approximation to an exact **49/24** split — the manual's
+  "scanline 49 to 289" reads most naturally as a **0-indexed hardware counter** (0–312 across
+  313 total scanlines) with a **half-open active range** (49 ≤ n < 289, i.e. lines 49–288
+  inclusive = exactly 240 lines) — the convention counter/comparator hardware typically uses.
+  That reading is the one the owner has adopted; it sums exactly (49+240+24=313) whereas the
+  1-indexed reading used previously left a rounding gap (48+240+25=313, hedged as "~24-25"
+  since the manual text alone doesn't disambiguate indexing). Treat 49/240/24 as the resolved
+  figures going forward:
+  - **Pre-roll vblank = scanlines 0–48 (0-indexed) → 49 lines** (before the active window starts)
+  - **Active window = scanlines 49–288 → 240 lines** (matches the pre-existing derived figure)
+  - **Post-roll vblank = scanlines 289–312 → 24 lines** (after the active window ends, up to
+    the next field's line 0)
+  - In T-states (160/line): pre-roll = **7,840**, active = **38,400**, post-roll =
+    **3,840**. Sum = **50,080** vs. the nominal 50,000 (the field-rate figure assumes an
+    averaged 312.5 lines/field; the manual's 313 is the exact count for one field — see the
+    interlacing note below).
+  - **Consumer note — flag for Claude Code:** this means VBLANK does **not** start at
+    field-T-state 0. A `VideoFetchUnit` (or equivalent) that treats T-state 0 as the
+    start of the fetch/contention-eligible window — instead of offsetting the start of
+    eligibility by ~7,840 T-states (49 lines) into the field — will wrongly apply
+    contention math during real hardware's pre-roll vertical blank, and the effect
+    would concentrate exactly at the **top of the frame** (49/313 ≈ 15.7% of the
+    field). This is offered as a **hypothesis to verify against the actual
+    `VideoFetchUnit` source**, not a confirmed bug — see the owner's Ghosthunt report
+    below. (Contention timing itself is implemented; last-fetch slot LineTState 97, line
+    boundary 159 — see machine md milestone-10 finding, which does not address this
+    vertical offset at all.)
+  - **Owner's diagnostic report (2026-07-19):** *"I did a small test with Ghosthunt and
+    saw many display glitches in the top 15% of the screen... Does [contention] take
+    into consideration that the video chip is not accessing video memory during the
+    full frame, but only in the window IN the frame where the display is?"* — the
+    49/313 ≈ 15.7% figure above lines up closely with the reported "top 15%" symptom.
+    **Explicit correction from the owner, must not be lost in any fix:** *"assuming
+    that all 50000 cycles are used during the 640×480 area is wrong"* — only ~38,400
+    of the 50,000 T-states/field are within the active window; the rest (asymmetric
+    pre/post blanking above) are outside it and must be contention-free regardless of
+    CPU RAM activity during those T-states.
+  - **RESOLVED (2026-07-21, owner clarification):** the manual's *"the signal CRS is
+    active during the even scanlines of the field. In our system we use only the odd
+    scanlines, so no interlacing is used"* is CONFIRMED correct and the owner agrees.
+    This was in tension with this doc's/CLAUDE.md's prior "interlaced, frame = two
+    fields" framing — that framing is now understood to be **BBC-Micro heritage
+    (jsbeeb/MAME are genuinely interlaced machines) carried over into the port, not
+    P2000T hardware fact.** See the corrected §4a FIELD note directly below, and the
+    fuller correction (with the owner's decision on what the rendering default should
+    be) in `SAA5050-implementation.md` §5 and CLAUDE.md §3 "Fields vs frames."
+  - **Also resolved:** `docs/SAA5050-implementation.md` (a de facto fourth canonical
+    file as of this pass, owner-supplied) and CLAUDE.md §3 have both been updated with
+    the same correction — see those files for the rendering-mode implications
+    (interlaced/comb should no longer be the default presentation mode; the owner's
+    guidance is to default to the FSM-confirmed single-field/odd-scanline mode instead,
+    keeping interlaced as an opt-in extra).
 
 ---
 
@@ -555,28 +651,133 @@ the structure fully derivable.
 
 Keyed off the PAL line period and the 2.5 MHz clock:
 - **Line:** 64 µs → 64 × 2.5 = **160 Z80 T-states per scanline**
-- **FIELD:** 50 Hz → **50,000 T-states**; 160 × 312.5 = 50,000 → **~312–313 lines/field**.
-  NB: the 50 Hz cycle is a **FIELD, not a frame** — the P2000T is interlaced, so a complete
-  **frame = two fields = 25 Hz** (even + odd). The 50,000-T-state / 240-active-line cycle is one
-  field. Interrupt + CTC ch3 fire per field (50 Hz); the display composes a frame from two
-  (§3a display modes). (Terminology corrected per milestone-5 implementation finding.)
+- **FIELD:** 50 Hz → **50,000 T-states** (nominal, averaged); the Field Service manual gives an
+  exact **313 lines** for one field (160 × 313 = 50,080, close to the nominal 50,000 — see §4
+  above). Interrupt + CTC ch3 fire per field (50 Hz).
+  **CORRECTED (2026-07-21, owner-supplied Field Service manual + owner clarification):** the
+  P2000T is **NOT interlaced** — *"the signal CRS is active during the even scanlines of the
+  field. In our system we use only the odd scanlines, so no interlacing is used."* There is no
+  real hardware "frame = two fields = 25 Hz" alternation; **every field is a complete,
+  independent 313-line refresh at 50 Hz**, and CRS/RA0 selects raw-vs-smoothed **sub-scanlines
+  within one field's already-fetched row data**, not a second field's separately-fetched
+  content. The earlier "interlaced, frame = two fields" framing was BBC-Micro heritage (jsbeeb/
+  MAME are genuinely interlaced) carried into the reference model, not a P2000T hardware fact —
+  see `SAA5050-implementation.md` §5 and CLAUDE.md §3 for the full correction and the owner's
+  resulting decision on the default rendering mode (single-field/odd-scanline, not
+  interlaced/comb).
 
-**Vertical structure:**
-- 24 rows × 10 scanlines = **240 active display lines**
-- → **~72 lines of vertical blank** (no fetches; CPU RAM access never glitches video here)
+**Vertical structure — CONFIRMED (2026-07-19, owner-supplied P2000TM Field Service
+manual, "T-VERSION VIDEO GENERATION"), upgraded from derived to sourced, with the
+previously-undetermined display-start offset now resolved (see §4 above for full
+detail and the Ghosthunt diagnostic that prompted this). Split CORRECTED 2026-07-22 to
+the exact 49/24 figures (see §4 for the 0-indexed-counter reasoning; supersedes the
+earlier ≈48/25 approximation):**
+- Field = **313 scanlines** (exact count, per the manual's field-rate counter — every
+  field, since there's no true interlace, §4a FIELD note below)
+- Active window = **scanlines 49–288 = 240 active display lines** (24 rows × 10
+  scanlines/row — matches the pre-existing derived figure exactly)
+- **73 lines of vertical blank total, asymmetrically split**, not evenly around
+  the active window:
+  - **Pre-roll: scanlines 0–48 → 49 lines (7,840 T-states)** — before the active
+    window starts
+  - **Post-roll: scanlines 289–312 → 24 lines (3,840 T-states)** — after
+    the active window ends
+- No fetches occur during either blanking region; CPU RAM access never glitches video
+  there — but critically, **only 38,400 of the 50,080 T-states/field (the 240 active
+  lines) are inside the fetch-eligible window**. The remaining 11,680 T-states
+  are pre/post-roll vblank and must be treated as contention-free regardless of CPU
+  activity. (Do not assume the full 50,000-T-state field is "the active area" — see
+  the owner's explicit correction in §4.)
 
-**Horizontal structure** (pinned by the confirmed 6 MHz dot clock):
-- 40-col = 6 MHz dot clock, 6 dots/char → **1 MHz char-fetch rate = 1 µs/character**
-- 40 columns → **40 µs active fetch per scanline**, leaving **~24 µs horizontal blank**
-  (sync + porches + borders), where video isn't fetching
+**Horizontal structure** (pinned by the confirmed 6 MHz dot clock). **Leading/trailing
+split ADDED (2026-07-22, derived from the manual's own char-time markers, mirroring the
+vertical breakdown above):**
+- 40-col = 6 MHz dot clock, 6 dots/char → **1 MHz char-fetch rate = 1 µs/character** →
+  a scanline is **64 char-times** long (64 µs ÷ 1 µs/char-time)
+- The manual states *"during character times 15-55 the display of 40 characters on the
+  screen is enabled"* — read with the same half-open convention as the vertical split
+  (start-inclusive, end-exclusive: char-times 15–54 = 40 char-times), this gives an
+  exact, self-consistent leading/active/trailing breakdown:
+  - **Leading blank: char-times 0–14 → 15 char-times (15 µs)** — before the active
+    window starts (line-sync GLR fires at char-time 6, inside this leading portion)
+  - **Active: char-times 15–54 → 40 char-times (40 µs)** — the 40 displayed columns
+  - **Trailing blank: char-times 55–63 → 9 char-times (9 µs)** — after the active
+    window ends, up to the next line's char-time 0
+  - Sum: 15 + 40 + 9 = **64 char-times = 64 µs**, matching the line period exactly
 - 80-col mode doubles the dot clock to 12 MHz (still 1 µs/char-pair region; see §5)
 
+**Horizontal retrace — CORRECTED (2026-07-22, owner's model, since no scope trace of the
+real video signal is available to confirm directly): the leading blank above is NOT all
+renderable border.** The owner's model: the chip cuts off emission immediately after
+char-time 64 (end of line) — so the **trailing blank stays as derived (9 char-times,
+144 px), nothing changes there** — and the beginning of the NEXT line is genuine
+**horizontal retrace** (beam physically returning, chip not emitting anything at all,
+not even black) for **char-times 0–5, 6 char-times** (the manual isn't fully explicit
+here; "GLR active at character time 6" is read as marking retrace's end/reset-complete,
+so retrace spans 0–5 — **flagged as a 5-vs-6-char-time ambiguity**, matching the owner's
+own "5 (or 6?)" hedge; 6 is used below since it also produces a tidy symmetric result,
+not because it's independently confirmed). Only AFTER retrace does the chip resume
+emitting (blanked/porch, still renderable as black border) up to the active window:
+- **Retrace (NOT rendered — chip emits nothing): char-times 0–5, 6 char-times.** Not
+  part of the buffer at all — there's no signal to represent, not even black.
+- **Leading blank (rendered, porch/border): char-times 6–14 → 9 char-times (9 µs)** —
+  revised down from the earlier 15 char-times by excluding the retrace portion above.
+- **Active: char-times 15–54 → 40 char-times (40 µs)** — unchanged.
+- **Trailing blank (rendered, porch/border): char-times 55–63 → 9 char-times (9 µs)** —
+  unchanged, left intact per the owner's model (retrace happens at the START of the
+  following line, not the end of this one).
+- Rendered total: 9 (leading) + 40 (active) + 9 (trailing) = **58 char-times**, plus 6
+  char-times of unrendered retrace = 64 char-times total, still matching the line period.
+
+### Full raster geometry — DERIVED (2026-07-22, combines the vertical + horizontal
+splits above; owner request to render the complete raster, not just the active window;
+horizontal figures CORRECTED same day to exclude retrace, see above)
+For a machine that renders the **complete field** (blanking included, not just the
+640×480 active viewport) — see machine CLAUDE.md §3 for the framebuffer contract this
+feeds and reference doc §3a for the UI's Full-Field vs Graphics-window toggle:
+- **Horizontal, at 16 rendered pixel-lanes/char-time** (the existing anti-aliasing
+  lane count, §1/§2 of `SAA5050-implementation.md` — unchanged by this, applied
+  uniformly across blanking too since it's just a constant-duration timebase): leading
+  144 px (9×16) + active 640 px (40×16) + trailing 144 px (9×16) = **928 px wide**
+  (retrace's 6 char-times / 96 px are excluded entirely, not rendered).
+- **Vertical, at 2 rendered rows/scanline** (the existing CRS-driven line-doubling,
+  applied uniformly across blanking too — blanking rows carry no character content to
+  smooth, so both sub-rows are simply flat black, no `CombineRows` work needed):
+  pre-roll 98 px (49×2) + active 480 px (240×2) + post-roll 48 px (24×2) = **626 px
+  tall**. (Vertical retrace is a separate, NOT-YET-ASKED question — the owner's
+  retrace-exclusion request so far only covers horizontal; the 49/24-line vertical
+  split above is left as pure blanking, not yet split into a retrace/porch sub-breakdown
+  the way the horizontal one now is. Flag for a future pass if wanted.)
+- **Full-field buffer: 928 × 626 px.** The 640×480 "graphics window" (the picture
+  content, what's shown today) sits at a **fixed offset (144, 98)** within it — a
+  constant crop rectangle, the same on every field, since the blanking geometry is
+  fixed hardware timing, not data-dependent. (Horizontally symmetric: 144 px border on
+  both sides of the 640 px active width — a side effect of the 6-char-time retrace
+  assumption, not independently confirmed.)
+- Both blanking margins are **always contention-free and content-free** (§4: no VRAM
+  fetch happens there) — they render as flat black with no CPU interaction possible,
+  cheap to produce.
+- Every pixel column/row in this buffer represents an equal, constant real-world duration
+  (1 char-time horizontally, 1 scanline — halved — vertically) whether blank or active —
+  geometrically consistent throughout. **CORRECTED (2026-07-22, owner catch): this does
+  NOT mean PAL aspect-ratio correction should extend to the full buffer.** Aspect
+  correction targets a standardized real-world relationship (active picture → 4:3 CRT
+  tube) that only the active window has — the blanking margins were never displayed at
+  any standard size on real hardware (retrace is physically off-screen; porch is mostly
+  hidden by bezel/overscan, and by how much varies per set, not standardized). See §3a
+  "Full-Field vs Graphics-window" for the resulting UI guidance: aspect correction is a
+  no-op in Full-Field mode; the buffer is shown at native pixel geometry instead.
+
 **What this means under the Z80-priority model:** glitches are possible during the
-240 active lines whenever the Z80 drives a RAM access in a fetch slot. They're
-impossible during the ~72 vblank lines and the ~24 µs horizontal-blank portion of each
-active line, because the video isn't fetching then. So a program gets "free" RAM time
-in vblank + h-blank automatically; visible glitching scales with how much RAM work the
-CPU does inside the active-display fetch windows.
+240 active lines (scanlines 49–288, 38,400 T-states) whenever the Z80 drives a RAM
+access in a fetch slot. They're impossible during the 49-line pre-roll vblank, the
+24-line post-roll vblank, and the 9 µs (or 15 µs leading) horizontal-blank portion of
+each active line, because the video isn't fetching then. So a program gets "free" RAM
+time in vblank + h-blank automatically; visible glitching scales with how much RAM
+work the CPU does inside the active-display fetch windows. A contention model that
+doesn't offset the start of its fetch-eligible window by the 7,840-T-state pre-roll
+would spuriously glitch the **top of the screen** even when the CPU is doing nothing
+unusual — see the sourced offset and Ghosthunt diagnostic in §4 above.
 
 ### The one parameter that is NOT derivable
 **How much of each 1 µs character slot the video fetch occupies the bus** — full
@@ -936,6 +1137,57 @@ What the monitor ROM does at startup, and why the cassette matters even on a bar
 4. **On cassette insertion** (CIP transitions to present): the ROM **rewinds** the tape (FWD/
    REV drive lines) and tries to **auto-load and run a 'P'-type (Program/executable) file**,
    then starts it.
+
+### RAM power-on content is NOT zero — owner-observed (2026-07-21, real hardware test)
+**Owner's report:** *"When starting up, the display shows 'garbage' imagery briefly then it
+gets cleared by the monitor ROM. This means that the (video) RAM of a P2000 is not all zero's
+at startup, but contains random bytes."*
+
+This is ordinary, well-understood behaviour for the volatile SRAM/DRAM chips of this era: power-on
+content is **not guaranteed to be zero or any specific value** — it's whatever charge state the
+cells happened to settle into, effectively unpredictable per chip/per power-cycle. There is no
+manual figure to source an "official" garbage pattern from — unlike the timing facts elsewhere
+in this doc, this is a general hardware-engineering fact plus the owner's direct observation, not
+something a datasheet specifies. **What IS confirmed:** the briefly-visible garbage is consistent
+with step 3 above — the monitor ROM's own screen write (the cassette-wait prompt text, or
+whatever init routine precedes it) is what overwrites/clears it, matching "briefly shown, then
+cleared by the monitor ROM" exactly.
+- **Scope — DECIDED (2026-07-23, owner): all RAM, not VRAM-only.** *"All memory contains
+  garbage at startup; it is all Dynamic ram."* The owner's direct observation was of VRAM (the
+  only part that visibly renders), but confirms it's DRAM and applies the fill to every
+  populated RAM chip — main RAM (0x6000+), the banked window, VRAM alike.
+  - **Expansion-card RAM is explicitly carved out as each device's own responsibility:**
+    *"Maybe some memory on expansion cards behaves differently, but then we can make that a
+    responsibility of that 'device.'"* The base-machine RAM fill described here is the default;
+    a future RAM-bearing expansion device is free to differ if a hardware reason ever surfaces
+    (see machine CLAUDE.md §17 for how this maps onto the existing per-device `Reset()`
+    pattern).
+- **Does NOT apply to:** ROM (fixed content, not volatile) or genuinely open-bus regions
+  (already correctly modelled as reading 0xFF — a bus-float value, a different phenomenon from
+  RAM cell content — not to be changed by this).
+- **Implementation note, REFINED (2026-07-21, owner follow-up) — full detail in machine
+  CLAUDE.md §17:** the RAM fill takes an **optional seed** rather than being unconditionally
+  fixed. Omitted → a fixed deterministic default (what tests/CI get, keeping the locked "no
+  randomness in emulation code" rule, machine CLAUDE.md §2.2, satisfied to the letter — the
+  core never calls a nondeterministic API itself). Explicit seed → reproducible-with-that-seed.
+  `P2000.UI` supplies a genuinely random seed at each real cold boot / app launch (ordinary
+  entropy living in the UI project, outside the core), so the interactive app gets true
+  unpredictable garbage every session while the machine stays a deterministic function of
+  (config, seed, input events) for testing/replay purposes. `SaveState`/`LoadState` capture the
+  concrete resulting bytes regardless, so reproducing a saved session was never actually at
+  risk.
+
+  **RESOLVED (2026-07-23, owner-supplied period P2000 newsletter): a WARM reset must NOT clear
+  RAM.** Previously flagged as an open, owner's-call question; now CONFIRMED and already
+  instructed directly to Claude Code by the owner. Real hardware's warm/soft reset button
+  leaves RAM contents exactly as they were — matching the general "Z80 RESET doesn't touch
+  memory chips" reasoning this doc already carried, now backed by a period source. **New fact
+  from the same source:** holding the reset button too long can **damage/erase memory**,
+  because P2000 RAM is confirmed **Dynamic RAM (DRAM)** and holding RESET **disables refresh**
+  — DRAM cells leak charge without periodic refresh, so an extended hold causes genuine bit-rot,
+  not just a stuck CPU. This also confirms the RAM is DRAM specifically (this section had
+  hedged "SRAM/DRAM" — DRAM is now the sourced answer). Modeling the held-reset decay itself is
+  optional trivia/polish, not required — flagged for awareness, not scoped as a feature.
 
 ### Disk-boot gate — CONFIRMED from disassembly (`Disk.asm`, owner-supplied 2026-07-13)
 Runs alongside the SLOT1 checks above when a floppy+RAM extension board (§5, §5c, §5d) is
@@ -1303,7 +1555,26 @@ Reading (CONFIRMED):
 - **BEEP on 13A** → the 1-bit sound line is routed to SLOT2; a card can tap/drive audio.
   Note for the sound device: BEEP is not purely internal. (The CPU drives this line by writing
   **port `0x50` bit 0** — see §5 Sound.)
-- **No NMI on SLOT2** (unlike SLOT1). SLOT2's async CPU line is INT only.**Internal extension slot — CONFIRMED (full Z80 bus: memory + I/O).** 40-pin connector, 2
+- **No NMI on SLOT2** (unlike SLOT1). SLOT2's async CPU line is INT only.
+
+**SLOT2 Serial card — CONFIRMED (owner-supplied, 2026-07-21) port map:**
+
+| Port | Register | Direction | Notes |
+|------|----------|-----------|-------|
+| `0x40` | UART data | R/W | byte in/out |
+| `0x41` | UART control | R/W | UART control register |
+| `0x61` | Handshake lines | R/W | serial handshake signals |
+| `0x62` | DIP switches (×8) | IN | live read of the 8 physical switches — **bus-visible, not just an install-time preference.** A driver could in principle query the configured baud/handshake at runtime, same as any other status port. |
+
+A plain UART, **not** a Z80 SIO — contrast with the M2200's onboard serial interface (§ "Known
+real card" below), which uses the more capable SIO chip. Different chip, different register
+shape: do not share a device class between the two, even though both are conceptually "a serial
+port." Because `0x62` makes the DIP switches bus-readable, their value must be **both** a
+`MachineConfig`-level topology setting (a physical switch doesn't move mid-session — reset-to-
+apply, same discipline as §3a generally) **and** a live `IIoSlot`-registered read-only register
+backing that same value, so the two representations can never drift apart.
+
+**Internal extension slot — CONFIRMED (full Z80 bus: memory + I/O).** 40-pin connector, 2
 rows of 20 (row 1 = odd pins, row 2 = even pins). Pins 27–37 active-low. **Home of the
 floppy/CTC card** (populated in M, optional on T).
 
@@ -1364,6 +1635,60 @@ Reading (CONFIRMED):
 - **Lock (35):** does it gate NMI too or only the maskable video INT? Board-driven or
   motherboard-decoded from board presence? (Function itself confirmed — see above.)
 
+**Daisy-chaining on the M — CONFIRMED (Field Service Manual, "INTERCONNECTIONS", §3.8.1/§3.8.11,
+owner-supplied page references, 2026-07-24), CORRECTS an earlier mis-scoping this pass:**
+- **§3.8.1 "CPU BOARD TO VIDEO OR EXTENSION BOARD"** is this exact connector (its pinout table
+  matches the one above pin-for-pin: D0–D7, A0–A14, RAMS/RAMS2, MRQ, RD, INT, WR, IOREQ, WAIT,
+  M1, RES, LOCK, RFSH, DEW/R2425, the three clocks). The connector's own name confirms it goes
+  to **either** a video board **or** an extension board directly — i.e. on the **T**, a
+  floppy/RAM extension card can plug straight into this slot (as already documented above); on
+  the **M**, the **video board** occupies it instead.
+- **§3.8.11 "VIDEO BOARD TO EXTENSION BOARD"** is a SECOND, separate 40-pin connector — on the
+  video board itself — with nearly the same pinout (signals suffixed `U`, e.g. `DU0-DU7`,
+  `AU0-AU14`, `RAMSU`, `MREQU`, buffered/passed-through copies of the CPU-side bus) wired to a
+  further downstream extension board. **This is a real daisy-chain, not a single-board slot:**
+  on the M, the physical order is **CPU board → video board → a further extension board**,
+  all sharing the same logical Z80 bus (memory + I/O), the video board acting as a pass-through/
+  buffer stage rather than terminating the chain.
+- **Known real card that plugs in HERE, not SLOT2 — CORRECTED (owner, 2026-07-24, walking back
+  the previous pass's "SLOT2" placement): the M2200 multi-function board.** It has a
+  **real-time clock (RTC) with a small battery-backed memory** for time, date, and alarms. On a
+  T it would plug directly into this internal slot (§3.8.1); on an M it would plug into the
+  video board's downstream connector (§3.8.11) behind the video board. Either way it's this
+  internal/daisy-chained slot family, **not SLOT2** (SLOT2 is a separate, external, I/O-only
+  connector — see above — SLOT2 cards don't reach memory space, and an RTC's battery-backed
+  memory needs a memory-mapped or port-mapped window either way, but the daisy-chain is
+  specifically documented for THIS slot, not SLOT2).
+  - **RAM-behavior relevance unchanged from the previous (mis-scoped) note:** the RTC's
+    battery-backed memory is non-volatile by design — the whole point of the battery is to
+    survive power loss with contents (time/date/alarms) intact — so it must NOT get the
+    non-zero-garbage-at-cold-boot treatment the rest of RAM gets (machine CLAUDE.md §17,
+    2026-07-23 RAM power-on finding; this doc §5b). A future RTC device's `Reset()` should
+    preserve/restore it across power cycles instead (analogous to a PC's CMOS RTC). Both the
+    internal-slot family and SLOT2 are deferred (§14) — this is captured for when that work
+    starts, not an active implementation item now.
+  - **Full port map — CONFIRMED (owner-supplied M2200 manual, 2026-07-21).** Full device-level
+    detail (register semantics, host-transport design questions, open items) lives in
+    **`docs/M2200-implementation.md`** — summary here, following the same split already used for
+    the cassette (`docs/MDCR-implementation.md`):
+
+    | Port(s) | Feature | Notes |
+    |---------|---------|-------|
+    | `0x84`/`0x85` | Serial — RS232 (data/control) | **Z80 SIO channel A.** NOT the same chip as the SLOT2 Serial card's plain UART above — do not share a device class between them. |
+    | `0x86`/`0x87` | Serial — RS422 (data/control) | Z80 SIO channel B. |
+    | `0x8C`/`0x8D`/`0x90` | FDC | **Same ports as the FDC already documented in §5d.** Owner's own words: "AFAIK, the FDC registers are the same as for the now implemented version" — treat as a probable literal drop-in of the existing FDC device, but the "AFAIK" hedge stays unconfirmed until actually wired up against a real M2200. |
+    | `0x94` | RAM bank-switch (`RAMSW`) | **Same port as the plain floppy+RAM board's bank-switch** (§5 memory) — a second probable drop-in. Bit-width parity (1-bit original vs. wider homebrew decode, §5 memory) is NOT confirmed by the port address alone — open item. |
+    | `0x95`/`0x96`/`0x97` | RAM disk (track/sector/data) | Genuinely new — a separate device from the FDC, **not** a media variant of it (owner-confirmed: "RAM disk is port driven"). Note this does **not** actually collide with the plain board's FDC, despite both being loosely describable as living in a "94h-97h memory expansion/FDC cartridge" range — the plain board's real FDC lives at `0x8C`/`0x8D`/`0x90` (§5d), not in `0x95`-`0x97`. |
+    | `0x98`-`0x9B` | Centronics (data/status/strobe-on/strobe-off) | Strobe ports are access-triggered — read or write, same effect, data byte irrelevant. |
+    | `0x9C`/`0x9D` | RTC (select/data) | Indexed-register access - `0x9C` selects which RTC sub-register, `0x9D` reads/writes it. `Reset()` must preserve the battery-backed contents (see the non-volatility note above). |
+
+    **Design consequence:** M2200 = two features reused (very probably verbatim) from the plain
+    floppy+RAM board (FDC, RAM bank-switch) plus four features unique to this board (RAM disk,
+    RTC, Serial/SIO, Centronics). None of the four new features overlaps SLOT2's address space or
+    the plain board's FDC/bank-switch ports. The one open cross-card question is whether M2200's
+    Centronics interface shares its register shape with a future SLOT2 Centronics card (SLOT2
+    Centronics ports not yet sourced). See `docs/M2200-implementation.md` for the full write-up.
+
 ---
 
 ## 5d. Floppy disk controller (FDC) — add-on card
@@ -1404,6 +1729,15 @@ count) · bit2 `RESET` (1 = FDC reset) · bit3 `MOTOR` (1 = on) · bit4 `SELDIS`
 disabled — **only on the P2C2 disk board**). (The service manual described bit0 as a
 data-vs-command transfer select and folded enable+reset into bit2; where the two disagree,
 the **ROM disassembly is authoritative** for emulation.)
+
+**bit2 `RESET` only actually takes effect from the chip's Idle phase, CONFIRMED (real-ROM
+boot-test diagnosis, 2026-07-22).** Two independent, ordinary (non-buggy) real code sites write
+this bit while a command is still active: `read_status_bytes` writes RESET|MOTOR (`0x0C`) while a
+SENSE INTERRUPT STATUS result phase is still pending readout, and `read_track` writes
+RESET|MOTOR|ENABLE (`0x0D`) to arm the transfer immediately AFTER dispatching READ DATA (chip
+already in ExecutionPhase). Neither call resets an in-flight command — two independent real sites
+doing this in working firmware is strong evidence the bit has no effect once a command is already
+executing, only from Idle. Model `WriteControl`'s RESET handling as a no-op outside `Phase.Idle`.
 
 **IN — CONFIRMED (owner-supplied `Disk.asm`/`getdos` disassembly, 2026-07-13):** reading
 `0x90` returns a **different register from the OUT-direction latch above**. During a
@@ -1461,6 +1795,23 @@ reconstructed MT/MF/SK bit-flag decomposition of the opcode:**
 | READ DATA | `0x42` | `42 01 01 00 01 01 10 0E 00` | data phase, semi-DMA (above) |
 | WRITE DATA | `0x45` | same shape, opcode `0x45` | data phase, semi-DMA (above) |
 | SENSE INTERRUPT STATUS | `0x08` | `08` | 2 result bytes (ST0 + PCN) |
+
+**Two confirmed µPD765 usage facts from real-ROM boot-test diagnosis (2026-07-22), both
+worth knowing beyond just "the FDC has 2 drives":**
+- **The ROM driver hardcodes unit-select to drive 1, never drive 0.** `Disk.asm`'s
+  `disk_constants` gives every "drive #" byte as `0x01` (matching the `01` first param byte in
+  the SEEK/READ DATA/WRITE DATA rows above), and `disk_recall_cmd`'s own comment reads "device #
+  at disk_recall_device (default 1)" — the ROM never issues a command addressing unit 0. A
+  mounted disk image must therefore be attached at drive index 1, not 0, for the ROM to ever see
+  it (a mount on drive 0 fails silently: reads return a zero-filled buffer with no error, since
+  an unmounted-drive access is a documented no-op rather than a fault).
+- **READ DATA/WRITE DATA's own C (cylinder) parameter byte is for ID-field verification only,
+  not addressing.** The real µPD765 reads/writes wherever the head physically IS (positioned by a
+  prior SEEK), not wherever the command's own C byte says. `Disk.asm`'s `read_track` copies its
+  command template to RAM once and never updates the cylinder field between reading two different
+  DOS tracks (both copies are byte-identical) — the two reads land on different cylinders only
+  because a separate SEEK moved the head between them. Model read/write addressing off the FDC's
+  own tracked head position, not the command byte.
 
 Byte positions structurally match the standard µPD765 9-byte READ/WRITE DATA parameter block
 (drive/unit, cylinder, head, sector, N, EOT, GPL, DTL) — confident in the values and

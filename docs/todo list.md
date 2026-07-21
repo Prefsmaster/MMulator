@@ -6,6 +6,7 @@
 * M2200 FD, Mem kaart, poorten en clock
 * Multi Rom cartridges (dip/rotary switch selectie)
 * terugspoel dinges
+* TAPE turbo load (machine must intercept rom calls and copy cassette header+payload to emulator RAM)
 
 # Software
 
@@ -22,4 +23,6 @@
 # Bugs
 * Warm/Cold reset na Ghosthunt/U Hangt: geen keyboard input.
 * Display glitches in Ghosthunt kloppen niet.
+* test csave replace/append: gaat nog niet helemaal goed.
+
 

@@ -2,7 +2,7 @@
 
 *Paste this into the new chat as the first message, and attach the files listed at the bottom.*
 
-## What you're doing in the new chat
+## What you're doing 
 Acting as the **design-doc maintainer** for a cycle-exact Philips P2000T (Z80) emulator. The
 immediate task: **draft the FDC (floppy disk controller) milestone** for `P2000.Machine`, grounded
 in the reference doc. You are NOT writing emulator code — "Claude Code" implements against your
@@ -19,14 +19,9 @@ truth.**
   M20, SLOT2 cards ≈ M21).
 
 ## Working disciplines — KEEP THESE (they matter)
-- **Line endings, exact:** `src/P2000.Machine/CLAUDE.md` is **CRLF**; the reference doc, UI
-  CLAUDE.md, and MDCR guide are **LF**. Preserve on every edit and verify. For the CRLF machine
-  file, edit via a Python pass opening with `newline=""` and `\r\n`-joined anchors — NOT plain
-  str_replace with `\n`.
 - **Divergence caution (this has bitten twice):** the human's merges sometimes drop prose edits
   while keeping findings-log edits (or vice-versa). Before editing, diff the uploaded file against
-  your last output; re-apply anything silently lost; flag it. *(Most recent instance: the UI file
-  came back with findings sync-flags intact but §3.2/§5/§9 prose reverted — repaired 2026-07-11.)*
+  your last output; re-apply anything silently lost; flag it.
 - **Findings sync pass:** Claude Code appends findings to a CLAUDE.md's log marked `Synced: no`.
   Triage each: **design/hardware truth → reference doc** (or MDCR guide); **pure implementation
   lessons stay in the log**, marked synced-as-implementation-only. Flip flags to `Synced: yes` with

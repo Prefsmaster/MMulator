@@ -128,24 +128,55 @@ Mirror the pin-driven resets (all three agree on the shape):
 - Per-cell in `Render()`: latch `previousColor`/`currentGlyphs` BEFORE processing the cell's
   control code (set-after), fetch the glyph row, emit pixels.
 
-### Fields, frames, and CRS (the two-pass interlace — REQUIRED for rounding)
-The rounded image is built from **two interlaced fields per frame** (this is the P2000T's real
-50 Hz interlaced timing, and it's how the smoothing lands — not optional polish):
+### Fields, frames, and CRS (the two-pass interlace — CORRECTED, no longer "required")
+
+**CORRECTED (2026-07-21, owner-supplied P2000TM Field Service manual, "T-VERSION VIDEO
+GENERATION" + owner clarification).** The framing below this heading, as originally
+written, claimed **true two-field interlace was the P2000T's real 50 Hz timing**. That
+is **BBC-Micro heritage bleeding through from jsbeeb/MAME (both genuinely interlaced
+machines), not P2000T hardware fact.** The Field Service manual states explicitly, for
+the T-version: *"the signal CRS is active during the even scanlines of the field. In
+our system we use only the odd scanlines, so no interlacing is used."* Every field is
+structurally identical (313 lines, scanlines 49–289 active — see reference doc §4/§4a)
+— there is no alternating even/odd **field** pair with different fetched content. CRS
+selects which of the **20 output sub-rows per character row** is drawn (raw vs.
+diagonally-smoothed), and that choice is made **within the data already fetched for
+ONE field** — it does not require a second, differently-sourced field's fetch. So the
+old claim *"a complete 640×480 rounded image exists only after BOTH fields"* is wrong
+for the P2000T: on real hardware, one field's fetch is sufficient to produce the full
+rounded 640×480 image, refreshed 50 times/sec (not 25).
+
+**Owner's guidance on what to build (2026-07-21):** the current implementation is
+already a **superset** — it offers both a true interlaced two-field mode (kept, it's a
+legitimate extra feature/nostalgia option, just not what real T hardware does) and a
+**"true P2000" single-field-repeated rendering mode** (matches the FSM: one field,
+odd-scanline convention, no alternation). **The default should be switched from the
+interlaced/comb mode to the single-field FSM-confirmed mode** — flag for Claude Code to
+change the default (not remove interlaced; just stop presenting it as authentic-default
+behaviour). Re-verify the `CombineRows` smoothing math still applies correctly when
+computed from one field's 10 real scanlines/row rather than assuming two fields'
+worth of data — the smoothing algorithm itself (§2) does not need to change, only which
+field-cadence assumption feeds it.
+
+Historical/original text, preserved for context on what to change away from:
 - **Even field:** sub-scanlines from y=0, `SetCRS(false)` → the raw rows.
 - **Odd field:** sub-scanlines from y=1, `SetCRS(true)` → the **smoothed** rows (CRS/RA0 selects
   the rounding scanline). `SetDEW` fires on the even field to start a new frame.
-- So a complete 640×480 rounded image exists only after BOTH fields. The fetch/render loop runs
-  two interleaved passes per frame.
 - **Timing split (see machine CLAUDE.md §3):** the 50 Hz **interrupt + CTC channel-3 clock fire
   per FIELD**; **present to the UI per FIELD into a single PERSISTENT buffer with NO inter-field
-  clear** — this reproduces the interlace **comb** artifact in fast horizontal motion (authentic;
-  the owner's deliberate choice). Interlaced/comb is the DEFAULT; a progressive (per-frame,
-  composited) display option exists for a smooth image. The owner's `P2000Video.cs` exposes
-  `FieldComplete` (every field) and `FrameComplete` (odd-field only) to drive both cadences.
+  clear** — this reproduces the interlace **comb** artifact in fast horizontal motion. Interlaced/
+  comb was previously treated as authentic and DEFAULT; **per the correction above, single-field
+  FSM-mode is now the authentic default**, interlaced/comb becomes an opt-in extra, and the
+  progressive (per-frame, composited) option remains available as a third choice for a smooth
+  image. The owner's `P2000Video.cs` exposes `FieldComplete` (every field) and `FrameComplete`
+  (odd-field only) to drive cadences — re-check which of these the single-field default should
+  actually key off, since "odd-field only" was itself premised on the (now-corrected) two-field
+  model.
 - **Height = 480 (24 rows × 20), NOT 500.** The owner's reference `P2000Video.cs` allocated
   640×500 and ran to bitmapY 499/501 — that's **BBC-Micro heritage** (BBC teletext = 25 rows).
   The P2000T is 24 rows. Fix the buffer height, the end-of-field test, and the field/frame
-  discriminator together to 480-based values; don't copy the 500 arithmetic.
+  discriminator together to 480-based values; don't copy the 500 arithmetic. (This point is
+  unaffected by the interlace correction above — still applies.)
 
 ---
 

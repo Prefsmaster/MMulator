@@ -106,6 +106,35 @@ more precisely once it actually needs the directory.
 0x2000–0x2FFF  More DOS code (unchanged from previous finding, not re-examined this pass)
 ```
 
+**Generalized raw sector-offset formula — CONFIRMED (2026-07-22, `P2000.Machine` milestone-19
+implementation, `DskImage.SectorOffset`), derived from this section's own confirmed byte ranges
+and now validated against real fixtures:**
+
+```
+raw_offset = head * Tracks * BytesPerTrack
+           + cylinder * BytesPerTrack
+           + (sector - 1) * BytesPerSector
+```
+
+**Side-major, cylinder-minor** — i.e. side/head is the OUTERMOST grouping (all of head 0's
+cylinders are contiguous before head 1 begins anywhere), not interleaved per-cylinder. Derived
+from this section's own confirmed identity: `(cylinder=1, head=0, sector=9) → raw 0x1800`
+(`dir_side1_prep`'s own target) only holds if consecutive cylinders of the SAME head are
+contiguous in the file. Validated directly against real `Spel1.dsk` bytes (both DOS-track reads
+match exactly) and against three further real images (`jws-sytem.dsk`, `empty-jws.dsk`,
+`hires_demo.dsk`) — geometry auto-detect and directory reads all check out; see
+`tests/P2000.Machine.Tests/Devices/Fdc/DskImageTests.cs`/`RealFixtureTests.cs`.
+
+**Direct implication for open item 2 below (where does side 2's directory live?) — a strong
+candidate answer, but NOT independently verified against real head=1 data yet.** If the formula
+holds for head=1 the same way it's confirmed for head=0, side 2's data begins at raw offset
+`Tracks * BytesPerTrack` (e.g. `0x28000` for this disk's 40 tracks), and `dir_side2_prep`'s own
+target (`DE_start_sector=0x11`/17 = "track-2 sector 1", head=1) would land at raw
+`Tracks*BytesPerTrack + 1*BytesPerTrack + 0 = 0x29000` for a 40-track disk. This is a direct
+arithmetic consequence of the formula above, not yet cross-checked against actual bytes at that
+offset in a real image with real side-2 content — flagging as the strongest lead on open item 2,
+not a closed answer.
+
 **Why sectors 1–8 (0x1000–0x17FF) hold a second, different directory — write-SCOPE now
 CONFIRMED from `JWS Systeem Disk`'s own disassembly (owner, 2026-07-20); the data-SOURCE half
 of the theory below remains open.** `dir_side1_prep` unconditionally targets sector 25
@@ -160,6 +189,62 @@ this is all side-1 data, one currently-active and one stale. **Side 2's own dire
 surface) lives somewhere else entirely in the raw `.dsk` file, depending on how this image
 interleaves the two physical sides. Not located in this pass — **new open item**, see §7.
 
+**CORRECTED (2026-07-22, `P2000.Machine` milestone-19 implementation, direct byte inspection of
+`Spel1.dsk`) — the paragraph above is WRONG about the active cluster specifically; flagging
+rather than smoothing over it, per this doc's own discipline.** Re-inspecting the real bytes
+during implementation found: the STALE cluster (raw `0x1000`–`0x17FF`, 20 entries) does read
+side-byte (offset 24) = **0** for every entry, matching the claim above — but the ACTIVE
+directory (raw `0x1800`–`0x1FFF`, the 18 real entries) reads side-byte = **1** for every entry,
+the opposite of what this section originally claimed. This does not affect anything the
+milestone-19 build implemented (`DskImage.ReadDirectory()` reads the active region by its fixed
+raw offset, per the confirmed byte ranges above, not by filtering on this byte — so the
+implementation is correct regardless of which value is right here), but it's a real discrepancy
+in this doc's own narrative that the "both clusters are side-1 data" conclusion was built on.
+**Open tension this creates, not resolved here:** if the active directory's own entries
+genuinely carry `DE_head=1`, and `dir_side1_prep` (which reads/writes this exact directory) is
+confirmed elsewhere in this doc to always operate with `DE_head=0` as an FDC-command parameter,
+then either `DE_head` at offset 24 doesn't mean "which physical side this file's data lives on"
+in the way assumed (a used/valid flag? something else?), or the active cluster is not what this
+section has been calling "side 1's directory" at all. Not guessing further — this needs someone
+with direct `jwsdos5.0.asm` access to reconcile; see §7 items 2 and 3, both updated to carry this
+forward.
+
+**RESOLVED — partially (2026-07-22, direct read of the owner-supplied `jwsdos5.0.asm` source
+itself, not the earlier secondhand disassembly notes).** The "does `DE_head` mean what this doc
+assumed" half of the tension above is now settled: **yes, it does.** `dir_side1_prep` sets
+`DE_head=0` and `dir_side2_prep` sets `DE_head=1` (source comments: "side 1 (0)" / "side 2 (1)"),
+exactly as this doc already had it, and the SAME RAM cell (`DE_head`, `06048h`, offset 24 from
+`DE_current_header`) is what `find_room`/`insert_dir_entry` read and write when placing a FILE's
+own directory entry — `find_room` tries side 1 first (`DE_head=0`), escalating to side 2
+(`DE_head=1`) only if side 1's directory is full and the disk is double-sided; `insert_dir_entry`
+then reads that same `DE_head` to choose which in-RAM buffer (`DIR_side_1_mem`, ending `0xF7FF`,
+vs `DIR_side_2_mem`, ending `0xFFFF`) receives the new entry. So `DE_head` genuinely is "which
+physical side this entry belongs to," consistently, in both its command-parameter and
+persisted-field uses — the "maybe it's a used/valid flag" alternative is ruled out.
+
+**But this sharpens the puzzle rather than dissolving it, and a second, real mechanism was found
+that at least makes the anomaly plausible rather than inexplicable:** `disk_defragment`
+(`crunch_next_file`, source lines ~703–743 — the `defragment` command already noted in §5) walks
+every existing file, **deletes its directory entry, then calls `write_file` to re-save it** —
+which internally re-runs `find_room` and can assign a **different** `DE_head` than the file had
+before, since defragmentation's whole point is repacking files into whatever gaps exist across
+BOTH sides at that moment. The routine explicitly detects this: it reads the just-reassigned
+`DE_head` after `write_file`/`save_directory`, compares it against the next entry's own recorded
+side byte (`(ix+018h)`, the same offset-24 field), and branches on whether the side "swapped."
+**This proves a file's `DE_head` is not fixed at original-save-time — ordinary, documented DOS
+operation (defragment) can and does reassign which side an existing file's directory entry
+reports, independent of when or how it was first saved.** That's a real, sourced mechanism, not
+speculation.
+**Still not fully closed:** this explains HOW real disks can end up with entries whose `DE_head`
+doesn't match a naive "side 1 filled first, in save order" expectation, but it doesn't by itself
+explain why `Spel1.dsk` specifically shows ALL 18 active entries reading `DE_head=1` with zero
+exceptions — that depends on this particular disk's own operational history (how many
+saves/deletes/defragments happened, in what order), which the static DOS source can't reveal.
+Treat "DE_head is trustworthy and means physical side" as settled; treat "why this specific
+disk's active directory is uniformly side-2-flagged" as an open provenance question about this
+one disk image, not a DOS-semantics question — likely unanswerable without more disk images to
+compare against.
+
 **`save_directory`'s exact mechanics — CONFIRMED source-level (owner, 2026-07-20, re-read of
 `jwsdos5.0.asm` lines 1107–1143), a strong new candidate explanation for the stale cluster:**
 
@@ -201,6 +286,11 @@ valid, side-byte-0 directory. This is a materially stronger version of the origi
 dump" theory — same shape, now grounded in an exact RAM-buffer identity (`DIR_side_1_mem`
 specifically, not just "whatever's in `0xE000`-`0xFFFF`") that mechanistically explains the
 side-byte-0 detail the original theory didn't account for.
+- **Scope note (2026-07-22 correction, see above): this reasoning is about the STALE cluster
+  specifically and is unaffected by the active-cluster side-byte correction above** — the stale
+  cluster's side-byte=0 reading stands confirmed; only the active cluster's own side-byte turned
+  out to be 1, not 0. Don't extend this "structurally side-1-only" argument to the active
+  cluster without re-checking it against that correction first.
 - **Still not fully proven** — this is a strong synthesis of two separately-confirmed facts
   (the write-scope finding + this RAM-buffer identity), not a direct disassembly trace of "here
   is the specific prior disk-read that populated `DIR_side_1_mem` before this write." Treat as
@@ -286,7 +376,7 @@ the real entries in `Spel1.dsk`'s active directory (§2: raw `0x1800`–`0x1A3F`
 | 19 | 1 B | **File type** stamp — every entry on this disk: `'B'` (Basic) | `DE_filetype` |
 | 20–21 | 2 B | File length in bytes, little-endian word | `DE_filelen` (`DE_filelen_LO`/`_HI`) |
 | 22–23 | 2 B | Load/transfer address, little-endian word | `DE_transfer` |
-| 24 | 1 B | Head / side | `DE_head` |
+| 24 | 1 B | Head / side | `DE_head` — **confirmed to genuinely mean physical side (0/1), source-validated (§2, 2026-07-22).** `Spel1.dsk`'s real active-directory entries read 1 here, not 0 as originally reported in §2 — not a misidentified field, but a real per-disk value; `defragment` can reassign it on an existing file (§2, §5) |
 | 25–26 | 2 B | First logical sector #, little-endian word | `DE_start_sector` |
 | 27–28 | 2 B | Last logical sector #, little-endian word | `DE_end_sector` |
 | 29 | 1 B | Transient FDC-transfer scratch — **not meaningful per-file data**, see below | `DE_sec` (alias `DE_sec_trk` lo byte) |
@@ -358,6 +448,15 @@ catalog entry when parsing.
   (first-fit/best-fit style — which one isn't specified).
 - A **`defragment`** command packs a side's files together, presumably consolidating
   scattered gaps into one contiguous free region at the end.
+- **CONFIRMED (2026-07-22, `jwsdos5.0.asm` source, `disk_defragment`/`crunch_next_file`):
+  defragment can move a file from one side to the other, not just repack it within its current
+  side.** Each file is deleted from the directory and re-saved via `write_file` (which re-runs
+  `find_room`), so a file that fit on side 1 before may land on side 2 afterward (or vice versa)
+  depending on what gaps exist across both sides at that moment — the routine explicitly checks
+  for and handles this "side swapped" case. **A file's `DE_head`/side is therefore not a
+  permanent property fixed at original save time**; it can change across the disk's ordinary,
+  documented lifecycle. See §2 for how this bears on a real observed discrepancy in this disk's
+  directory data.
 
 **Design implication:** read-only directory browsing (the M19 host `.dsk` API's "browse"
 feature) only needs the fixed 32-byte struct from §4 — no allocation logic required. Write
@@ -504,7 +603,16 @@ match dispatch on the exact byte values above, not a reconstructed bit theory.
 2. **Where does side 2's own directory actually live in a raw `.dsk` image?** (§2)
    `dir_side2_prep` reads a physically different disk surface (FDC head = 1); not located in
    `Spel1.dsk`'s raw bytes in this pass — depends on the image's side-interleaving
-   convention, which itself isn't confirmed.
+   convention, which itself isn't confirmed. **UPDATE (2026-07-22):** the now-confirmed
+   side-major/cylinder-minor raw-offset formula (§2) gives a strong candidate answer —
+   `Tracks * BytesPerTrack + BytesPerTrack` (e.g. `0x29000` on a 40-track disk) for
+   `dir_side2_prep`'s own target — but this is a direct arithmetic consequence of a formula
+   validated only against head=0 data so far, not independently checked against real bytes at
+   that offset. **UPDATE (2026-07-22, `jwsdos5.0.asm` source read directly): the "offset-24
+   values don't mean what this doc assumed" half of the tangle is resolved — they do mean
+   physical side, confirmed from source (§2).** Location is still open on its own terms: the
+   formula's head=0 branch is confirmed, its head=1 branch (where side 2 actually sits) is not
+   yet checked against real bytes.
 3. **Origin of the stale 20-entry directory cluster at raw `0x1000`–`0x17FF`** (§2) — read as
    real, valid, cross-validated directory entries, but not touched by the current build's
    read/save routines and sharing no filenames with the 18-entry active directory.
@@ -528,6 +636,12 @@ match dispatch on the exact byte values above, not a reconstructed bit theory.
    label-writing finding (§3)** — that confirmed `JWS Systeem Disk` writes the label correctly,
    a separate question from this one. Owner's next step is still reading the rest of
    `JWS Systeem Disk`'s disassembly to confirm this specific mechanism.
+   **Separately (2026-07-22, `jwsdos5.0.asm` source): the active directory's own DE_head=1
+   discrepancy (§2) is NOT explained by this item's theory** — this item concerns the STALE
+   cluster (confirmed side-byte=0, unaffected by the correction) sourced from a blind
+   `JWS Systeem Disk` copy, whereas the active cluster's anomaly is now understood via a
+   different, unrelated mechanism: ordinary `defragment` operation can reassign a file's side
+   during normal DOS use (§2, §5). Keep these two explanations separate — don't conflate them.
 4. **Follow-on from the now-precisely-understood `0xF3`/`sysdisk_status` branch (§6 step 7):**
    does `sysdisk_status` actually gate whether the loaded DOS launches, and if so, how does a
    real JWSDOS disk boot despite legitimately ending with `sysdisk_status = 0`? Evidence now
@@ -647,3 +761,29 @@ convention: `0xF3` is the official Philips disk-BASIC signature (verified agains
   disk-BASIC signature; JWSDOS is third-party and was never expected to carry it. Moved from
   §7's open items to the resolved list. The `sysdisk_status`-gating follow-on question stays
   open (§7 item 6). → this doc §6, §7.
+- **2026-07-22 (design-doc maintainer pass, folding in `P2000.Machine` milestone-19 findings):**
+  two items carried over from the FDC implementation pass. (1) **CONFIRMED**, new: the
+  generalized side-major/cylinder-minor raw sector-offset formula
+  (`head*Tracks*BytesPerTrack + cylinder*BytesPerTrack + (sector-1)*BytesPerSector`), derived
+  from this doc's own confirmed byte ranges and validated by the machine implementation against
+  four real fixtures (`Spel1.dsk`, `jws-sytem.dsk`, `empty-jws.dsk`, `hires_demo.dsk`) — gives a
+  strong (not yet independently verified) candidate location for side 2's directory, §7 item 2.
+  (2) **CORRECTED**, a real discrepancy, not smoothed over: this doc's §2 claim that "both
+  clusters have side-byte 0" is only true for the stale cluster — the active directory's 18
+  real entries were found to read side-byte **1**, not 0, during implementation's direct byte
+  inspection. Flagged in §2, §4, and §7 items 2–3 as an open tension with the "this is all
+  side-1 data" framing; not resolved here, needs `jwsdos5.0.asm` access to reconcile whether
+  `DE_head` means what this doc assumed. → this doc §2, §4, §7.
+- **2026-07-22 (design-doc maintainer pass, owner supplied `jwsdos5.0.asm` directly): the
+  DE_head tension above is validated against the real source, resolved partially.** Confirmed
+  from source: `dir_side1_prep`/`dir_side2_prep` set `DE_head=0`/`1` exactly as this doc had it,
+  and `find_room`/`insert_dir_entry` read/write that same RAM cell when placing a file's own
+  directory entry — `DE_head` genuinely means physical side throughout, ruling out the
+  "used/valid flag" alternative raised in the correction above. New mechanism found that makes
+  the observed anomaly plausible: `disk_defragment`'s `crunch_next_file` loop (lines ~703–743)
+  deletes and re-saves every file via `write_file` (which re-runs `find_room`), explicitly
+  detecting when a file's side changes as a result — proving `DE_head` is reassignable during
+  ordinary DOS operation, not fixed at original save time. Does NOT fully explain why
+  `Spel1.dsk` specifically shows all 18 active entries uniformly on side 2 — that depends on
+  this disk's own save/defragment history, unrecoverable from static source alone. → this doc
+  §2, §4, §5, §7.

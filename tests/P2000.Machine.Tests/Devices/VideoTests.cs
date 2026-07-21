@@ -1,3 +1,4 @@
+using System.Reflection;
 using P2000.Machine.Contention;
 using P2000.Machine.Devices;
 using P2000.Machine.Devices.Saa5050;
@@ -186,6 +187,53 @@ public class VideoTests
 
         Assert.All(video.Framebuffer, pixel => Assert.Equal(0u, pixel));
         Assert.False(video.IsOddField);
+    }
+
+    /// <summary>
+    /// Real bug, owner-reported from a live screenshot (2026-07-22, after the full-field
+    /// pre-roll fix landed): "the lowest scanline of a character row is swapped with the top."
+    /// Root cause: <c>Saa5050Generator._scanLineCounter</c> (which of the 10 scanlines within
+    /// the current character row is being rendered) advances once per
+    /// <see cref="Video.OnLineComplete"/> call — and that fired unconditionally for EVERY raw
+    /// line, including the 49-line vertical pre-roll now gating fetches
+    /// (<see cref="VideoFetchUnit.VerticalBlankLines"/>). 49 unconditional advances before the
+    /// first real scanline ever renders leaves the counter at 49 mod 10 = 9, not 0 — so the
+    /// FIRST active scanline of every field renders using glyph row 9 (near the bottom of the
+    /// character cell) instead of row 0 (the top), for the whole field.
+    ///
+    /// This is a DIRECT invariant check (reflection into the private counter), not a pixel
+    /// comparison, because the existing pixel-based tests above (<c>FirstField_IsEven...</c>
+    /// etc.) did NOT catch this bug when it was live: SAA5050 fonts pad the top and bottom
+    /// scanlines of most glyphs with blank pixels, so "row 0" and "row 9" happened to render
+    /// identically (both blank) for the specific test characters used, coincidentally masking
+    /// exactly this class of off-by-N error. Confirmed by disabling the fix locally and
+    /// re-running: this test failed (counter == 9), the pixel-based tests above did not.
+    /// </summary>
+    [Fact]
+    public void FirstActiveFetch_ScanLineCounterIsZero_NotDesyncedByThePreRoll()
+    {
+        var (video, _) = Create();
+
+        var generator = typeof(Video)
+            .GetField("_generator", BindingFlags.NonPublic | BindingFlags.Instance)!
+            .GetValue(video)!;
+        var counterField = generator.GetType()
+            .GetField("_scanLineCounter", BindingFlags.NonPublic | BindingFlags.Instance)!;
+        var fetchUnit = (VideoFetchUnit)typeof(Video)
+            .GetField("_fetchUnit", BindingFlags.NonPublic | BindingFlags.Instance)!
+            .GetValue(video)!;
+
+        int? counterAtFirstFetch = null;
+        fetchUnit.ColumnFetch += _ =>
+            counterAtFirstFetch ??= (int)counterField.GetValue(generator)!;
+
+        for (var i = 0; i < VideoFetchUnit.TStatesPerField && counterAtFirstFetch is null; i++)
+        {
+            video.Tick();
+        }
+
+        Assert.NotNull(counterAtFirstFetch);
+        Assert.Equal(0, counterAtFirstFetch);
     }
 
     private static uint[] ExpectedCellRow(uint[] glyphs, char code, int row, int fg, int bg)

@@ -1138,6 +1138,55 @@ marked synced. Do NOT edit the reference doc from this project.
 - **Synced:** yes (2026-07-22, into P2000T-reference.md §3a/§4a) — implementation still
   outstanding.
 
+### 2026-07-22 — FIXED (real bug, owner-reported from a live screenshot): pre-roll fix desynced Saa5050Generator's scanline counter
+- **Owner report, from an actual screenshot of the running app (Graphics-window/default crop):**
+  "the graphics view offset is wrong, and... the lowest scanline of a character row is swapped
+  with the top." Visible in the screenshot as garbled top-of-screen text (a reverse-video title
+  banner) while text further down looked fine.
+- **Root cause — a real bug in the 49-line pre-roll fix directly below this entry, not a
+  pre-existing issue:** `Video.OnLineComplete()` called `Saa5050Generator.EndLine()`
+  unconditionally for every raw line completion. `EndLine()` increments
+  `_scanLineCounter` (mod 10) — the "which of the 10 scanlines within the current character row"
+  index `RenderField` uses to pick a glyph row. Before the pre-roll fix, `IsActiveLine` was
+  `Line < 240`, so the pre-roll didn't exist and this was harmless. After adding the 49-line
+  pre-roll (this file's own IMPLEMENTED entry below), `LineComplete` now fires 49 times BEFORE
+  the first real scanline of the field ever renders — 49 unconditional `EndLine()` calls leave
+  the counter at 49 mod 10 = **9**, not 0, so the field's first active scanline renders using
+  glyph row 9 (near the character cell's bottom) instead of row 0 (the top) — for every
+  character, every field.
+- **Found (why the shipped test suite didn't catch this — a real coverage gap, not bad luck):**
+  the existing pixel-based tests (`FirstField_IsEven_AndRendersOnlyEvenRows` etc.) compare
+  against `ExpectedCellRow(row: 0)`/`(row: 1)`. SAA5050 fonts pad most glyphs' top and bottom
+  scanlines with blank pixels, so "row 0" and the WRONG "row 9-shifted" output happened to
+  render IDENTICALLY (both blank) for the specific test characters ('@', space) — masking
+  exactly this class of off-by-N scanline error. Confirmed empirically: temporarily reverting
+  the fix below left all pre-existing `VideoTests`/`VideoFetchUnitTests`/`ContentionTests`
+  green, while a NEW direct-invariant test (reflection into `_scanLineCounter`, not pixels)
+  failed with the expected `9`, not `0`.
+- **Fix:** `OnLineComplete()` now only calls `EndLine()` when the just-completed line was
+  active (`_fetchUnit.IsActiveLine`, checked at the moment `LineComplete` fires — `VideoFetchUnit
+  .Tick()` raises it BEFORE updating `Line` to the new value, so this correctly reflects the
+  line that just finished, not the one about to start). Pre-roll and post-roll lines now advance
+  nothing in the generator; `_scanLineCounter` starts each field's active window at exactly 0.
+- **New permanent regression test** (`VideoTests.FirstActiveFetch_ScanLineCounterIsZero_
+  NotDesyncedByThePreRoll`): a direct reflection-based check of the actual invariant (counter
+  == 0 at the field's first active `ColumnFetch`), specifically because the pixel-based tests
+  are blind to this bug class for the reason above — documented inline in the test itself so a
+  future reader doesn't mistake it for over-engineering.
+- **Lesson for next time (recorded, not just fixed):** when a fetch-scheduling change adds
+  ticks/events BEFORE the first "real" event of a cycle (here: pre-roll lines before the first
+  active line), audit every OTHER piece of state that advances on that same event for silent
+  desync — `EndLine()`'s counter was exactly this kind of hidden coupling, invisible from
+  `VideoFetchUnit`/`Video` alone without reading `Saa5050Generator`'s own internals.
+- **Not yet done: still no live visual confirmation from this side** (computer-use still can't
+  attach to the owner's already-running dev-launched window — same tooling limitation as the
+  entry below). The owner's own running instance predates this fix; needs a relaunch to show
+  the corrected rendering. Fix confidence rests on the direct-invariant regression test above,
+  not a screenshot.
+- **Applies to:** `src/P2000.Machine/Devices/Video.cs` (`OnLineComplete`),
+  `tests/P2000.Machine.Tests/Devices/VideoTests.cs` (new regression test).
+- **Synced:** no (implementation-only bug fix).
+
 ### 2026-07-22 — IMPLEMENTED: full-field framebuffer + 49-line pre-roll fetch fix (closes the flag above)
 - **Full-field resize:** `Video.Width`/`Height` changed 640×480 → 928×626; added
   `ActiveOffsetX=144`/`ActiveOffsetY=98`/`ActiveWidth=640`/`ActiveHeight=480` constants (the

@@ -159,7 +159,19 @@ public sealed class Video : IDevice
         _generator.RenderField(_framebuffer, row * Width + pixelX, oddField: _oddField);
     }
 
-    private void OnLineComplete() => _generator.EndLine();
+    // Only advance the generator's per-scanline state (Saa5050Generator._scanLineCounter,
+    // which tracks "which of the 10 scanlines within the current character row") for lines
+    // that were actually part of the active fetch window. LineComplete fires unconditionally
+    // for every raw line, including the 49-line vertical pre-roll and post-roll (added
+    // 2026-07-22, see VideoFetchUnit.VerticalBlankLines) - calling EndLine() for those too
+    // would desync the counter by 49 (mod 10 = 9) before the first real scanline ever
+    // renders, corrupting every character's glyph-row selection for the whole field.
+    // IsActiveLine reflects the JUST-COMPLETED line here: VideoFetchUnit.Tick() raises
+    // LineComplete before updating Line to the new value.
+    private void OnLineComplete()
+    {
+        if (_fetchUnit.IsActiveLine) _generator.EndLine();
+    }
 
     private void OnFieldComplete()
     {

@@ -213,15 +213,35 @@ public sealed class Machine
             // video 50 Hz INT so only the CTC drives INT (reference doc §5e "hardware arbiter").
             Interrupts.SetLock(true);
 
-            if (Config.FloppyDiskImagePath is not null)
-                // Drive index 1, NOT 0 — confirmed real bug, found via a boot test that reached
-                // SLOT1 but loaded all-zero data: the ROM's own FDC commands hardcode unit
-                // select "01" throughout (Disk.asm disk_constants: "drive #" bytes are all
-                // 0x01, and disk_recall_cmd's own comment says "device # at disk_recall_device
-                // (default 1)") — it never addresses unit 0. Mounting on index 0 left the drive
-                // the ROM actually reads from unmounted, so every READ DATA silently served
-                // zero-filled transfer buffers instead of throwing.
-                Board.Fdc.MountDisk(1, new DskImage(Config.FloppyDiskImagePath));
+            // Multi-drive floppy subsystem (project CLAUDE.md §13 milestone 20; reference doc
+            // §5d's confirmed 4-position DRISEL0-3 connector) — up to 4 independently-configured
+            // drives, replacing M19's implicit-single-drive-hardcoded-to-unit-1 model. The ROM
+            // driver itself still only ever addresses unit 1 (Disk.asm, unaffected by this — a
+            // software fact, not a connector fact); nothing stops configuring drives 0/2/3 too.
+            if (Config.FloppyDrives.Count > 4)
+                throw new ArgumentException(
+                    "At most 4 floppy drives are supported — the board's own 34-pin connector " +
+                    "carries exactly 4 drive-select lines, DRISEL0-3 (reference doc §5d).",
+                    nameof(config));
+
+            var seenDriveIndices = new HashSet<int>();
+            foreach (var drive in Config.FloppyDrives)
+            {
+                if (drive.DriveIndex is < 0 or > 3)
+                    throw new ArgumentException(
+                        $"Floppy drive index {drive.DriveIndex} is out of range — valid " +
+                        "positions are 0-3 (reference doc §5d DRISEL0-3).", nameof(config));
+                if (!seenDriveIndices.Add(drive.DriveIndex))
+                    throw new ArgumentException(
+                        $"Duplicate floppy drive index {drive.DriveIndex} in " +
+                        $"{nameof(MachineConfig.FloppyDrives)}.", nameof(config));
+            }
+
+            foreach (var drive in Config.FloppyDrives)
+            {
+                if (!drive.Enabled || drive.ImagePath is null) continue;
+                Board.Fdc.MountDisk(drive.DriveIndex, new DskImage(drive.ImagePath));
+            }
         }
 
         Cpu.Reset();

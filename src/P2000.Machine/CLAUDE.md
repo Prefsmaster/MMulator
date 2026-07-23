@@ -925,6 +925,88 @@ Ordinary in-project choices: proceed and keep CI green.
 
 ## 17. Findings log (working scratchpad — synced to the reference doc by the human)
 
+### 2026-07-23 — Milestones 20/20a IMPLEMENTED: multi-drive floppy config + cassette/disk dirty-tracking
+- **Assumed (per the milestone's own text):** the multi-drive generalization would require real
+  chip-layer (`Upd765`) changes — per-drive head/motor/state arrays.
+- **Found (the chip layer already modelled 4 drives — M19 built ahead of when M20 was
+  written):** `Upd765._drives` (`DskImage?[4]`) and `_cylinder` (`int[4]`) were already
+  per-drive arrays since milestone 19; only `_selectedDrive`/transfer state are singular, which
+  is correct (real hardware addresses one drive at a time). **The actual gap was entirely at the
+  config layer:** `MachineConfig.FloppyDiskImagePath` (singular, implicitly drive 1) and
+  `Machine`'s constructor only ever calling `MountDisk(1, ...)`. No `Upd765`/`DskImage` chip
+  logic changed for M20 itself beyond the two additive host-API members below.
+- **Built (M20):** `MachineConfig.FloppyDrives` (`IReadOnlyList<FloppyDriveConfig>`, replacing
+  `FloppyDiskImagePath`) — each entry: `DriveIndex` (0-3), `Enabled`, `Capacity`, `Sides`
+  (`DiskSides` enum), `ImagePath`. `Machine`'s constructor validates ≤4 drives, indices in 0-3,
+  no duplicates, then mounts every enabled entry with a non-null `ImagePath` at its own index
+  (no more hardcoded unit 1). `DskImage.GetBytes()` added for host Save/Save-as (byte-for-byte
+  copy, no bitstream encode needed for a raw sector dump) — write-protect and directory-browse
+  needed NO new API since `DskImage.WriteProtected`/`ReadDirectory()` are already per-instance
+  (reachable via `Upd765.GetDisk(drive)`), and create-blank needed none either
+  (`Upd765.MountDisk(drive, DskImage.CreateBlank(tracks, sides))` is already a one-liner) — kept
+  the API surface to exactly what wasn't already a one-liner, per root CLAUDE.md's
+  no-premature-abstraction rule.
+- **Built (M20a):** `IsDirty`/`MarkClean()` added to `DskImage` (set on a real `WriteSector`,
+  i.e. not write-protected; cleared by `MarkClean()`) and mirrored on `MiniTape`
+  (`IsDirty`/`MarkSaved()`, set on `Write`/`WriteBlockAtHead`, cleared at the end of
+  `LoadCasImage` and by `MarkSaved()`) with a same-named proxy pair added to `MdcrDevice`
+  (`IsDirty`/`MarkClean()`) mirroring its existing `IsWriteProtected`/`SetWriteProtected`
+  pattern. No new device/flag needed beyond these — checked first per the milestone's own
+  "verify before adding a second one" instruction; neither device had anything reusable.
+- **`.state` bumped v4→v5, MinVersion 4→5 (reject v4), per the milestone's explicit
+  instruction — even though the FDC device-state BLOCK's own byte layout is unchanged.** The
+  reason is the embedded config JSON, not the device stream: a v4 file's config JSON has
+  `floppyDiskImagePath` and no `floppyDrives` key; deserializing it under the new
+  `MachineConfigFile` DTO would silently default to an empty drive list rather than failing
+  loudly, so a v4 save's mounted disk would silently go unmounted on load with no error — exactly
+  the silent-misload class of bug the version-gate discipline exists to catch.
+- **Found (pre-existing gap, adjacent but out of this milestone's scope, left as-is):**
+  `MachineConfigFile`'s DTO never serialized `RamSeed` at all (only `Model`/`Board`/
+  `RamVariant`/`BankCount`/`MonitorRomPath`/`Slot1CartridgePath` round-tripped) — a `.cfg`/
+  `.state` load has always silently dropped an explicit `RamSeed`. Not fixed here (unrelated to
+  the disk axis this milestone touches); flagged for a separate follow-up.
+- **`P2000.UI` compile compatibility (not milestone 14 — that's still explicitly out of scope,
+  gated on `P2000.UI/CLAUDE.md` §14.14):** `EmulationRunner.Reconfigure`'s manual field-copy
+  (needed because `MachineConfig` has no `with` expression) updated
+  `FloppyDiskImagePath = config.FloppyDiskImagePath` → `FloppyDrives = config.FloppyDrives` —
+  the only call site outside `P2000.Machine` that referenced the removed field. `MakeConfig()`
+  never set it either way, so this is a pure rename with no behavior change; the actual
+  multi-drive UI (config axis, drive window, dirty-tracking eject warning) remains UI milestone
+  14/14a, unbuilt.
+- **Tests:** `MultiDriveFloppyTests.cs` (new) — config validation (0-4 drives accepted, >4/
+  duplicate-index/out-of-range-index all throw), per-drive mount-from-config at arbitrary
+  indices, disabled drives never mounted, an enabled drive with no `ImagePath` resolves to the
+  existing "absent drive" no-op (no new state), two-drive seek independence with no cross-talk,
+  per-drive geometry auto-detect, write-protect gating only the targeted drive, create-blank +
+  guest-write + Save round-trip, eject-without-save discarding in-memory changes. `DskImageTests`
+  (+9): create-blank exact byte size + no label at the auto-detect offsets, `IsDirty`/
+  `MarkClean` transitions, `GetBytes` round-trip + copy-not-reference. `MdcrDeviceTests` (+8):
+  the same `IsDirty`/`MarkClean` transitions mirrored for the cassette. `MachineConfigFileTests`
+  (+2): `FloppyDrives` round-trip (multiple drives, mixed `Enabled`/geometry/path) and the
+  empty-by-default case. `MachineStateFileTests` (+2): v4 rejected, a real multi-drive `.state`
+  round-trip (two drives seeked to different cylinders, restored, `SENSE INTERRUPT STATUS`
+  confirms drive 1's cylinder survived independent of drive 0's). Full `P2000.Machine.Tests`
+  suite: 455/455 green (was 416); `P2000.UI.Tests`: 99/99 green, unaffected.
+- **Applies to:** project CLAUDE.md §13 milestones 20/20a /
+  `src/P2000.Machine/MachineConfig.cs` (`DiskSides`, `FloppyDriveConfig`, `FloppyDrives`),
+  `src/P2000.Machine/Machine.cs` (validation + per-drive mount loop),
+  `src/P2000.Machine/Devices/Fdc/DskImage.cs` (`IsDirty`, `MarkClean`, `GetBytes`),
+  `src/P2000.Machine/Devices/Cassette/MiniTape.cs` (`IsDirty`, `MarkSaved`),
+  `src/P2000.Machine/Devices/Cassette/MdcrDevice.cs` (`IsDirty`, `MarkClean`),
+  `src/P2000.Machine/State/MachineConfigFile.cs` (DTO `FloppyDrives`),
+  `src/P2000.Machine/State/MachineStateFile.cs` (v5 bump),
+  `src/P2000.UI/Runner/EmulationRunner.cs` (field-copy rename only),
+  `tests/P2000.Machine.Tests/Boot/DiskBootTests.cs` (updated to `FloppyDrives`),
+  `tests/P2000.Machine.Tests/Devices/Fdc/MultiDriveFloppyTests.cs` (new),
+  `tests/P2000.Machine.Tests/Devices/Fdc/DskImageTests.cs`,
+  `tests/P2000.Machine.Tests/Devices/MdcrDeviceTests.cs`,
+  `tests/P2000.Machine.Tests/State/MachineConfigFileTests.cs`,
+  `tests/P2000.Machine.Tests/State/MachineStateFileTests.cs`.
+- **Synced:** no (implementation-only — no new hardware facts beyond what M20's own spec
+  already carried; the RamSeed serialization gap noted above is a pre-existing bug, not new
+  hardware content, and is flagged rather than fixed here).
+
+
 Append a dated entry here whenever implementation corrects, clarifies, or adds to the
 spec/reference doc (see §13). Format: date, milestone, what was assumed → what turned out true,
 and where it applies (file/port/section of the reference doc). Keep entries short and factual.

@@ -45,6 +45,42 @@ public class MachineConfigFileTests
     }
 
     [Fact]
+    public void RoundTrip_FloppyDrives_PreservesAllFields()
+    {
+        var original = new MachineConfig
+        {
+            Board = InternalBoard.FloppyRam,
+            RamVariant = RamVariant.T102,
+            FloppyDrives = new[]
+            {
+                new FloppyDriveConfig { DriveIndex = 1, ImagePath = "spel1.dsk" },
+                new FloppyDriveConfig
+                {
+                    DriveIndex = 2, Enabled = false, Capacity = 80, Sides = DiskSides.Double,
+                },
+            },
+        };
+        var restored = MachineConfigFile.Deserialize(MachineConfigFile.Serialize(original));
+
+        Assert.Equal(2, restored.FloppyDrives.Count);
+        Assert.Equal(1, restored.FloppyDrives[0].DriveIndex);
+        Assert.True(restored.FloppyDrives[0].Enabled);
+        Assert.Equal("spel1.dsk", restored.FloppyDrives[0].ImagePath);
+        Assert.Equal(2, restored.FloppyDrives[1].DriveIndex);
+        Assert.False(restored.FloppyDrives[1].Enabled);
+        Assert.Equal(80, restored.FloppyDrives[1].Capacity);
+        Assert.Equal(DiskSides.Double, restored.FloppyDrives[1].Sides);
+        Assert.Null(restored.FloppyDrives[1].ImagePath);
+    }
+
+    [Fact]
+    public void RoundTrip_NoFloppyDrives_DefaultsToEmpty()
+    {
+        var restored = MachineConfigFile.Deserialize(MachineConfigFile.Serialize(new MachineConfig()));
+        Assert.Empty(restored.FloppyDrives);
+    }
+
+    [Fact]
     public void Serialize_ProducesReadableJson_WithVersionField()
     {
         var json = MachineConfigFile.Serialize(new MachineConfig());

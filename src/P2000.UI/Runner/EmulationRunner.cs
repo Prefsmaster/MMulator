@@ -117,7 +117,7 @@ public sealed class EmulationRunner : IDisposable
                 BankCount = config.BankCount,
                 MonitorRomPath = config.MonitorRomPath,
                 Slot1CartridgePath = config.Slot1CartridgePath,
-                FloppyDiskImagePath = config.FloppyDiskImagePath,
+                FloppyDrives = config.FloppyDrives,
                 RamSeed = NewRandomRamSeed(),
             };
         }

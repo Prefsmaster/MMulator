@@ -38,6 +38,46 @@ public enum RamVariant
     T102,
 }
 
+/// <summary>Sidedness of a floppy drive/image (project CLAUDE.md §13 milestone 20).</summary>
+public enum DiskSides
+{
+    Single,
+    Double,
+}
+
+/// <summary>
+/// Topology for one floppy drive on the floppy+RAM internal-extension board (project CLAUDE.md
+/// §13 milestone 20; reference doc §5d — the confirmed 4-position <c>DRISEL0</c>-<c>3</c>
+/// connector). <see cref="MachineConfig.FloppyDrives"/> holds up to 4 of these. Drive
+/// presence/<see cref="Capacity"/>/<see cref="Sides"/> is TOPOLOGY (reset-to-apply, same rule as
+/// every other axis in <see cref="MachineConfig"/>); <see cref="ImagePath"/> is only the initial
+/// image mounted at machine-assembly time — mounting/ejecting/swapping an image at runtime is a
+/// host-side action on <see cref="Devices.Fdc.Upd765"/>, not a config change.
+/// </summary>
+public sealed class FloppyDriveConfig
+{
+    /// <summary>0-3 — the physical drive-select position on the board's connector (reference doc
+    /// §5d <c>DRISEL0</c>-<c>3</c>), NOT a list index. Must be unique within
+    /// <see cref="MachineConfig.FloppyDrives"/>.</summary>
+    public int DriveIndex { get; init; }
+
+    public bool Enabled { get; init; } = true;
+
+    /// <summary>Track count seed for blank/unlabeled media (35/40/80 — reference doc §5d). Only
+    /// consulted when creating a fresh unformatted image for this drive; a mounted image with a
+    /// valid on-disk label always wins over this (M19's auto-detect rule, unchanged by M20).</summary>
+    public int Capacity { get; init; } = 40;
+
+    /// <summary>Sidedness seed for blank/unlabeled media — same "label wins, this is only the
+    /// seed" rule as <see cref="Capacity"/>.</summary>
+    public DiskSides Sides { get; init; } = DiskSides.Single;
+
+    /// <summary>Optional path to a raw <c>.dsk</c> image to mount in this drive at
+    /// machine-assembly time. <c>null</c> leaves the drive present but empty (the "configured/
+    /// enabled drive with no image mounted" no-op case, project CLAUDE.md §13.20).</summary>
+    public string? ImagePath { get; init; }
+}
+
 /// <summary>
 /// Machine TOPOLOGY — what the machine IS, independent of what it's doing right now
 /// (project CLAUDE.md §11 / reference doc §3a). Serializable, small, human-editable.
@@ -80,12 +120,14 @@ public sealed class MachineConfig
     /// is running (locked decision §2.3).</summary>
     public string? Slot1CartridgePath { get; init; }
 
-    /// <summary>Optional path to a raw <c>.dsk</c> floppy image to mount in FDC drive 0 at
-    /// machine-assembly time (project CLAUDE.md §13 milestone 19). <c>null</c> (the default)
-    /// leaves the drive empty. Only meaningful when <see cref="Board"/> is
-    /// <see cref="InternalBoard.FloppyRam"/>; ignored otherwise. Reset-to-apply, same as
-    /// <see cref="Slot1CartridgePath"/>.</summary>
-    public string? FloppyDiskImagePath { get; init; }
+    /// <summary>Per-drive floppy topology — up to 4 drives (project CLAUDE.md §13 milestone 20;
+    /// reference doc §5d, the confirmed 4-position connector), replacing the earlier
+    /// milestone-19 singular <c>FloppyDiskImagePath</c> (implicitly drive 1 only). Only
+    /// meaningful when <see cref="Board"/> is <see cref="InternalBoard.FloppyRam"/>; ignored
+    /// otherwise. Reset-to-apply, same as <see cref="Slot1CartridgePath"/>. Empty by default —
+    /// a fitted board with no drives configured is a legitimate (if unusual) topology, same as
+    /// a bare board carrying no cartridge.</summary>
+    public IReadOnlyList<FloppyDriveConfig> FloppyDrives { get; init; } = Array.Empty<FloppyDriveConfig>();
 
     /// <summary>Optional seed for the RAM power-on garbage fill (project CLAUDE.md §17,
     /// 2026-07-21/22 finding — real volatile RAM doesn't power up all-zero). <c>null</c> (the

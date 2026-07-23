@@ -59,7 +59,7 @@ public class DiskBootTests
             RamVariant = RamVariant.T102,
             Slot1CartridgePath = basicPath, // real, unmodified — its header byte already has
                                              // bit1=1 ("needs DOS"), confirmed against Startup.asm
-            FloppyDiskImagePath = diskImagePath,
+            FloppyDrives = new[] { new FloppyDriveConfig { DriveIndex = 1, ImagePath = diskImagePath } },
         });
         machine.Fdc!.Policy = TimingPolicy.Turbo; // instant transfers; the ROM's own settle
                                                     // delays are real code either way (cycle-exact)

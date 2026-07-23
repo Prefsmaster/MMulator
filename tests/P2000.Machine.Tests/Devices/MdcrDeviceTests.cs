@@ -471,6 +471,90 @@ public class MdcrDeviceTests
         Assert.Null(mdcr.SaveTape());
     }
 
+    // ---- Dirty tracking (project CLAUDE.md §13 milestone 20a) ------------------
+
+    [Fact]
+    public void InsertTape_IsNotDirty()
+    {
+        var (mdcr, _) = Create();
+        mdcr.InsertTape(OneCasRecord());
+        Assert.False(mdcr.IsDirty);
+    }
+
+    [Fact]
+    public void InsertBlankTape_IsNotDirty()
+    {
+        var (mdcr, _) = Create();
+        mdcr.InsertBlankTape();
+        Assert.False(mdcr.IsDirty);
+    }
+
+    [Fact]
+    public void NoTape_IsNotDirty()
+    {
+        var (mdcr, _) = Create();
+        Assert.False(mdcr.IsDirty);
+    }
+
+    [Fact]
+    public void WriteBlockAtHead_SetsDirty()
+    {
+        var (mdcr, _) = Create();
+        mdcr.InsertBlankTape();
+
+        mdcr.WriteBlockAtHead(new byte[32], new byte[1024]);
+
+        Assert.True(mdcr.IsDirty);
+    }
+
+    [Fact]
+    public void MarkClean_ClearsDirty()
+    {
+        var (mdcr, _) = Create();
+        mdcr.InsertBlankTape();
+        mdcr.WriteBlockAtHead(new byte[32], new byte[1024]);
+        Assert.True(mdcr.IsDirty);
+
+        mdcr.MarkClean();
+
+        Assert.False(mdcr.IsDirty);
+    }
+
+    [Fact]
+    public void MarkClean_ThenWriteAgain_ReSetsDirty()
+    {
+        var (mdcr, _) = Create();
+        mdcr.InsertBlankTape();
+        mdcr.WriteBlockAtHead(new byte[32], new byte[1024]);
+        mdcr.MarkClean();
+
+        mdcr.WriteBlockAtHead(new byte[32], new byte[1024]);
+
+        Assert.True(mdcr.IsDirty);
+    }
+
+    [Fact]
+    public void EjectTape_DoesNotThrow_AndLeavesNoDirtyTapeMounted()
+    {
+        // Eject itself neither sets nor clears dirty (project CLAUDE.md §13.20a test (d)) — it
+        // just makes the question moot since nothing is mounted afterward.
+        var (mdcr, _) = Create();
+        mdcr.InsertBlankTape();
+        mdcr.WriteBlockAtHead(new byte[32], new byte[1024]);
+
+        mdcr.EjectTape();
+
+        Assert.False(mdcr.IsDirty); // no tape mounted → not dirty by definition
+    }
+
+    [Fact]
+    public void MarkClean_NoTape_NoOp()
+    {
+        var (mdcr, _) = Create();
+        mdcr.MarkClean(); // must not throw with no tape mounted
+        Assert.False(mdcr.IsDirty);
+    }
+
     // ---- Machine integration: port 0x20 OR-combines with CprinReader -----------
 
     [Fact]

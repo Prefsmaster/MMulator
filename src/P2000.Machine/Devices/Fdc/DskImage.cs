@@ -46,6 +46,17 @@ public sealed class DskImage
     public int Sides { get; private set; }
     public bool WriteProtected { get; set; }
 
+    /// <summary>True once a WRITE DATA command has mutated this image since it was
+    /// mounted/created/last saved (project CLAUDE.md §13 milestone 20a) — the machine-layer
+    /// signal the UI's unsaved-changes eject/replace warning hangs off. Mounting/creating never
+    /// sets it; only <see cref="MarkClean"/> (called after a successful host Save/Save-as)
+    /// clears it back.</summary>
+    public bool IsDirty { get; private set; }
+
+    /// <summary>Clears <see cref="IsDirty"/> — call after a successful host-side Save/Save-as.
+    /// Does not touch the image's content.</summary>
+    public void MarkClean() => IsDirty = false;
+
     /// <summary>Mounts a raw <c>.dsk</c> image from disk, auto-detecting geometry from the
     /// on-disk label (an emulator-side UX improvement beyond real JWSDOS, which does NOT
     /// auto-detect — <c>docs/JWSDOS-format.md</c> §3).</summary>
@@ -99,7 +110,14 @@ public sealed class DskImage
     {
         if (WriteProtected) return;
         data[..BytesPerSector].CopyTo(_data.AsSpan(SectorOffset(cylinder, head, sector)));
+        IsDirty = true;
     }
+
+    /// <summary>Returns a copy of the raw sector-dump bytes for a host Save/Save-as (project
+    /// CLAUDE.md §13 milestone 20's host <c>.dsk</c> API) — a plain byte-for-byte write, no
+    /// bitstream-style encode step the way <c>.cas</c> needs. A copy, not the live backing
+    /// array, so the caller can't bypass <see cref="WriteSector"/>'s write-protect check.</summary>
+    public byte[] GetBytes() => (byte[])_data.Clone();
 
     /// <summary>Browses side 1's confirmed active directory only (raw <c>0x1800</c>-<c>0x1FFF</c>
     /// — <c>docs/JWSDOS-format.md</c> §2/§4). Side 2's directory location in a raw image is not

@@ -1,4 +1,6 @@
 using P2000.Machine.Contention;
+using P2000.Machine.Devices.Cassette;
+using P2000.Machine.Devices.Fdc;
 using P2000.Machine.Memory;
 using P2000.Machine.State;
 
@@ -242,5 +244,62 @@ public class MachineStateFileTests
         ms.Write(new byte[] { 2, 0, 0, 0 }); // version = 2
         ms.Position = 0;
         Assert.Throws<InvalidDataException>(() => MachineStateFile.Load(ms));
+    }
+
+    [Fact]
+    public void Load_VersionFour_Throws()
+    {
+        // v4 files' embedded config JSON has no floppyDrives key at all (project CLAUDE.md
+        // §13 milestone 20) — deserializing under the new DTO would silently default to zero
+        // drives instead of failing loudly, so any mounted disk would go unmounted on load with
+        // no error. Reject cleanly rather than silently misload (project CLAUDE.md §13.20 test (f)).
+        var ms = new MemoryStream();
+        ms.Write("P2ST"u8);
+        ms.Write(new byte[] { 4, 0, 0, 0 }); // version = 4
+        ms.Position = 0;
+        Assert.Throws<InvalidDataException>(() => MachineStateFile.Load(ms));
+    }
+
+    /// <summary>Project CLAUDE.md §13 milestone 20 test (e): a `.state` round trip with multiple
+    /// drives mid-transfer at different head/cylinder positions reproduces identical subsequent
+    /// frames (the chip's per-drive cylinder array already round-tripped since M19 — this test
+    /// pins it down explicitly for the new multi-drive config path rather than the old
+    /// implicit-single-drive one).</summary>
+    [Fact]
+    public void StateRoundTrip_MultipleDrivesAtDifferentCylinders_ArePreserved()
+    {
+        var machine = new Machine(new MachineConfig
+        {
+            Board = InternalBoard.FloppyRam,
+            RamVariant = RamVariant.T102,
+        });
+        machine.Fdc!.Policy = TimingPolicy.Turbo;
+        machine.Fdc.MountDisk(0, DskImage.CreateBlank(40, 2));
+        machine.Fdc.MountDisk(1, DskImage.CreateBlank(40, 2));
+
+        // SEEK drive 0 to cylinder 3.
+        machine.Ports.Write(0x8D, 0x0F);
+        machine.Ports.Write(0x8D, 0x00);
+        machine.Ports.Write(0x8D, 0x03);
+        for (var i = 0; i < 400; i++) machine.Tick();
+        machine.Ports.Write(0x8D, 0x08); // SENSE INTERRUPT STATUS — clears the pending flag
+        machine.Ports.Read(0x8D);
+        machine.Ports.Read(0x8D);
+
+        // SEEK drive 1 to cylinder 7.
+        machine.Ports.Write(0x8D, 0x0F);
+        machine.Ports.Write(0x8D, 0x01);
+        machine.Ports.Write(0x8D, 0x07);
+        for (var i = 0; i < 400; i++) machine.Tick();
+
+        var restored = SaveAndReload(machine);
+        // Re-mount the drives (image bytes are not part of .state — reloaded externally, same
+        // precedent as SLOT1 cartridges); cylinder tracking survives independent of the mount.
+        restored.Fdc!.MountDisk(0, DskImage.CreateBlank(40, 2));
+        restored.Fdc.MountDisk(1, DskImage.CreateBlank(40, 2));
+
+        restored.Ports.Write(0x8D, 0x08); // SENSE INTERRUPT STATUS
+        Assert.Equal(0x21, restored.Ports.Read(0x8D)); // ST0: seek-end | unit 1
+        Assert.Equal(0x07, restored.Ports.Read(0x8D)); // PCN: drive 1's cylinder survived
     }
 }

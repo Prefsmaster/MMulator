@@ -28,17 +28,28 @@ public static class MachineStateFile
     ///     internal board is FloppyRam.</item>
     ///   <item>v4: the optional board block (FloppyRam only) grew a second device — an FDC
     ///     (<see cref="Devices.Fdc.Upd765"/>) block appended after the Ctc block (milestone 19).
-    ///     The mounted <c>.dsk</c> image's bytes are NOT part of this block (reloaded from
-    ///     <see cref="MachineConfig.FloppyDiskImagePath"/> at machine reconstruction, same
-    ///     precedent as SLOT1 cartridges) — only the chip's transient register/phase state.</item>
+    ///     The mounted <c>.dsk</c> image's bytes are NOT part of this block (reloaded from the
+    ///     config's disk-mount path(s) at machine reconstruction, same precedent as SLOT1
+    ///     cartridges) — only the chip's transient register/phase state.</item>
+    ///   <item>v5: the embedded config JSON's disk axis changed shape — milestone 19's singular
+    ///     <c>MachineConfig.FloppyDiskImagePath</c> (implicitly drive 1) became
+    ///     <see cref="MachineConfig.FloppyDrives"/> (project CLAUDE.md §13 milestone 20, up to 4
+    ///     independently-configured drives). A v4 file's config JSON has no <c>floppyDrives</c>
+    ///     key at all — deserializing it under the new DTO would silently default to zero
+    ///     drives instead of failing loudly, so any mounted disk would go unmounted on load with
+    ///     no error. The FDC device-state BLOCK's own byte layout is unchanged (it already
+    ///     tracked all 4 drives' cylinders since M19); this bump is entirely about the config
+    ///     JSON shape, not the device stream.</item>
     /// </list></summary>
-    public const int CurrentVersion = 4;
+    public const int CurrentVersion = 5;
 
     /// <summary>Oldest <c>.state</c> version accepted by this build. Older files are rejected
-    /// because the device-stream layout changed incompatibly without a version bump at the
-    /// time (v1→v2: SoundDevice added, NMI bool added to Interrupts; v2→v3: Lock bool added to
-    /// Interrupts, optional Ctc block appended; v3→v4: FDC block appended after Ctc).</summary>
-    private const int MinVersion = 4;
+    /// because the device-stream layout (or, for v4→v5, the embedded config JSON shape) changed
+    /// incompatibly without a version bump at the time (v1→v2: SoundDevice added, NMI bool added
+    /// to Interrupts; v2→v3: Lock bool added to Interrupts, optional Ctc block appended; v3→v4:
+    /// FDC block appended after Ctc; v4→v5: config JSON's disk axis reshaped from a singular path
+    /// to a per-drive collection — see <see cref="CurrentVersion"/>'s v5 note).</summary>
+    private const int MinVersion = 5;
 
     private static readonly byte[] Magic = "P2ST"u8.ToArray();
 

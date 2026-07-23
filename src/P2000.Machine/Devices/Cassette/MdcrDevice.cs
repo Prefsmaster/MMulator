@@ -77,6 +77,15 @@ public sealed class MdcrDevice : IDevice
     /// separately (matches <c>cas_writable</c>'s CIP-before-WEN check, Cassette.asm:1618).</summary>
     public bool IsWriteProtected => _tape?.IsProtected ?? false;
 
+    /// <summary>True when the mounted tape has unsaved changes (project CLAUDE.md §13
+    /// milestone 20a) — the signal a future UI unsaved-changes eject/replace warning hangs off.
+    /// False (nothing to warn about) when no tape is mounted.</summary>
+    public bool IsDirty => _tape?.IsDirty ?? false;
+
+    /// <summary>Clears the mounted tape's dirty flag — call after a successful host-side Save/
+    /// Save-as. No-op with no tape mounted.</summary>
+    public void MarkClean() => _tape?.MarkSaved();
+
     /// <summary>Turbo-trap read: decodes one block at the tape's current head position and
     /// advances past it (project CLAUDE.md §13.18). Delegates to
     /// <see cref="MiniTape.TryReadBlockAtHead"/>; false when no tape is mounted or no block

@@ -67,6 +67,7 @@ public static class MachineConfigFile
         BankCount = c.BankCount,
         MonitorRomPath = c.MonitorRomPath,
         Slot1CartridgePath = c.Slot1CartridgePath,
+        FloppyDrives = c.FloppyDrives.ToList(),
     };
 
     private static MachineConfig FromDto(ConfigDto d) => new()
@@ -77,6 +78,7 @@ public static class MachineConfigFile
         BankCount = d.BankCount,
         MonitorRomPath = d.MonitorRomPath,
         Slot1CartridgePath = d.Slot1CartridgePath,
+        FloppyDrives = d.FloppyDrives ?? new List<FloppyDriveConfig>(),
     };
 
     private sealed class ConfigDto
@@ -88,5 +90,6 @@ public static class MachineConfigFile
         public int? BankCount { get; set; }
         public string? MonitorRomPath { get; set; }
         public string? Slot1CartridgePath { get; set; }
+        public List<FloppyDriveConfig>? FloppyDrives { get; set; }
     }
 }

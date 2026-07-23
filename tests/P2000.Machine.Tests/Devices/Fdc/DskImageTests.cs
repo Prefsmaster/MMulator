@@ -172,4 +172,117 @@ public class DskImageTests
         var disk = new DskImage(image);
         Assert.Empty(disk.ReadDirectory());
     }
+
+    // ---- CreateBlank produces genuinely unformatted media (project CLAUDE.md §13.20 test (g)) --
+
+    [Fact]
+    public void CreateBlank_ExactByteSize_ForConfiguredGeometry()
+    {
+        var disk = DskImage.CreateBlank(tracks: 40, sides: 2);
+        Assert.Equal(40 * 2 * DskImage.SectorsPerTrack * DskImage.BytesPerSector, disk.GetBytes().Length);
+    }
+
+    [Fact]
+    public void CreateBlank_NoValidLabel_AtAutoDetectOffsets()
+    {
+        // Confirms the blank image reads as genuinely unformatted, not silently pre-labeled —
+        // a fresh DskImage(bytes) reconstruction of it must NOT report the geometry the
+        // creator asked for via the label path (both offsets are zero, not 'S'/'D' or a
+        // plausible track-count byte).
+        var disk = DskImage.CreateBlank(tracks: 40, sides: 2);
+        var bytes = disk.GetBytes();
+        Assert.Equal(0x00, bytes[0x0FEF]);
+        Assert.Equal(0x00, bytes[0x0FFF]);
+    }
+
+    // ---- Dirty tracking (project CLAUDE.md §13 milestone 20a) ----------------------------------
+
+    [Fact]
+    public void CreateBlank_IsNotDirty()
+    {
+        var disk = DskImage.CreateBlank(tracks: 40, sides: 2);
+        Assert.False(disk.IsDirty);
+    }
+
+    [Fact]
+    public void Mount_FromBytes_IsNotDirty()
+    {
+        var image = BuildSyntheticImage(tracks: 40, sides: 2);
+        var disk = new DskImage(image);
+        Assert.False(disk.IsDirty);
+    }
+
+    [Fact]
+    public void WriteSector_SetsDirty()
+    {
+        var disk = DskImage.CreateBlank(tracks: 40, sides: 2);
+        disk.WriteSector(0, 0, 1, new byte[256]);
+        Assert.True(disk.IsDirty);
+    }
+
+    [Fact]
+    public void WriteSector_WhenWriteProtected_DoesNotSetDirty()
+    {
+        var disk = DskImage.CreateBlank(tracks: 40, sides: 2);
+        disk.WriteProtected = true;
+        disk.WriteSector(0, 0, 1, new byte[256]);
+        Assert.False(disk.IsDirty);
+    }
+
+    [Fact]
+    public void MarkClean_ClearsDirty()
+    {
+        var disk = DskImage.CreateBlank(tracks: 40, sides: 2);
+        disk.WriteSector(0, 0, 1, new byte[256]);
+        Assert.True(disk.IsDirty);
+
+        disk.MarkClean();
+
+        Assert.False(disk.IsDirty);
+    }
+
+    [Fact]
+    public void MarkClean_ThenWriteAgain_ReSetsDirty()
+    {
+        // The flag isn't sticky-false after the first save (project CLAUDE.md §13.20a test (e)).
+        var disk = DskImage.CreateBlank(tracks: 40, sides: 2);
+        disk.WriteSector(0, 0, 1, new byte[256]);
+        disk.MarkClean();
+
+        disk.WriteSector(0, 0, 2, new byte[256]);
+
+        Assert.True(disk.IsDirty);
+    }
+
+    // ---- GetBytes (host Save/Save-as, project CLAUDE.md §13.20 test (h)) ------------------------
+
+    [Fact]
+    public void GetBytes_ThenReload_RoundTripsByteIdentical()
+    {
+        // Needs a genuine on-disk label to survive a reload-by-bytes (auto-detect reads it back)
+        // — a truly blank/unformatted image has none, by design (the "genuinely unformatted"
+        // guarantee this same file's CreateBlank tests pin down), so this uses a labeled
+        // synthetic image instead, matching the mount-an-existing-file path GetBytes exists for.
+        var disk = new DskImage(BuildSyntheticImage(tracks: 40, sides: 2));
+        var pattern = new byte[256];
+        for (var i = 0; i < 256; i++) pattern[i] = (byte)(i ^ 0x5A);
+        disk.WriteSector(3, 1, 5, pattern);
+
+        var saved = disk.GetBytes();
+        var reloaded = new DskImage(saved);
+
+        Assert.Equal(pattern, reloaded.ReadSector(3, 1, 5).ToArray());
+        Assert.Equal(disk.Tracks, reloaded.Tracks);
+        Assert.Equal(disk.Sides, reloaded.Sides);
+    }
+
+    [Fact]
+    public void GetBytes_ReturnsACopy_NotTheLiveBackingArray()
+    {
+        var disk = DskImage.CreateBlank(tracks: 40, sides: 2);
+        var bytes = disk.GetBytes();
+        bytes[0] = 0xFF;
+
+        foreach (var b in disk.ReadSector(0, 0, 1)) Assert.Equal(0x00, b);
+    }
 }

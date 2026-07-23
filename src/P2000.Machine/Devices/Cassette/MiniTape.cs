@@ -35,6 +35,7 @@ public sealed class MiniTape
     private readonly bool[] _protected = new bool[Sides];
     private int _position;
     private int _side;
+    private bool _dirty;
 
     public MiniTape()
     {
@@ -54,6 +55,18 @@ public sealed class MiniTape
     /// <summary>True when the current side is write-protected.</summary>
     public bool IsProtected => _protected[_side];
 
+    /// <summary>True once a write has mutated this tape since it was mounted/created/last saved
+    /// (project CLAUDE.md §13 milestone 20a) — the machine-layer signal the UI's unsaved-changes
+    /// eject/replace warning hangs off. Whole-tape, not per-side (matches
+    /// <see cref="MdcrDevice"/>'s "per device" framing, one physical cassette). Mounting/creating
+    /// never sets it; only <see cref="MarkSaved"/> (called after a successful host Save/Save-as)
+    /// clears it back.</summary>
+    public bool IsDirty => _dirty;
+
+    /// <summary>Clears <see cref="IsDirty"/> — call after a successful host-side Save/Save-as.
+    /// Does not touch tape content.</summary>
+    public void MarkSaved() => _dirty = false;
+
     // ---- Head operations (one phase at a time) ------------------------------------
 
     public bool Read() => _phases[_side][_position];
@@ -62,7 +75,10 @@ public sealed class MiniTape
     public void Write(bool phase)
     {
         if (!_protected[_side])
+        {
             _phases[_side][_position] = phase;
+            _dirty = true;
+        }
     }
 
     // ---- Motor -------------------------------------------------------------------
@@ -138,6 +154,7 @@ public sealed class MiniTape
             && casImage.Length > ProtectByteOffset
             && (casImage[ProtectByteOffset] & ProtectBit) != 0;
         _position = 1; // just past the BOT sensor — IsAtEnd(0) would keep BET=0 forever
+        _dirty = false; // a freshly-loaded tape has no unsaved changes yet
     }
 
     /// <summary>Sets write-protect on the current side live (project CLAUDE.md §17,
@@ -185,6 +202,7 @@ public sealed class MiniTape
         if (_protected[_side]) return false;
         if (_position + PhasesPerBlock > PhasesPerSide) return false;
         WriteBlockFrames(header, data);
+        _dirty = true;
         return true;
     }
 

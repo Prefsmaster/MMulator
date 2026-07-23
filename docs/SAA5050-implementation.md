@@ -338,3 +338,56 @@ as the semantics reference.
 Log during milestone 5: whether set-at vs set-after matched P2000T output; the exact
 inverted-colour palette handling that matched hardware; any rounding edge cases. (Font is
 settled: standard UK SAA5050 set — see §8.) The owner syncs these into the reference doc.
+
+---
+
+## 12. Cross-check against an owner-reported display bug (2026-07-23, design-doc
+maintainer pass)
+
+**Report:** "Playing with the emulator I saw that the default 'odd field only' shows a
+different glyph representation than the real P2000, which looks like 'even field only'
+of the emulator. Question is: did we somehow swap even/uneven lines in SAA5050? If the
+visual part of the display starts its own even/uneven field logic, it could be off from
+the real field line parity when an uneven number of lines precedes the visual window."
+
+This doc's own §5 already flagged the exact mechanism most likely responsible, **two days
+before the bug was reported** — a genuine case of "the TODO we left ourselves turned out
+to matter." Restating it here as the primary suspect, plus a second independent
+candidate, both cross-referenced into `P2000T-reference.md` §4's "New flagged hypothesis"
+note (2026-07-23) so the two docs stay in sync:
+
+- **Most likely (this doc's own pre-existing TODO): the odd-only/even-only display-mode
+  selector may still be wired to the vestigial two-field-era `IsOddField`/`FrameComplete`
+  flag** rather than to genuine single-field scanline parity. Under the OLD (corrected
+  2026-07-21) model, that flag distinguished **which of two differently-rendered fields**
+  was current — "even field" = `SetCRS(false)` = an entire field of RAW rows only, "odd
+  field" = `SetCRS(true)` = an entire field of SMOOTHED rows only (see the historical text
+  preserved in §5 above). Under the corrected model there is no such split — one field
+  contains both raw and smoothed sub-scanlines, selected by CRS/RA0 within that field's
+  own data. If the display-mode branch was never updated to match — i.e. it still picks
+  between "the pass the old code called even" and "the pass the old code called odd"
+  instead of computing real odd/even scanline selection against the single-field model —
+  the label could point at the wrong content. This also fits the *qualitative* nature of
+  the report ("different glyph representation," not just a shifted half-image): an
+  all-raw field looks meaningfully different from an all-smoothed field, more so than a
+  pure line-parity swap would.
+- **Also possible: an absolute-scanline-counter re-zero at the visible window**, unrelated
+  to the two-field correction — see `P2000T-reference.md` §4 "Hypothesis A" for the full
+  reasoning (the 49-line, ODD-count pre-roll vblank means the first visible scanline is
+  absolute field-line 49, itself odd; a renderer that re-zeros to local line 0 at the
+  window boundary would invert every parity decision from there on).
+
+**Not resolved here — no source access from this doc-maintainer seat.** Both are flagged
+for Claude Code to check against the actual `P2000Video.cs`/SAA5050 rendering source, are
+NOT mutually exclusive (either or both could be contributing), and neither should be
+treated as confirmed until checked against real output. Findings go back into machine
+CLAUDE.md §17 per §11 above; the owner syncs them into both reference docs.
+
+**Owner decision (2026-07-23): leave the display-mode options as-is for now.** Claude Code
+analysed the pipeline against both hypotheses above and found that fully conforming to the
+corrected single-field FSM model would mean the non-authentic options — Interlaced/comb,
+Even-only, Progressive — could no longer exist as distinct modes (they depend on the very
+two-field machinery Hypothesis B flags as vestigial). The owner would rather keep all four
+options available and investigate real hardware output further before deciding whether to
+change anything. **Not resolved, not urgent — a deliberate pause, not a fix.** Revisit once
+better real-hardware reference material is available.

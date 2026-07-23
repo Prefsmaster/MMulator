@@ -693,9 +693,87 @@ in the precise mode once captured.
     the same correction — see those files for the rendering-mode implications
     (interlaced/comb should no longer be the default presentation mode; the owner's
     guidance is to default to the FSM-confirmed single-field/odd-scanline mode instead,
-    keeping interlaced as an opt-in extra).
+    keeping interlaced as an opt-in extra). **Note (2026-07-23): this file does not
+    actually exist in the current docs folder** — same gap `docs/MDCR-implementation.md`
+    had until the owner supplied it directly; if a copy exists from an earlier session,
+    worth re-uploading the same way, since several notes here point to it as holding
+    detail not duplicated in this doc.
+  - **New flagged hypothesis — possible odd/even field-parity inversion (owner-reported,
+    2026-07-23): "the default 'odd field only' shows a different glyph representation
+    than the real P2000, and looks like what 'even field only' [of the emulator] should
+    show."** Two candidate mechanisms, NOT mutually exclusive, both unverified against
+    actual source (no code access from this doc-maintainer seat — flagged for Claude Code
+    to check, not a confirmed bug either way):
 
----
+    **Hypothesis A — absolute-scanline counter re-zeroed at the visible window.** This
+    may be the **same root-cause SHAPE as the Ghosthunt contention-offset bug above** — a
+    component measuring line parity from a counter that resets to 0 at the start of the
+    active/visible window, instead of carrying the true absolute field-scanline number
+    through from field-line 0. The arithmetic that makes this plausible: **the pre-roll
+    vblank is 49 lines — an ODD count.** Real hardware's odd/even field-parity selection
+    (CRS/RA0, §4a below) is defined against the FIELD's own absolute scanline count
+    (0–312), and the manual states the display uses only the ODD absolute scanlines.
+    Because the offset into the active window is itself odd, the FIRST VISIBLE scanline
+    is absolute field-line **49 — itself odd** — so on real hardware it correctly counts
+    as one of the "odd" scanlines actually displayed. **If a renderer instead re-zeros
+    its own line counter at the start of the visible window** (treating the first
+    displayed scanline as local line 0, which is EVEN) **rather than carrying the true
+    absolute field-line number through, every parity decision for the rest of the active
+    window comes out inverted relative to real hardware** — which would look exactly like
+    the reported symptom. Check whether whatever computes "is this scanline odd or even"
+    for the CRS/RA0 sub-scanline selection uses the absolute field-scanline number (0–312,
+    offset by the 49-line pre-roll) or a window-local index that starts over at the first
+    visible line. If it's the latter, the fix is almost certainly to feed the SAME
+    absolute field-line counter the contention model already needs (§4's Consumer note
+    above) into the SAA5050 rendering path too, rather than maintaining two
+    independently-zeroed counters for what should be one shared notion of "where in the
+    field are we."
+
+    **Hypothesis B — the new display-mode selector still keyed off the vestigial
+    two-field-era `IsOddField`/`FrameComplete` flag, arguably the more likely candidate.**
+    `SAA5050-implementation.md` §5 flags this EXACT risk two days before the bug was
+    reported (dated 2026-07-21, in the same pass that corrected the two-field-interlace
+    assumption): *"The owner's `P2000Video.cs` exposes `FieldComplete` (every field) and
+    `FrameComplete` (odd-field only) to drive cadences — re-check which of these the
+    single-field default should actually key off, since 'odd-field only' was itself
+    premised on the (now-corrected) two-field model."* Under the OLD (now-corrected)
+    model, `IsOddField` didn't just track scanline parity — it selected which of TWO
+    DIFFERENT fetch/render passes a whole field used (the historical text preserved in
+    `SAA5050-implementation.md` §5 shows **even field → `SetCRS(false)` → raw rows only,
+    odd field → `SetCRS(true)` → smoothed rows only**, i.e. an entire field was rendered
+    as either all-raw or all-smoothed, never both). Under the CORRECTED model, a single
+    field contains BOTH raw and smoothed sub-scanlines, selected by CRS/RA0 **within**
+    that one field's own data — there's no longer a "the raw field" vs. "the smoothed
+    field." **If the new odd-only/even-only display-mode selector (§4 above, config axis)
+    was wired directly onto that legacy `IsOddField` toggle** — i.e. it picks between the
+    two OLD passes (whole field of raw vs. whole field of smoothed) rather than
+    recomputing genuine odd/even scanline selection from the corrected single-field
+    model — the label "odd-only" could end up showing what used to be produced by the
+    pass the old code called the *even* field, or vice versa, independent of any
+    off-by-one in Hypothesis A. This would also explain a "different glyph
+    representation" (not just a vertical half-resolution shift): an all-raw field looks
+    visibly different from an all-smoothed field (no diagonal rounding at all vs. full
+    rounding), which is a bigger, more qualitative difference than a one-line vertical
+    parity shift would produce — arguably a closer match to "different glyph
+    representation" than Hypothesis A's pure line-parity explanation. Check what the
+    odd-only/even-only display-mode branch actually reads: if it still branches on
+    `IsOddField`/`FrameComplete` (or an internal equivalent) to pick a whole differently-
+    rendered field rather than computing "is THIS scanline one of the odd absolute
+    scanlines" from the single-field data both modes now share, that's very likely it —
+    see `SAA5050-implementation.md` §12 for the corresponding write-up in that doc.
+
+  - **Owner decision on the investigation (2026-07-23): leave the display-mode options as
+    they are for now, do not act on Hypothesis A/B yet.** Claude Code analysed the display
+    pipeline per the two hypotheses above; the finding was that staying strictly faithful to
+    the corrected single-field FSM model would mean the "extra" options — Interlaced/comb,
+    Even-only, Progressive — could no longer exist as genuinely distinct modes (per the
+    corrected model, only ONE field-derived image is authentic; the others depend on the old
+    two-field-alternation machinery this hypothesis flags as vestigial). **The owner prefers
+    to keep all four options available** rather than remove the three non-authentic ones,
+    and plans to investigate real hardware output further before deciding whether/how to
+    change the default or the option set. **Not a bug fix, not closed — a deliberate "leave
+    as-is for now."** Revisit once the owner has more real-hardware reference footage/photos;
+    until then this is not to be treated as urgent or as blocking other milestones.
 
 ## 4a. Derived timing framework (PAL 625-line)
 
@@ -719,7 +797,11 @@ Keyed off the PAL line period and the 2.5 MHz clock:
   MAME are genuinely interlaced) carried into the reference model, not a P2000T hardware fact —
   see `SAA5050-implementation.md` §5 and CLAUDE.md §3 for the full correction and the owner's
   resulting decision on the default rendering mode (single-field/odd-scanline, not
-  interlaced/comb).
+  interlaced/comb). **See §4's "New flagged hypothesis" note (2026-07-23) if odd-only/even-only
+  ever look swapped relative to real hardware** — the CRS/RA0 parity here is defined against the
+  field's own absolute scanline count, not a window-local one, and the 49-line (odd) pre-roll
+  offset is exactly the kind of thing that inverts parity if a renderer re-zeros its counter at
+  the start of the visible picture instead.
 
 **Vertical structure — CONFIRMED (2026-07-19, owner-supplied P2000TM Field Service
 manual, "T-VERSION VIDEO GENERATION"), upgraded from derived to sourced, with the

@@ -419,6 +419,61 @@ block, bumped at build time (`CurrentVersion`/`MinVersion = 3`); v2 files are no
 the discipline working as designed — every device-block change bumps at build time, never
 retroactively.
 
+**OPEN DESIGN QUESTION (owner, 2026-07-23), deliberately not decided yet — whether/how UI-layer
+session state gets persisted at all, and everything downstream of that.** The owner is considering
+whether a saved session should also capture UI state — which windows are open, a memory-watch
+window's configured range, etc. — alongside the machine's own `.state`. Nothing here is decided:
+not whether this happens, not whether it lives inside `.state` itself (a new "UI blob" section,
+machine-agnostic and owned by `P2000.UI`), in a separate sidecar file next to `.state`, or
+somewhere else entirely. **This directly blocks two small, otherwise-ready decisions from
+being made independently:** per-drive disk write-protect persistence (machine milestone 20) and
+the cassette/disk `IsDirty` dirty-flag persistence (machine milestone 20a) were each flagged as
+"pick session-only vs. some persistence mechanism" — but picking a mechanism for either one right
+now would mean guessing at an answer to this bigger, still-open question. The owner's reasoning:
+**cassette write-protect is already part of `.state`** (`MdcrDevice`'s `Protected` field,
+`docs/MDCR-implementation.md` §7) — a `.state` load is supposed to bring the machine back exactly
+as it was, so treating disk write-protect and `IsDirty` any differently would be an inconsistency,
+not a simplification. Whatever container ends up holding "everything needed to resume exactly
+where the user left off" is where these two belong — genuinely undecided until that container is
+decided, not because no one has thought about it. **Do not pick a mechanism for either item before
+this is resolved** — revisit both the moment the UI-state question is settled.
+
+**A second, related sub-question under the same umbrella (owner, 2026-07-23): should mounted
+media CONTENT itself travel inside `.state`, making a save fully self-contained and shareable
+("send a state to a friend" without also sending the `.cas`/`.dsk` files separately)?** This is
+distinct from the UI-state question above but sits in the same "what does a saved session actually
+contain" design space, and it **reopens an already-made decision, not a fresh one:**
+- **Cassette — currently does NOT embed content.** The milestone-9 finding (`P2000.Machine`
+  CLAUDE.md §17, 2026-07-05) decided `.state` saves tape `Position`+`Side` only, matching the
+  ROM-not-saved precedent (§3a above) — the mounted `.cas` must be remounted after `LoadState`.
+  `docs/MDCR-implementation.md` §7 still carried the ORIGINAL open framing of this question
+  (never updated after the decision was made) — corrected there this pass, and reopened per this
+  note.
+- **Disk — undecided either way.** Machine milestone 20's per-drive `.state` shape
+  ("mounted-image-ref") hasn't picked between "a path, remount required" and "the actual bytes" —
+  genuinely open, not defaulting silently to either.
+- **If this gets built, the natural shape differs by device, and the pieces already mostly
+  exist or are already planned:** disk images are already compact raw sector dumps (140k–560k
+  per drive, up to ~2.24 MB for 4 double-sided drives) — cheap to embed directly. The cassette's
+  in-memory representation is a ~1 MB/side raw phase-bit array, NOT cheap to embed directly, but
+  `docs/MDCR-implementation.md` §8 already calls for a bitstream→`.cas` serializer (currently
+  MISSING — needed anyway for the UI's "Save as .cas" feature) whose compact output (tens of KB,
+  not ~1 MB) is what should get embedded instead of the raw array — one serializer, two
+  consumers, not a redundant second one built just for `.state`.
+- **Compression (owner's parenthetical "(the compressed?) state") is an open, low-risk detail,
+  not a blocking one** — raw disk sector dumps and `.cas`-format bytes both compress well
+  (large runs of unformatted/blank space, repetitive framing), so gzip/deflate over the embedded
+  blob(s) is a reasonable default if/when this is built, but the algorithm choice doesn't gate
+  the bigger embed-or-not decision above.
+- **A nice side effect if this is adopted:** it would resolve the write-protect/`IsDirty`
+  persistence deferrals two paragraphs up almost for free — once a drive's/cassette's actual
+  content lives inside the same state blob, persisting a couple of extra booleans alongside it
+  is a trivial addition, not a separate mechanism to design. Worth deciding the embed-or-not
+  question with that in mind.
+- **Not yet decided — flagging, not picking.** Revisit whenever `.state`'s device-block shape for
+  cassette/disk is next touched (a version bump either way, per the "every device-block change
+  bumps at build time" discipline already in place).
+
 ### File extensions (DECIDED)
 - **Monitor ROM / cartridges: standard `.bin` / `.rom` — NO custom extensions.** These are raw
   binary dumps identical to what MAME/preservation sites distribute; a custom `.p2kr`/`.p2kc`
@@ -831,6 +886,26 @@ Fixed 64 KB layout:
 | 0xA000–0xDFFF  | 16 KB expansion                 |
 | 0xE000–0xFFFF  | 8 KB **bank-switched** window   |
 
+**CONFIRMED, independently, by the official Philips "P2000 System T&M Reference Manual"
+(2026-07-23, owner-supplied 144-page scan, personally read page-by-page — `raw-conversion.md`
+in this docs folder is the full transcription).** Chapter 4's own Figure 2 memory map and the
+accompanying §4.2 text lay out the identical structure using the manual's own words: monitor
+ROM 4k (fixed, CPU board), ROM key up to 16k (`0x1000`–`0x4FFF`), video memory 4k (`0x5000`–
+`0x5FFF`, split "video page 1"/"video page 2" of 2k each), system RAM 16k, and "two extensions,
+each of 16k" for applications — matching this table's Base RAM / 16 KB expansion / bank-switched
+window exactly, right down to the address boundaries. The manual is explicit that **"if the
+system includes flexible disks, these extensions must both be present, since the disk controller
+software is stored in here"** — i.e. on the real hardware, a disk-equipped machine could never
+be RAM-starved at `0xA000`–`0xFFFF`, an implicit lower bound this project hadn't previously
+stated in those terms. One minor, low-stakes internal wrinkle in the manual itself, flagged not
+resolved: §4.5.1's Figure/table gives the monitor's own RAM area as `0x6000`–`0x61FF` ("200
+hex bytes" = 512 bytes) as a block label, while the manual's OWN detailed byte-by-byte listing
+(same section, and §4.5.2's "start of application RAM" note) only actually documents monitor +
+disk-driver usage through `0x608F`/`0x6090` (144 bytes, matching this project's own confirmed
+figure elsewhere) — the widerFigure-2 block looks like a rounded-up region boundary rather than a
+literal usage count; not something this project needs to reconcile since the 144-byte figure is
+what's actually backed by the RAM-variable table.
+
 **The 0x5000–0x5FFF block is MODEL-SPECIFIC — the map is NOT a T superset:**
 - **P2000T:** 2 KB video RAM (0x5000–0x57FF) + 2 KB unused/open-bus (0x5800–0x5FFF).
 - **P2000M:** the **full 4 KB (0x5000–0x5FFF) is video memory** — consistent with the M being
@@ -890,6 +965,16 @@ variant table lists **T/102 = 80 KB** and **PTC-96K = 96 KB**. Those can't come 
 PTC-96K are *Philips* model names — so their actual board is what needs documenting.) Treat T/54
 (base + BANK0 = 32 KB) and the `RAMSW` BANK1 toggle as confirmed; flag T/102's 80 KB and PTC-96K
 until the board that reaches them is documented.
+
+**Corroborating evidence for T/102's 80 KB, from the M2200 manual (2026-07-23, NOT the same
+claim as "the board is confirmed identical"):** the M2200 multi-function board's own bank-switch
+is a 3-bit register selecting 6 banks × 8 KB (`docs/M2200-implementation.md` §2.2) sitting behind
+a contiguous 32 KB base (0x6000–0xDFFF) — **32 KB + 48 KB banked = 80 KB exactly, matching T/102's
+figure.** This is the first source this project has with an exact bit-count/bank-count for an
+80-KB-class board, and the arithmetic lands precisely on T/102 — strong corroboration that a
+T/102-class bank-switch mechanism looks like "3 bits, 6 banks," without claiming a Philips-branded
+T/102 unit and Miniware's M2200 are literally the same hardware (M2200 is explicitly a third-party
+board). Treat T/102 as "very probably a 3-bit/6-bank scheme" rather than fully unconfirmed.
 
 ### Memory topology = THREE tiers (bare / RAM-only board / floppy+RAM board) — CONFIRMED
 The bare motherboard has a **fixed** memory configuration; larger configs come from an
@@ -1050,13 +1135,23 @@ The machine object builds a **page table** over the 64 KB space when assembled (
   non-inverted sync.
 
 ### Storage
-- Built-in Mini-Cassette (MDCR) drive, ~42 KB per side, **6000 baud**, FM encoding,
-  directly-coupled analog circuitry. Treated like a floppy from the user's view
-  (CLOAD / CSAVE / directory). **CONFIRMED against the owner's BASIC manual (2026-07-14):**
-  stated capacity is **42 blocks per side** — at the confirmed 1024-byte data payload per
-  block (§5b), 42 × 1024 = 43,008 bytes ≈ 42 KB, matching this figure exactly. Two independent
-  sources (ROM-disassembly block-size math, the printed manual's stated capacity) agree — see
-  §5b "Tape capacity" for whether this is actually enforced as a limit yet.
+- Built-in Mini-Cassette (MDCR) drive, ~42 KB per side, **6000 baud**, **phase encoding**
+  (CORRECTED 2026-07-23 — was "FM encoding"; see below), directly-coupled analog circuitry.
+  Treated like a floppy from the user's view (CLOAD / CSAVE / directory). **CONFIRMED against
+  the owner's BASIC manual (2026-07-14):** stated capacity is **42 blocks per side** — at the
+  confirmed 1024-byte data payload per block (§5b), 42 × 1024 = 43,008 bytes ≈ 42 KB, matching
+  this figure exactly. Two independent sources (ROM-disassembly block-size math, the printed
+  manual's stated capacity) agree — but see §5b "Tape capacity" for a NEWER 40-vs-42 conflict
+  from the official T&M manual and the owner's own working implementation, which now weighs
+  toward 40; not yet fully resolved.
+  - **CORRECTED (2026-07-23, `docs/MDCR-implementation.md` §12, cross-checked against the
+    official T&M Reference Manual):** the encoding is **phase encoding**, not FM. The owner's own
+    working `MdcrDevice`/`MiniTape` implementation's phase-locked-loop recovery (a bit's value is
+    the transition DIRECTION across a fixed 2-phase window, not an FM presence/absence-of-pulse
+    scheme) matches the manual's Ch5.1 description verbatim, and both now outweigh whatever
+    earlier assumption produced "FM-encoded" here. See §5b below and
+    `docs/MDCR-implementation.md` §12 for the full citation trail — this is a correction, not a
+    still-open flag, given two independent, converging primary sources.
 
 ---
 
@@ -1252,7 +1347,10 @@ The Philips MDCR (Mini Digital Cassette Recorder) is a **digital block device**,
 analog audio cassette. You do NOT model waveforms / pulse trains the way a C64 or
 Spectrum emulator must. The controller deals in bits and blocks; the `.cas` image *is*
 the logical tape content. This is why both speed modes come out clean.
-- ~42 KB per side, **6000 baud**, FM-encoded, directly-coupled analog circuitry to the
+- ~42 KB per side, **6000 baud**, **phase-encoded** (CORRECTED 2026-07-23 — was "FM-encoded";
+  see the Storage section above and `docs/MDCR-implementation.md` §12 for the full citation:
+  the owner's own working PLL-based implementation and the official T&M manual both describe
+  transition-direction/phase encoding, not FM), directly-coupled analog circuitry to the
   head (the analog part is below the digital interface you emulate).
 - Bidirectional, **floptical-style random-ish access**: treated like a floppy. CLOAD
   searches the tape for a named program; CSAVE finds free space; a directory command
@@ -1401,6 +1499,10 @@ Specifically still to pin down (from the two sources above, not invented here):
   name (e.g. `cload "h"` matches `"hello world"`). Relevant to your search emulation.
 
 ### Tape capacity — CONFIRMED figure (2026-07-14), NOT YET an enforced emulator limit
+**(2026-07-23: this 42-blocks-per-side figure now has a genuine, unresolved conflict — see the
+"Cross-check against the official T&M Reference Manual" subsection later in this section, and the
+follow-up update right after the flagged discrepancy there, for the current state of the
+40-vs-42 question.)**
 - **CONFIRMED (owner's BASIC manual):** capacity is **42 blocks per side** — cross-checks
   exactly against the ~42 KB/side figure in the Storage section above (42 × 1024-byte block
   data payload = 43,008 bytes ≈ 42 KB). Two independent sources — ROM-disassembly block-size
@@ -1420,6 +1522,91 @@ Specifically still to pin down (from the two sources above, not invented here):
   can silently exceed real hardware capacity — not period-accurate, and worth a deliberate
   decision (enforce the real limit, or explicitly accept the simplification) rather than
   leaving it as an accident of buffer sizing.
+
+### Cross-check against the official T&M Reference Manual (2026-07-23) — mostly strong
+corroboration, TWO flagged discrepancies neither silently resolved
+Chapter 5 "MINI-DIGITAL CASSETTE" (personally read page-by-page, `raw-conversion.md` PDF pp.59-77)
+gives an independent, primary-source description of the same hardware this section models.
+
+**Strong corroboration — block/record structure matches almost exactly:**
+- **Mark bytes match exactly:** §5.2.2 gives the 4-byte mark as `10101010` (preamble) / `00000000`
+  / `00000000` / `10101010` (postamble) — byte-for-byte the same as this project's confirmed
+  `MARK (0xAA 0x00 0x00 0xAA)`.
+- **Combined header+data frame size matches:** the manual's data record = sync byte (1) + header
+  (32) + data (1024) + checksum (2) + post-sync (1) = **1060 bytes** — exactly this project's
+  confirmed "combined HEADER+DATA frame 1060 B" figure (the manual's OWN block-diagram prose
+  elsewhere states "1056 bytes of recorded data" for the same section, which doesn't sum from its
+  own five listed parts — a minor internal arithmetic slip in the manual, not a discrepancy with
+  this project's figure, which matches the itemized breakdown).
+- **32-byte header field layout matches this project's `0x6030`-`604F` cassette file descriptor**
+  almost exactly: transfer address (2B) / total length (2B) / valid length (2B) / name (8B) /
+  extension (3B) / file type (1B) / data code (1B) / start address (2B) / load address (2B) /
+  reserved (8B) / record number (1B) — same field order, same sizes, same RAM offsets (`0x6030`
+  onward). **One thing to flag, not a contradiction:** this project's earlier notes describe the
+  file name as "split 0x06–0x0D + 0x17–0x1E" (implying a second name-like field at header offset
+  23-30), but the manual states header offset 23-30 (i.e. `0x6047`-`0x604E`) is **"Reserved for
+  future use."** Likely explanation (not confirmed): the M2000 `.cas` container format — this
+  project's OTHER authoritative cassette source, layered on top of the raw ROM record shape — may
+  use those reserved bytes for its own extended metadata (e.g. a "creator" field) that has no
+  counterpart in the genuine on-tape/ROM-native 32-byte header the manual describes. Whoever next
+  touches `.cas` header parsing should check `MiniTape`'s actual field offsets against BOTH
+  sources rather than assuming the M2000-format field at that offset is also what real hardware
+  wrote to tape.
+- **Gap timings match this project's timing figures closely:** start gap ≈515 ms, mark gap ≈85 ms,
+  end gap ≈155 ms (§5.1.2 "BLOCK") — consistent with (not previously stated in this level of
+  detail in) this project's authentic-mode timing model.
+- **Error codes (§5.4) are a useful, previously-unsourced addition** — 14 named error values
+  (`0x41` no tape/door open, `0x42` BOT, `0x43` checksum, `0x44` mark checksum, `0x45` EOT-on-
+  write, `0x46` tape-full, `0x47` write-protected, `0x49` rewind timeout, `0x4A` tape torn, `0x4B`
+  invalid function, `0x4C` EOT-on-read, `0x4D` no mark found, `0x4E` no record found) — worth
+  cross-checking against `cassette_error` (`0x6017`)'s actual values in the disassembly next time
+  that code path is touched; not yet done as part of this pass.
+
+**Flagged, NOT resolved — capacity: 40 blocks/side (manual) vs. 42 blocks/side (this project's
+prior CONFIRMED figure, sourced from the owner's BASIC manual).** §5.2 states plainly: *"Each
+track (or side) of a cassette is divided into 40 blocks of information. A file may comprise
+between 1 and 40 blocks."* This directly conflicts with the existing "42 blocks per side" figure
+above, which was itself cross-checked against an independent ~42 KB/side figure derived from
+ROM-disassembly block-size math. Both figures now have primary-source backing from DIFFERENT
+manuals (this T&M Reference Manual vs. the owner's BASIC manual) — genuinely unresolved, not a
+transcription slip on either side as far as this pass can tell. Possible explanations, none
+confirmed: (a) the 40-block figure is a conservative/nominal spec while real tape length allows a
+couple more blocks of physical margin; (b) the two manuals describe different tape stock/formats;
+(c) one of the two source manuals is simply wrong. **Not silently resolved either direction** —
+flag for the owner to arbitrate if the exact per-side block ceiling ever becomes load-bearing
+(e.g. an emulator-enforced capacity limit, per the still-open item above).
+
+**UPDATE (2026-07-23) — a THIRD source now weighs in, shifting the balance toward 40, still not
+silently resolved.** `docs/MDCR-implementation.md` (the owner's actual working `MdcrDevice`/
+`MiniTape` implementation guide, re-added to the docs folder this pass) §6 independently derives
+**"~40 data blocks per tape with slack"** from the real block/gap byte-size constants in the
+working code — arrived at completely independently of the T&M manual (it's sized from the
+implementation's own `WriteData`/gap-timing constants, §12 of that doc has the full arithmetic).
+That makes it **40-and-40 (manual + working implementation) vs. 42 (the BASIC manual)** — two
+independent sources now agree with each other and against the third. This meaningfully shifts
+where the evidence points, but the BASIC manual is a real primary source too (and may describe a
+different thing — e.g. a practical recommended limit rather than the physical block ceiling), so
+this remains flagged for the owner to arbitrate rather than corrected outright.
+
+**Flagged, NOT resolved — encoding scheme: "phase-encoded" (manual) vs. "FM-encoded" (this
+project's prior description).** §5.1 states cassette data is recorded *"in phase-encoded form;
+that is, a one bit is represented by the transition between a low value and a high value on the
+read/write head line, and a zero bit by a high-low transition"* — this is a description of
+**phase encoding (Manchester-style)**, not frequency modulation. This project's existing write-up
+above (Storage section) describes the cassette as "**FM-encoded**." The two encoding schemes are
+electrically different (FM keys off pulse-presence-per-cell; phase/Manchester encoding keys off
+transition DIRECTION at each clock edge) even though both are "self-clocking, one transition per
+bit" schemes that can look superficially similar. Note this is the OPPOSITE direction of the
+disk-encoding discrepancy above (§5d: manual says disk is FM despite being called
+"double-density," which conventionally implies MFM) — here, for the cassette, the manual is
+explicit about phase encoding while this project's existing description says FM. Since the
+authentic-mode cassette timing model in this project works at the RDC/RDA (self-clocking
+read-clock + data level) port abstraction (§ above) rather than modeling flux transitions
+directly, this discrepancy is not currently load-bearing for the emulator's behavior — but it
+should be corrected in this doc's own prose (the "FM-encoded" phrase) rather than left as a
+silent error, since the manual is a substantially more specific and P2000-hardware-specific
+source than whatever prior assumption produced "FM-encoded." Flagged for a future editing pass
+to fix the word, not resolved by editing it out in the same breath as writing this note.
 
 ---
 
@@ -1574,6 +1761,24 @@ port." Because `0x62` makes the DIP switches bus-readable, their value must be *
 apply, same discipline as §3a generally) **and** a live `IIoSlot`-registered read-only register
 backing that same value, so the two representations can never drift apart.
 
+**The official Philips manual's own "I/O SLOT" appendix — read (2026-07-23), flagged rather than
+reconciled, NOT yet folded into the pinout tables above.** The manual (Ch1.5 "I/O SLOT": *"the
+second slot in the top of the main unit, behind the ROM key can hold one of several different
+modules to perform I/O"* — this is unmistakably describing SLOT2) has its own **Appendix C — I/O
+SLOT PINNING**, which lists pins **1–9 and 20–24 only** (not a contiguous 1–15/30-contact
+layout) with **CCITT V.24 circuit-style names** — Transmit data (103), Receive data (104), Request
+to send (105), Clear to send (106), Data set ready (107), Signal ground (102), Carrier detect
+(109), Select standby (116), Data terminal ready (108/1, 108/2), Calling indicator (125), data
+signalling rate selector (111), terminal equipment transmitter signal element timing (113). This
+reads as the **RS232-circuit-function view of SLOT2's pins as wired for a serial card**
+specifically (i.e. what a modem/serial SLOT2 card sees data/handshake-wise), not a full
+generic-connector pinout — it does not list D0–D7, A0–A7, RD/WR/IOREQ/M1/INT/RES, the clocks, or
+the power rails that the pin-numbered SLOT2 table above (sourced from the Field Service Manual)
+does cover. The two tables use **incompatible pin-numbering schemes** (1–15 A/B-side vs. a flat
+1–24) and can't be merged mechanically without a physical connector diagram to correlate them —
+flagged as an open cross-reference for whoever eventually needs the exact SLOT2-to-RS232-circuit
+pin mapping (e.g. wiring a real SLOT2 serial card's DB25 breakout), not resolved here.
+
 **Internal extension slot — CONFIRMED (full Z80 bus: memory + I/O).** 40-pin connector, 2
 rows of 20 (row 1 = odd pins, row 2 = even pins). Pins 27–37 active-low. **Home of the
 floppy/CTC card** (populated in M, optional on T).
@@ -1636,7 +1841,7 @@ Reading (CONFIRMED):
   motherboard-decoded from board presence? (Function itself confirmed — see above.)
 
 **Daisy-chaining on the M — CONFIRMED (Field Service Manual, "INTERCONNECTIONS", §3.8.1/§3.8.11,
-owner-supplied page references, 2026-07-24), CORRECTS an earlier mis-scoping this pass:**
+owner-supplied page references, 2026-07-23), CORRECTS an earlier mis-scoping this pass:**
 - **§3.8.1 "CPU BOARD TO VIDEO OR EXTENSION BOARD"** is this exact connector (its pinout table
   matches the one above pin-for-pin: D0–D7, A0–A14, RAMS/RAMS2, MRQ, RD, INT, WR, IOREQ, WAIT,
   M1, RES, LOCK, RFSH, DEW/R2425, the three clocks). The connector's own name confirms it goes
@@ -1650,7 +1855,7 @@ owner-supplied page references, 2026-07-24), CORRECTS an earlier mis-scoping thi
   on the M, the physical order is **CPU board → video board → a further extension board**,
   all sharing the same logical Z80 bus (memory + I/O), the video board acting as a pass-through/
   buffer stage rather than terminating the chain.
-- **Known real card that plugs in HERE, not SLOT2 — CORRECTED (owner, 2026-07-24, walking back
+- **Known real card that plugs in HERE, not SLOT2 — CORRECTED (owner, 2026-07-23, walking back
   the previous pass's "SLOT2" placement): the M2200 multi-function board.** It has a
   **real-time clock (RTC) with a small battery-backed memory** for time, date, and alarms. On a
   T it would plug directly into this internal slot (§3.8.1); on an M it would plug into the
@@ -1674,20 +1879,25 @@ owner-supplied page references, 2026-07-24), CORRECTS an earlier mis-scoping thi
 
     | Port(s) | Feature | Notes |
     |---------|---------|-------|
-    | `0x84`/`0x85` | Serial — RS232 (data/control) | **Z80 SIO channel A.** NOT the same chip as the SLOT2 Serial card's plain UART above — do not share a device class between them. |
+    | `0x80`-`0x83` | **CTC2 — a SECOND Z80 CTC (Z8430), CONFIRMED (owner-supplied full M2200 manual, 2026-07-23)** | Not previously documented anywhere in this project. Mostly dedicated to serial baud-rate generation (ch0 = RS232 Rx, ch1 = RS232 Tx, ch2 = optional RS422 baud/free, ch3 chained off ch2). Sits LOWEST in the M2200 daisy chain, behind the SIO. Full detail in `docs/M2200-implementation.md` §3.5/§4. |
+    | `0x84`/`0x85` | Serial — RS232 (data/control) | **Zilog Z8440 (Z80-SIO/0) channel A** — chip identity CONFIRMED via parts list. NOT the same chip as the SLOT2 Serial card's plain UART above — do not share a device class between them. Daisy-chain participation CONFIRMED (sits between CTC1 and CTC2). |
     | `0x86`/`0x87` | Serial — RS422 (data/control) | Z80 SIO channel B. |
-    | `0x8C`/`0x8D`/`0x90` | FDC | **Same ports as the FDC already documented in §5d.** Owner's own words: "AFAIK, the FDC registers are the same as for the now implemented version" — treat as a probable literal drop-in of the existing FDC device, but the "AFAIK" hedge stays unconfirmed until actually wired up against a real M2200. |
-    | `0x94` | RAM bank-switch (`RAMSW`) | **Same port as the plain floppy+RAM board's bank-switch** (§5 memory) — a second probable drop-in. Bit-width parity (1-bit original vs. wider homebrew decode, §5 memory) is NOT confirmed by the port address alone — open item. |
-    | `0x95`/`0x96`/`0x97` | RAM disk (track/sector/data) | Genuinely new — a separate device from the FDC, **not** a media variant of it (owner-confirmed: "RAM disk is port driven"). Note this does **not** actually collide with the plain board's FDC, despite both being loosely describable as living in a "94h-97h memory expansion/FDC cartridge" range — the plain board's real FDC lives at `0x8C`/`0x8D`/`0x90` (§5d), not in `0x95`-`0x97`. |
-    | `0x98`-`0x9B` | Centronics (data/status/strobe-on/strobe-off) | Strobe ports are access-triggered — read or write, same effect, data byte irrelevant. |
-    | `0x9C`/`0x9D` | RTC (select/data) | Indexed-register access - `0x9C` selects which RTC sub-register, `0x9D` reads/writes it. `Reset()` must preserve the battery-backed contents (see the non-volatility note above). |
+    | `0x8C`/`0x8D`/`0x90`-`0x93` | FDC | **Same port assignment as the FDC already documented in §5d** — but chip identity is revision-dependent: **the first ~100 M2200 units shipped with a µPD7265** (Sony-compatible format), **later units with the µPD765** (CONFIRMED, M2200 manual) — a µPD7265 unit is explicitly out of scope for now. **Connector CONFIRMED with 4 drive-select lines (`DRISEL0`-`3`)**, decoded from the chip's native US0/US1 via an external 2-to-4 decoder, gated by motor-on — a materially richer connector than the "2 drives" figure above; whether the plain single-purpose board's own connector matches is still open. Full detail (control-register bit table, clock/formatting caveat, drive-timeout watchdog) in `docs/M2200-implementation.md` §2.1. |
+    | `0x94` | RAM bank-switch (`RAMSW`) | **Same port as the plain floppy+RAM board's bank-switch** (§5 memory). **Bit-width now CONFIRMED for M2200 specifically: 3 bits, 6 banks × 8 KB (values 0-5, 6/7 alias to bank 0, default bank 0)** — the "homebrew wider decode" case §5 memory already anticipated. Corroborates (does not prove identical to) the `T/102` 80 KB variant's total. Full detail in `docs/M2200-implementation.md` §2.2. |
+    | `0x95`/`0x96`/`0x97` | RAM disk (track/sector/data) | Genuinely new — a separate device from the FDC, **not** a media variant of it (owner-confirmed: "RAM disk is port driven"). **Geometry CONFIRMED:** 256 B/sector, max 16 sectors/track, 64 KB or 256 KB total (track register 4 or 6 bits respectively). Contents confirmed to survive a reset-BUTTON press specifically (dedicated refresh-continuity circuit); full power-off persistence not stated. Full detail in `docs/M2200-implementation.md` §3.2. |
+    | `0x98`-`0x9B` | Centronics (data/status/strobe-on/strobe-off) | Strobe ports are access-triggered — read or write, same effect, data byte irrelevant. Status bits CONFIRMED: bit4 Error, bit3 Printer On, bit2 Paper Out, bit1 Busy, bit0 ACK. |
+    | `0x9C`/`0x9D` | RTC (select/data) | **Chip CONFIRMED: Hitachi HD146818** (MC146818-family — the same RTC used as the IBM PC/AT's CMOS clock), cross-confirmed via both owner statement and the M2200 manual's own parts list. **Full Register A/B/C/D bit layout now CONFIRMED** (update-in-progress, periodic/alarm/update-ended interrupt enables and flags, BCD/binary + 12/24-hour mode, crystal-select code) — see `docs/M2200-implementation.md` §3.1 for the complete table. IRQ wired to **CTC1 channel 2** (cross-confirms the already ROM-disassembly-sourced IM2 vector table, §5e). `Reset()` must preserve the battery-backed contents (see the non-volatility note above). |
 
-    **Design consequence:** M2200 = two features reused (very probably verbatim) from the plain
-    floppy+RAM board (FDC, RAM bank-switch) plus four features unique to this board (RAM disk,
-    RTC, Serial/SIO, Centronics). None of the four new features overlaps SLOT2's address space or
-    the plain board's FDC/bank-switch ports. The one open cross-card question is whether M2200's
+    **Design consequence:** M2200 = two features reused (port-compatible, though the FDC's exact
+    chip and the bank-switch's bit-width turned out to be board-specific facts of their own, now
+    resolved above) from the plain floppy+RAM board (FDC, RAM bank-switch) plus **five** features
+    unique to this board (RAM disk, RTC, Serial/SIO, Centronics, and a previously-undiscovered
+    second CTC). None of the five new features overlaps SLOT2's address space or the plain
+    board's FDC/bank-switch ports. The one open cross-card question is whether M2200's
     Centronics interface shares its register shape with a future SLOT2 Centronics card (SLOT2
-    Centronics ports not yet sourced). See `docs/M2200-implementation.md` for the full write-up.
+    Centronics ports not yet sourced). See `docs/M2200-implementation.md` for the full write-up,
+    including the full 10-member IM2 daisy chain (§4) and board-level I/O decode/connector/parts
+    detail (§5).
 
 ---
 
@@ -1714,6 +1924,50 @@ The CTC's four channels are **one port each, `0x88`–`0x8B`** (A0/A1 select). T
 earlier port conflict** — the service-manual "CTC 0x8C–0x8F" text was wrong; `0x88`–`0x8B` is
 correct, and the FDC lives at `0x8C`/`0x8D` (status/data) + `0x90` (control), superseding the
 manual's "FDC 8D–8F."
+
+**Independently corroborated (2026-07-23) by the official Philips T&M Reference Manual's own
+Appendix B ("PORTS")** — a different, primary-source document from the field-service manual
+referenced above, personally read page-by-page (`raw-conversion.md`, PDF pp.120-121). Its port
+table states: `88`/`89`/`8A`/`8B` = "Counter timer circuit channel 0/1/2/3" (one port per
+channel, exactly as this section already has it) and `8C-8D` / `90-93` = "Flexible disk
+controller" (grouping status+data and the control/DMA-req range together, consistent with this
+project's `0x8C`/`0x8D`/`0x90` — this manual doesn't break the FDC ports down further than that,
+so it neither confirms nor contradicts the exact `0x90`-only vs `0x90`-`0x93` control-range
+detail already sourced from the ROM disassembly). Also confirms from the same appendix: `0x50`-
+`0x5F` = Bell (matches the sound device's port `0x50` bit 0, §5 Sound), `0x30`-`0x3F` = Video
+horizontal-scroll (matches the confirmed pan register, port `0x30`, §5 Memory/video), and `0x70`-
+`0x7F` = video wait-lock, disabling the video-CPU-disable interrupt during disk/cassette transfer
+— an existing but previously uncited mechanism worth flagging for the contention model (§4): real
+hardware apparently disables the video-memory-access-lockout interrupt during disk/tape transfers
+specifically, which this project's contention model does not currently special-case. Not
+acted on here — flagged for whoever next touches the disk/cassette transfer path to check whether
+authentic-mode contention should be suppressed during an active disk/cassette I/O burst.
+
+**Extension Board signal listing — CONFIRMED (2026-07-23, manual's Appendix A, PDF pp.117-119),
+matches this project's model closely, with signal NAMES now independently sourced from a second
+document (previously only from the Field Service Manual):** `FDCS`/`FDCSEL` (select the µPD765,
+ports `0x8C`-`0x8F`), `CTCSEL` (select the CTC, ports `0x88`-`0x8B`), `SIOSEL` (ports `0x80`-
+`0x83` — on the plain board this is unused/reserved, since only M2200 populates a chip there;
+matches `docs/M2200-implementation.md` §3.5's CTC2 occupying that same range on M2200 instead of
+an SIO), `USAS` (ports `0x84`-`0x87` — "Select 8215 USART communications control"; almost
+certainly a scan/print artifact for the industry-standard **8251** USART, flagged verbatim in the
+transcription and not corrected here since no schematic confirms which chip the plain board
+actually used, if any — SLOT2's own serial card above is a plain UART, unrelated to this internal-
+slot signal), `MOTORON` (motor-on to disk drive — matches `MOTOR` bit3 of the `0x90` control latch
+above), `STEP` + `DIRECT` (step-one-track + track direction — matches the stepping-motor model,
+§2.1 above), `TRACK00` (matches the confirmed track-00 sensing), `WPROT` (write-protect sense —
+matches the confirmed write-protect signal), `INDEX` (sector-hole detector pulse, once per
+revolution — matches Ch2.1's LED/photodetector description), `READDATA`/`WRITEDATA` (serial data
+lines to/from the drive), `WCK` (4 MHz timing signal — matches the internal-slot connector's `T4M`
+4 MHz line already confirmed above), `FNR` ("Floppy not ready; active if, after 'head load', no
+index pulses are received from disk" — a hardware not-ready condition distinct from, but likely
+the same physical event that feeds, the CTC ch1 "disk not-ready" interrupt above), `FCS`/`FCDK`/
+`FCDR`/`FCINT`/`FRES` (floppy-controller select/data-acknowledge/data-request/interrupt/reset —
+these look like the internal glue-logic handshake between the FDC chip and the rest of the board,
+one level below the CPU-visible `0x8C`-`0x93` ports; not previously named in this project's docs).
+No new port-address information beyond what's already confirmed above, but the signal names
+independently corroborate the functional model (motor line, step/direction, track-00, write-
+protect, index, 4 MHz clock) without requiring any correction.
 
 **CTC control word** (write to a channel port with bit0 = 1):
 bit0 `CTRLWRD` (1 = control word) · bit1 `RESET` (1 = reset CTC) · bit2 `TCNEXT` (1 = next byte is
@@ -1752,9 +2006,61 @@ disassembly shows. See `docs/JWSDOS-format.md` §6 for the full driver sequence 
 is used in.
 
 **FDC = µPD765, semi-DMA, software-polled (CONFIRMED):** status/data via A0 (`0x8C` status = MSR,
-`RDY`/`REQ` bits; `0x8D` data); command/execute/result phases; MFM; 2 drives; write-protect +
-track-00 sensing; INT at the result phase → CTC ch0. During a read/write execute phase the driver
-polls the request bit and services each transfer itself (semi-DMA), not autonomous DMA.
+`RDY`/`REQ` bits; `0x8D` data); command/execute/result phases; MFM; **4 drives** (CORRECTED,
+2026-07-23 — see note immediately below); write-protect + track-00 sensing; INT at the result
+phase → CTC ch0. During a read/write execute phase the driver polls the request bit and services
+each transfer itself (semi-DMA), not autonomous DMA.
+
+**Drive count — CORRECTED to 4 (owner, 2026-07-23).** This doc previously stated "2 drives" for
+the plain floppy+RAM board, sourced from a Field Service Manual scan of poor quality — the owner
+has since identified that scan as the likely source of the error (a bad transcription of the
+connector pinout, not a genuine 2-drive-only board). **A separate, official Philips-authored P2000
+manual clearly states the expansion board supports up to 4 drives** — consistent with the M2200
+board's own CONFIRMED 4-drive connector (`DRISEL0`-`3`, `docs/M2200-implementation.md` §2.1/§5.2),
+and with M2200's own design intent as a drop-in replacement (with extras) for the official Philips
+memory/FDC card, per the owner. **Not yet independently reviewed by the maintainer against the new
+manual itself** (owner-reported, no document uploaded for this specific correction) — treat as
+CONFIRMED-by-owner-statement, same evidentiary weight as other owner-supplied facts elsewhere in
+this doc, and upgrade further if/when the manual itself is shared. This resolves the "does the
+plain board match M2200's connector" open item carried in `docs/M2200-implementation.md` §7 and
+in machine/UI CLAUDE.md's milestone 20/14 — both were flagging exactly this uncertainty, now
+closed: **4 drives is the hardware ceiling for both boards.**
+
+**Upgraded from owner-statement to directly-read primary source (2026-07-23) — the official
+Philips "P2000 System T&M Reference Manual" (144-page owner-supplied scan, personally read and
+transcribed page-by-page, `raw-conversion.md`).** Chapter 2 "FLEXIBLE DISKS" (§2.1 "Disk drive
+units") states verbatim: *"Two disk drive units can be supported by all P2000 models, and in some
+cases two more may be connected, allowing a total of four disks to be in use at one time, with a
+capacity of 560k bytes."* This independently corroborates (does not merely repeat) the
+owner-reported correction above — the maintainer has now read the primary source directly rather
+than relying on the owner's paraphrase. Also confirmed from the same chapter: **35 tracks, 16
+sectors/track, 256 bytes/sector = 140k/disk** (§2.2 "Disk format" — matches the project's own
+`getdos`-derived sector geometry exactly), single-sided double-density 5¼" media, 300 RPM,
+stepping-motor track positioning (2 steps/track), and Philips-only factory-preformatted disks (the
+manual states third-party blank disks aren't usable since the P2000 itself has no format
+capability documented in this manual — consistent with disk formatting/blank-disk creation being
+an emulator-only convenience feature, not a modeled real capability, per the machine milestone 20
+design).
+
+**Flagged, NOT resolved — an apparent encoding-scheme discrepancy in the manual's own words
+(2026-07-23).** §2.1 states disk data is recorded *"using frequency modulation; that is, each bit
+is recorded together with an associated clock pulse"* — this is textbook **FM encoding**, not
+MFM. The manual calls the media **"double-density"** in the same breath, which is the
+conventional shorthand for **MFM** in the era's own vocabulary (single-density ⇔ FM, double-
+density ⇔ MFM, for both 8″ and 5¼″ formats) — the manual's own text is internally in tension with
+its own "double-density" label. This project's existing FDC write-up above states **"MFM"**
+(sourced from the µPD765 chip's general capabilities, not from a primary P2000-specific source
+until now). Given the manual's explicit, unambiguous FM description directly contradicts the
+project's prior MFM assumption, and the manual is the single most authoritative primary source
+this project has for the physical disk format, **this is flagged as a real, unresolved
+discrepancy rather than silently corrected either way** — the µPD765 chip supports both FM and
+MFM via its own mode bit, so which one the real firmware actually programs is a firmware fact,
+not a chip limitation; nothing in the disassembly-derived command bytes (§ above) pins down the
+FDC's MF (bit 6 of the opcode byte) setting. **Action for whoever next touches FDC command-byte
+modeling:** check the actual opcode byte in the confirmed READ DATA/WRITE DATA command
+(`0x42`/`0x45`) against the µPD765 datasheet's MF bit position to settle this from the project's
+own already-confirmed data, rather than trusting either the manual's prose or this doc's prior
+assumption blind.
 
 **Z80-CTC channel roles — CONFIRMED (ROM):**
 - **ch0 (`0x88`, highest priority)** = timer / **FDC interrupt**: the µPD765 result-phase INT feeds
@@ -1797,7 +2103,7 @@ reconstructed MT/MF/SK bit-flag decomposition of the opcode:**
 | SENSE INTERRUPT STATUS | `0x08` | `08` | 2 result bytes (ST0 + PCN) |
 
 **Two confirmed µPD765 usage facts from real-ROM boot-test diagnosis (2026-07-22), both
-worth knowing beyond just "the FDC has 2 drives":**
+worth knowing beyond just "the FDC has 4 drives" (drive count corrected 2026-07-23, above):**
 - **The ROM driver hardcodes unit-select to drive 1, never drive 0.** `Disk.asm`'s
   `disk_constants` gives every "drive #" byte as `0x01` (matching the `01` first param byte in
   the SEEK/READ DATA/WRITE DATA rows above), and `disk_recall_cmd`'s own comment reads "device #
@@ -1935,6 +2241,16 @@ shortest possible delay.
   — and loads `0x60` into `I`. Table entries: ch0 `0x6020`, ch1 `0x6022`, ch2 `0x6024`, **ch3
   (`CTC_keyboard`) `0x6026`**. The probe stores the test handler at the ch3 slot; `CTC_testcode`
   later restores `keyscan` there.
+  - **Independently confirmed a THIRD time (2026-07-23), directly in the official manual's own
+    body text, not just an appendix** — this is the strongest possible corroboration this project
+    has for any single fact: the ROM disassembly, the Field Service Manual's appendix, AND now the
+    T&M Reference Manual's §3.2.2 "Keyboard initialise routine" state the identical table verbatim:
+    *"channel 0 — disk operation ready or timer CTC interrupt — 6020 hex; channel 1 — disk not
+    ready interrupt — 6022 hex; channel 2 — communication interrupt — 6024 hex; channel 3 —
+    keyboard timer interrupt (this is external to the CTC) — 6026 hex."* Word-for-word the same
+    channel-role assignment already documented here (ch0 disk/timer, ch1 disk-not-ready, ch2
+    comms, ch3 keyboard) — three independent sources now agree exactly, nothing left open on this
+    point.
 - **Detection diverts the boot flow — it does not "return true":** on the CTC interrupt,
   `CTC_testcode` **pops (discards) the interrupt return address** so control never falls back to the
   `IM 1` line; a present CTC simply takes over into keyboard-scan init. This is why absence needs no
@@ -2119,6 +2435,21 @@ Scanning is driven by **KBIEN = bit 6 (0x40) of port 0x10 (CPOUT)**:
   and the ISR parses all ten to find which keys.
 - Matrix: **10 rows (ports 0x00–0x09) × 8 columns**.
 - Scanning itself is invoked from the **IM1 / RST 38h (video 50 Hz) interrupt**.
+
+**Independently confirmed (2026-07-23), official Philips T&M Reference Manual, Ch3 "KEYBOARD":**
+§3.1 states the physical matrix is *"ten x-lines and 8 y-lines"* — matches the confirmed 10×8
+model exactly (the manual's own §3.2.3 "Reading keyboard" text sloppily says "the **nine**
+x-lines... An input is made from ports 0 to 9" in the very next paragraph — internally
+inconsistent with its own §3.1 figure, since "ports 0 to 9" is ten ports; read as a manual
+typo/rounding, not a real 9-vs-10 hardware discrepancy, given ports 0-9 inclusive is what's
+actually described both here and in this project's own disassembly-sourced model). Also confirms
+the **20 ms / 50 Hz scan interval** verbatim (§3.2.3: *"Every 20 ms, an interrupt is generated...
+The monitor then scans the keyboard"*) and the **74-key** physical layout (§1.4, §3), plus the
+**12-entry keyboard queue** and **repeat-key** behavior (§3.2.1/§3.3.2) already implicit in this
+project's model. Appendix E's key-code table (per-key alone/shifted decimal values, full physical
+layout) is transcribed in `raw-conversion.md` PDF p.132 for whoever eventually builds the
+host-key-to-P2000-key mapping table — not reproduced here since it's a large lookup table, not a
+architectural fact.
 
 ### CPOUT (port 0x10) is a SHARED output latch — not keyboard-only
 Writes to 0x10 update the whole latch; KBIEN is one bit among cassette + printer lines.

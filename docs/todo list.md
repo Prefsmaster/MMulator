@@ -19,6 +19,7 @@
 * Shortcuts tonen in menu's
 * Memory windows cursortoetsen; Mouse over show dec, hex binary & exacte adres
 * Memory windows editable, per cell maar ook range select, copy paste(?)
+* 'quick save state' of the machine, for undo when developing or playing games
 
 # Bugs
 * Warm/Cold reset na Ghosthunt/U Hangt: geen keyboard input.

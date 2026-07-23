@@ -186,6 +186,17 @@ Implement `IDevice` (machine §4):
   `phaseLocked`, `phaseCount`), and the tape (`Position`, `Side`, and either the phase data or a
   reference to the mounted `.cas` + position — decide whether snapshots embed full tape data or
   just position; full data makes snapshots self-contained but large).
+  - **STALE — this was actually decided, the opposite way, during milestone 9 implementation
+    (2026-07-05 finding, `P2000.Machine` CLAUDE.md §17): `.state` saves `Position`+`Side` ONLY,
+    NOT the phase array.** The mounted `.cas` must be remounted after `LoadState` — matching the
+    ROM-bytes-not-saved precedent (embedded/external content isn't duplicated into `.state`).
+    This doc's own text above was never updated to reflect that outcome — fixed now. **REOPENED
+    (owner, 2026-07-23) for a different reason than originally framed:** the owner wants a
+    `.state` file to be fully self-contained and shareable ("send a state to a friend") —
+    covered in `P2000T-reference.md` §3a's "OPEN DESIGN QUESTION," alongside the same question
+    for mounted disk images (M20). Revisit this bullet once that's settled; see the note there
+    for why embedding the compact `.cas`-format bytes (§8 below), not the raw ~1 MB phase array,
+    is probably the right shape if/when this gets built.
 - **InsertTape/EjectTape are RUNTIME operations** (reference doc §5b): inserting sets CIP present
   live (the bare-machine ROM busy-waits on CIP); ejecting clears it and resets. NOT reset-to-apply.
 
@@ -217,6 +228,13 @@ framing (BOB gaps, the `0xAA` lead/trail marks), recover bytes via the same PLL/
 read path uses, strip the framing + verify checksum, and reassemble **1280-byte `.cas` records**
 (header at 0x30, data at 0x100). This is what lets a CSAVE'd tape persist as `.cas`. Keep the raw
 phase-array save too if useful for debugging, but the user-facing save is `.cas`.
+
+**Now doubly motivated (2026-07-23) — also the natural building block for a self-contained
+`.state`, if/when §7's reopened embedding question is decided that way.** The raw phase array is
+~1 MB/side and not worth embedding directly; this serializer's output (the compact `.cas`-format
+bytes: `1280 B × block count`, typically tens of KB, not ~1 MB) is a far cheaper thing to embed in
+`.state` and reuse `LoadCasImage` symmetrically on restore. Build it once, for BOTH consumers —
+don't build a separate, redundant "serialize for .state" path.
 
 **Write round-trip:** `.cas` → bitstream (load) → CSAVE mutates bitstream (realtime WCD/WDA or
 turbo block-trap) → bitstream → `.cas` (save). Blank tape (no load) → CSAVE builds a tape in
@@ -277,3 +295,73 @@ Log during milestone 9: the reverse-direction bit-mapping outcome (once observab
 active-sense resolution (code vs doc §5f — which the ROM actually tests); any `.cas` header
 field details confirmed (the type byte for 'P' auto-boot); whether turbo ROM-trap was
 implemented and its trap points. The owner syncs these into the reference doc.
+
+---
+
+## 12. Cross-check against the official T&M Reference Manual (2026-07-23, design-doc
+maintainer pass — this file itself was re-added to the docs folder this same pass; it existed
+in a prior session but was missing from this one, leaving dangling `docs/MDCR-implementation.md`
+references in the machine/UI CLAUDE.md files, now resolved)
+
+The owner separately supplied the official Philips "P2000 System T&M Reference Manual" (144 pp.,
+transcribed in full in `raw-conversion.md`). Its Chapter 5 "MINI-DIGITAL CASSETTE" independently
+describes the same hardware this doc's phase-bitstream model implements. Cross-checked below —
+mostly strong corroboration, plus a resolution of an open question from the reference doc.
+
+**RESOLVED — encoding scheme is phase encoding, NOT FM. This doc's own §4 PLL model IS phase
+encoding, and now settles a discrepancy `P2000T-reference.md` §5b had flagged but not fixed.**
+§4 above describes recovery as: locked → "every 2nd phase must differ from the first (a real bit
+= a hi-lo or lo-hi transition across the 2-phase pair)" — that is a textbook description of
+**phase encoding** (a bit's value is carried by the transition DIRECTION at a fixed clock edge),
+matching the manual's Ch5.1 verbatim: *"a one bit is represented by the transition between a low
+value and a high value... and a zero bit by a high-low transition."* Two independent sources — the
+manual's prose AND the owner's actual working `MdcrDevice`/`MiniTape` implementation (not just a
+description of intent) — now agree exactly. This means the reference doc's "FM-encoded" phrase
+(Storage section, §5b Storage subsection) was the incorrect one; corrected there in this same
+pass, citing both this file and the manual as the converging evidence, per this project's
+"correct with a dated note, don't silently overwrite" discipline.
+
+**CONFIRMED — 6000 baud arithmetic checks out.** 209 cycles/phase ÷ 2,500,000 Hz = 83.6 µs/phase;
+2 phases/bit = 167.2 µs/bit → **5,981 bits/s ≈ 6000 baud**, matching the reference doc's quoted
+figure. First time this project has derived the baud figure from the phase-timing constants
+directly rather than just citing it.
+
+**CONFIRMED — block gap timings match the manual almost exactly**, converting this doc's phase
+counts at 83.6 µs/phase: **BOB GAP 6160 phases ≈ 515.1 ms** (manual's "start gap... approximately
+515 ms" — Ch5.1.2 "BLOCK") and **EOB GAP 1856 phases ≈ 155.2 ms** (manual's "end gap...
+approximately 155 ms") — both essentially exact matches. The manual's "mark gap" (~85 ms, between
+the 4-byte mark and the data record) isn't broken out as a separate phase count in this doc's
+diagram (the "MARK" step is written via the same `WriteData` framing helper as the data blocks),
+so it's not independently confirmable from this doc alone — not a conflict, just not itemized here.
+
+**FLAGGED, NOT resolved — BOT gap is ~2× shorter in this doc than the manual states.** This doc's
+`BOT GAP` = 5800 phases ≈ **484.9 ms**; the manual (Ch5.2.1) states *"to read past this gap takes
+approximately 1 second."* A real, if minor, discrepancy — could be the manual's figure being a
+loose round number, or the implementation's BOT gap being an approximation rather than a
+hardware-measured value. Not load-bearing for correctness (BOT is only encountered once, at the
+physical start of tape) but flagged rather than silently reconciled.
+
+**STRENGTHENED, still not fully resolved — cassette capacity now has 2-vs-1 sources favoring 40
+blocks/side over 42.** This doc's own "Full-tape sizing" note (§6) computes **"~40 data blocks
+per tape with slack"** from the real block/gap byte counts in the working implementation — this
+independently lines up with the manual's explicit *"Each track (or side) of a cassette is divided
+into 40 blocks... A file may comprise between 1 and 40 blocks"* (Ch5.2). That makes TWO sources
+(this doc's own implementation-derived sizing, and the official manual) landing on 40, against
+ONE source (the owner's printed BASIC manual) stating 42. `P2000T-reference.md` §5b's existing
+"CONFIRMED... 42 blocks per side" note and its more recent "40 vs. 42, unresolved" flag are both
+updated to note this shift in evidentiary weight — still not silently overwritten to 40, since the
+BASIC manual is a real primary source too and could describe a different capacity convention
+(e.g. a practical/recommended limit vs. the physical maximum), but the balance now leans 40.
+
+**CONFIRMED — header offset alignment.** This doc's per-record layout places the 32-byte BLOCK
+HEADER at file offset `0x30` within a 256-byte copy of P2000 memory `0x6000`-`0x60FF` — i.e.
+memory address **`0x6030`**, exactly the cassette file descriptor start address independently
+confirmed from the ROM disassembly and the manual's own Ch5.2.2/5.3.1 (`P2000T-reference.md` §5b).
+This doc does not itemize the header's individual field byte-offsets, so it neither confirms nor
+resolves the still-open "name split ...0x17–0x1E vs. the manual's 'reserved' at that offset" note
+already flagged in `P2000T-reference.md` §5b — that stays open.
+
+**Additive, no conflict:** this doc's specific checksum algorithm (a CRC-16 variant, polynomial
+`0x4002`, XOR-then-rotate-right per bit) is a level of precision the manual doesn't attempt
+("check-sum - 2 bytes holding a value which can be used to check for reading errors") — useful,
+not contradictory.

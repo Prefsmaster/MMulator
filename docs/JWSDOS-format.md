@@ -33,6 +33,15 @@ encoding, single-sided access from the boot loader (side# is always sent as `0x0
 `getdos`'s own commands — this reflects what the boot loader touches, not necessarily the
 physical medium's side count, see below). 16 × 256 = 4096 bytes/track.
 
+**Flag, not a correction (2026-07-23):** the official Philips "P2000 System T&M Reference
+Manual" (owner-supplied, `raw-conversion.md`), Ch2.1, states disk data is recorded "using
+frequency modulation" (FM) — in tension with "MFM" above and with the manual's own "double-
+density" media label (conventionally implying MFM). Sector geometry (16/256, 35-track base
+figure, 4-drive/560k ceiling) is independently confirmed by the same chapter and matches this
+doc's figures exactly. See `P2000T-reference.md` §5d for the full discrepancy write-up and the
+open action item (check the confirmed READ/WRITE DATA opcode's MF bit) — not re-litigated here
+since this doc's own geometry figures are unaffected either way.
+
 **CONFIRMED (owner research):** JWSDOS 5.0 supports **multiple physical geometries** —
 35, 40, or 80 tracks, single- or double-sided. This is not a fixed hardware constant; it's a
 per-disk, format-time choice (§3). The reference doc's earlier "single-sided, 35-track"
@@ -787,3 +796,12 @@ convention: `0xF3` is the official Philips disk-BASIC signature (verified agains
   `Spel1.dsk` specifically shows all 18 active entries uniformly on side 2 — that depends on
   this disk's own save/defragment history, unrecoverable from static source alone. → this doc
   §2, §4, §5, §7.
+- **2026-07-23 (design-doc maintainer pass, official Philips T&M Reference Manual read in full,
+  `raw-conversion.md`):** independent, primary-source corroboration of this doc's core geometry
+  figures — 16 sectors/track, 256 B/sector, 35-track base geometry, 4-drive/560k ceiling — all
+  confirmed directly from the manual's Ch2 "FLEXIBLE DISKS," a different and more authoritative
+  source than the previously-cited MAME PR #7577 cross-reference. Also surfaced (not resolved) a
+  flagged tension: the manual states disk data uses **frequency modulation (FM)**, not MFM,
+  despite calling the media "double-density" (conventionally an MFM-implying label) — in tension
+  with this doc's own "MFM encoding" (§1, from `getdos`'s FDC command bytes). Flagged inline in §1;
+  full write-up in `P2000T-reference.md` §5d. → this doc §1.

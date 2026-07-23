@@ -757,6 +757,112 @@ builds did. Do not advance while the current milestone is red. Record spec corre
       tape (`InsertBlankTape()`) is unaffected — still defaults writable, since there's no prior
       saved state to read. → commit.
 
+14. **Disk drive UI** (promoted from §15 "Disk / FDC UI"; unlocks with machine-layer M20 —
+    `P2000.Machine` CLAUDE.md §13.20 — multi-drive floppy subsystem). Media/mechanism rule
+    already fixed (§5/§7): drive (count/capacity/sidedness) = topology, disk image mounted in a
+    drive = runtime swap, exactly like the cassette. This milestone is the disk analogue of the
+    cassette deck (ms.4/9/13/13a) — same pattern, one drive-count fan-out.
+    - **Config window — new "Floppy drives" axis (§7):** drive count selector. **UPDATED
+      (2026-07-23, owner-supplied full M2200 manual — `P2000.Machine` CLAUDE.md §13.20, resolving
+      most of what this bullet originally left open): cap at 4, not 2.** The M2200 board's own
+      34-pin connector is CONFIRMED to carry four drive-select lines (`DRISEL0`-`3`), decoded from
+      the FDC chip's native US0/US1 via an external decoder — a real, sourced hardware ceiling,
+      not the earlier unconfirmed 2-drive guess. The stock ROM driver still only ever addresses
+      unit 1 by default (unaffected by this change — that's a software fact, not a connector
+      fact). **RESOLVED (owner, 2026-07-23):** the plain single-purpose Philips floppy+RAM board
+      also supports 4 drives — a separate, official Philips-authored P2000 manual confirms it, and
+      the earlier "2 drives" figure traced to a poor Field Service Manual scan. No board-specific
+      hedge needed: **4 is the confirmed ceiling regardless of which board this UI targets.**
+      **Independently re-confirmed (2026-07-23):** the design-doc maintainer has since read the
+      referenced manual in full (`raw-conversion.md`) — Ch2 states 4 drives/560k directly. No
+      change to the drive-count cap or the per-drive selectors below; see `P2000T-reference.md`
+      §5d for the citation. Per
+      enabled drive: a **Capacity** selector (35/40/80 tracks) and a **Sides**
+      selector (SS/DS) — both reset-to-apply, both act only as the **seed for blank/unlabeled
+      media**, since the machine auto-detects real geometry from the on-disk label once an image
+      is mounted (M19/M20) — don't let the UI imply the selector overrides a present label.
+    - **New "Disk drive(s)" window** (or a per-drive panel within one window — cassette-deck-
+      style single window, N status rows, is probably the closer fit than N separate windows;
+      minor UX call, not a hardware fact): for each configured drive —
+      - **Mount/eject**, file dialog + drag-drop, **runtime** (extends the existing main-window
+        `.dsk` drag-drop rule, §5.1 — no reset once the drive itself already exists).
+      - **New (blank) disk + Save / Save as `.dsk`…** (owner decision, 2026-07-23 — mirrors
+        ms.13's cassette New-blank-tape/Save/Save-as exactly, same host-side-container-operation
+        category as mount/eject): "New" creates a genuinely unformatted in-memory image sized to
+        the drive's own configured Capacity/Sides (no label, no directory — machine-layer M20)
+        without touching a file; "Save"/"Save as" writes the current in-memory image (whether
+        mounted-from-file-then-modified, or newly created) out to a host `.dsk` file. Per the
+        machine layer's now-resolved buffered write model (M20): **nothing reaches the host file
+        until Save is clicked** — ejecting or resetting first silently drops unsaved changes,
+        same trade-off the cassette deck already carries. **Warns on eject/replace with unsaved
+        changes — see ms.14a below** (owner decision, 2026-07-23, resolves what this bullet
+        originally left open).
+      - **Directory browse table** — filename, extension, type, blocks used, size — sourced from
+        the host-side `DskImage.ReadDirectory()` API (M19) / `docs/JWSDOS-format.md` §4's
+        32-byte directory-entry fields. **Side 2 stays unavailable** for a DS-mounted image until
+        the machine layer sources side 2's directory offset (same open item M19/M20 carry
+        forward, `docs/JWSDOS-format.md` §7 item 2) — show side 1 only, don't guess or leave a
+        blank table that looks like an error.
+      - **Live status row** — head (0/1), track/cylinder, sector, motor (on/off), read/write
+        activity + direction, write-protected/write-enabled — same activity-LED sourcing pattern
+        as the cassette deck (§5/§6: derive from device state, not from guessing at command
+        intent). **Motor is a single shared line, not per-drive — CONFIRMED (2026-07-23, M2200
+        manual, `P2000.Machine` CLAUDE.md §13.20's per-drive-device-state bullet).** The real
+        34-pin connector has exactly one `MOTORON` signal for the whole card, not one per drive.
+        **Design implication:** showing an independent "motor on/off" indicator per drive row
+        would misrepresent the hardware — either show ONE board-level motor indicator (outside
+        the per-drive rows) or, if a per-row indicator is kept for layout-consistency reasons,
+        make clear (e.g. via a shared/greyed visual treatment) that all rows reflect the same
+        single signal rather than N independent ones. Don't build N independently-wired motor
+        indicators as if the hardware supported that.
+      - **Write-protect toggle**, per drive, mirrors ms.13a's cassette write-protect UI exactly
+        (live setter, defaults writable, disabled with no image mounted). Unlike the cassette,
+        this does **not** persist through the image file itself (M20 flag) — surface this as a
+        per-session state, or wait for the machine layer's sidecar-file decision before wiring
+        persistence UI.
+    - **Tests:** `DiskDriveVm`-level tests mirroring `CassetteDeckVmTests`' pattern — mount/eject
+      state transitions; directory parse against the `Spel1.dsk`/`jwssytem.dsk` fixtures already
+      used at the machine layer (18 real entries, no phantom stale-cluster entries, empty-track
+      browses as empty not error); write-protect toggle actually gates a simulated write (not
+      just a cosmetic bit); status fields (head/track/sector/activity) update live across a
+      scripted read/write sequence; a second drive's head/track/sector/activity status is
+      independent of the first's (no shared-VM state bleed between drive rows) — **motor is the
+      one exception, correctly shared**: motor-on in one row's VM must reflect as on in every
+      other configured drive's row too, since it's the same physical signal (regression guard for
+      the shared-motor finding above, not a bug if rows agree); **New creates a blank image at the
+      drive's
+      configured geometry with an empty directory listing** (regression guard mirroring ms.13's
+      blank-tape test); **Save/Save-as round-trips** a modified or newly-created image
+      byte-for-byte on reload, matching ms.13's own CSAVE-then-reload test shape. → commit.
+14a. **Cassette + disk — unsaved-changes warning on eject/replace** (fast-follow, same
+    "milestone + a" pattern as ms.9a/13a — a retrofit onto the **already-shipped** cassette
+    deck (ms.4/9/13/13a) as well as the new disk drive window (ms.14); owner decision,
+    2026-07-23). Depends on the machine layer exposing a dirty/unsaved-changes signal
+    (`P2000.Machine` CLAUDE.md §13.20a) — do not build a UI-only heuristic (e.g. "any write
+    happened this session") if that signal exists; wire to it.
+    - **Trigger conditions — both windows, same rule:** **Eject** with the current
+      cassette/disk dirty; **replacing** a mounted image (file-dialog/drag-drop of a new file, or
+      New-blank) over a dirty one — both count as "about to discard unsaved changes." A
+      **cold/warm reset** with a dirty cassette/disk mounted is the same hazard in spirit but is
+      an existing, already-shipped control (§6) — **flag, don't silently fold reset into this
+      milestone's scope**; ask whether reset should also warn, or stays as today, before adding
+      it.
+    - **UI:** a confirm dialog ("This tape/disk has unsaved changes — eject/replace anyway?"
+      Discard / Cancel) blocks the eject/replace only when dirty; a clean cassette/disk
+      eject/replaces exactly as it does today, no new friction. Cancel leaves the current
+      image mounted and untouched.
+    - **Not in scope (flag, don't build):** an auto-save-on-eject shortcut, or a three-way
+      "Save / Discard / Cancel" dialog that saves inline — the owner asked for a **warning**,
+      not a silent-save; if a save-inline convenience is wanted later, that's a separate,
+      explicitly-scoped follow-up.
+    - **Tests:** (a) eject/replace with a clean cassette or disk proceeds with no dialog
+      (regression guard — this must not add friction to the common case); (b) eject/replace with
+      a dirty cassette or disk shows the dialog; (c) Cancel leaves the image mounted, still
+      dirty, unchanged; (d) Discard proceeds with the eject/replace exactly as today (post-M20/
+      ms.9a semantics — in-memory changes are lost, same as clicking through today's silent
+      eject); (e) after an explicit Save/Save-as, eject/replace of the now-clean image shows no
+      dialog. → commit.
+
 ---
 
 ## 15. Deferred (build the seams now, implement later)
@@ -770,10 +876,10 @@ builds did. Do not advance while the current milestone is red. Record spec corre
   the same primitive surface so UI + IDE share one driver — a move, not a redesign.
 - **P2000M UI differences** (VRAM geometry in the VRAM window reads from model — already
   parameterized; M itself deferred in the machine).
-- **Disk / FDC UI** (mount `.dsk`, drive indicators) — surfaces once the machine's FDC lands.
-  Media/mechanism rule already fixed (§5/§7): drive = topology, disk image = runtime swap like the
-  cassette.
 - **80-column display**, **hires overlay** presentation — once the machine supports them.
+
+(**Disk / FDC UI dropped off this list as of milestone 14** — §14.14, now that the machine's FDC
++ multi-drive subsystem has a milestone (M20) to unlock it.)
 
 ---
 

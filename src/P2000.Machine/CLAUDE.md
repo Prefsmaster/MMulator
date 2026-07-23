@@ -881,22 +881,251 @@ is NO machine-layer runner milestone here — it's promoted in with the external
       above — assert the phantom filenames are absent from the returned listing, not just that
       the count is 18); `jwssytem.dsk`'s all-zero track 2 browses as an empty directory, not an
       error. → commit.
+20. **Philips Expansion Card — RAM-variant status + multi-drive floppy subsystem** (promoted
+    from the §14 "multi-board RAM-variant framework" placeholder; reference doc §5c/§5d +
+    `docs/JWSDOS-format.md`; extends `InternalExtensionBoard`/`Upd765` from M19, does not
+    replace them).
+    - **RAM-variant half of this milestone is mostly already DONE — recap, not new work.**
+      Per the milestone-2 findings-log entry (§17, 2026-07-02), `RamVariant` already implements
+      **T38/T54/T102** and `PageTable`/`MachineConfig` already validate them against
+      `Board == InternalBoard.FloppyRam` (M19). **PTC-96K remains explicitly OUT of scope here**
+      — it's blocked on reference doc open item #4 (whether its extra 64 KB rides port `0x94`
+      or a separate scheme), which is still unsourced. Do not model it speculatively; when the
+      addressing scheme is sourced, it extends the existing `RamVariant` enum + `PageTable` bank
+      register + the P2C2-only `SELDIS` control-latch bit (§5d) — a plug-in, not a redesign.
+      **Corroboration, not resolution (2026-07-23, M2200 manual):** M2200's own bank-switch is a
+      confirmed 3-bit/6-bank register (32 KB base + 6×8 KB banked = 80 KB exactly, matching
+      T/102's total — reference doc §5 memory, `docs/M2200-implementation.md` §2.2). This is
+      corroborating evidence for what a T/102-class bank register looks like; it does NOT resolve
+      PTC-96K (a different, larger board M2200 isn't a stand-in for) — PTC-96K stays out of scope
+      here exactly as before.
+    - **The real new work is multi-drive:** today's `Upd765`/`InternalExtensionBoard` model one
+      implicit drive (`MachineConfig.FloppyDiskImagePath`, singular, hardcoded to unit 1 per the
+      M19 finding). This milestone generalizes to **N independently-configured drives** on one
+      card.
+    - **Hardware ceiling — RESOLVED (2026-07-23/26, owner-supplied full M2200 manual +
+      independent Philips manual cross-check — `docs/M2200-implementation.md` §2.1/§5.2):** the
+      earlier "2 drives" figure
+      (reference doc §5d) described an assumption for the plain floppy+RAM board with no
+      connector-level source of its own. **The M2200 board's own 34-pin floppy connector is now
+      CONFIRMED to carry FOUR drive-select lines — `DRISEL0`, `DRISEL1`, `DRISEL2`, `DRISEL3`** —
+      decoded from the µPD765's native two US0/US1 pins via an external 2-to-4 decoder (IC139 on
+      the real board), gated by the shared motor-on signal (see the MOTOR bullet below, also
+      resolved by this same source). This directly supersedes the earlier "recommended 2 physical
+      drive slots" guidance from this milestone's first draft. **Recommended model, updated: 4
+      physical drive slots**, matching the confirmed M2200 connector — a real hardware ceiling,
+      not the arbitrary/unconfirmed cap the milestone previously flagged. The two complicating
+      facts from the first draft still stand and don't need re-litigating: the stock ROM driver
+      still hardcodes unit-select to drive 1 only (§13.19), and JWSDOS's own head/drive folding
+      via `xor 0x04` is still a plausible-not-confirmed reading of "2 drives × 2 sides" — neither
+      contradicts a 4-position connector existing; they just mean not every combination the
+      connector supports is necessarily exercised by every piece of real software.
+      **RESOLVED (owner, 2026-07-23):** whether the PLAIN single-purpose Philips floppy+RAM board
+      (as opposed to M2200) has the same 4-position connector was the one remaining open question
+      here — a separate, official Philips-authored P2000 manual clearly states the expansion
+      board supports up to 4 drives, consistent with M2200's own design intent as a drop-in
+      replacement (with extras) for the official Philips card. The earlier "2 drives" figure is
+      now understood to trace back to a poor-quality Field Service Manual scan, not a genuine
+      2-drive board. **4 physical drive slots is the confirmed ceiling for both boards** — build
+      the config/UI surface for up to 4 without further hedging on this point.
+      **Independently re-confirmed (2026-07-23):** the design-doc maintainer has since personally
+      read the referenced manual in full (official Philips "P2000 System T&M Reference Manual,"
+      144 pp., now transcribed in `raw-conversion.md`) — its Ch2 "FLEXIBLE DISKS" states this
+      directly: 4 drives, 560k total, 35 tracks × 16 sectors × 256 bytes = 140k/disk. See
+      `P2000T-reference.md` §5d for the full citation; no change to the 4-drive figure or the
+      config model below, this just upgrades the evidentiary basis from owner-report to
+      maintainer-verified primary source.
+    - **Config model:** replace `MachineConfig.FloppyDiskImagePath` (singular) with a
+      **per-drive collection** — each entry: drive index, `Enabled`, `Capacity` (35/40/80
+      tracks), `Sides` (SS/DS), and a nullable mounted-image path. Drive **presence + capacity +
+      sidedness is topology** (reset-to-apply, same rule as the drive-vs-image split already
+      decided in `P2000.UI` CLAUDE.md §7); the **image mounted in an already-present drive is a
+      runtime swap**, exactly like cassette mount/eject — no new split to invent, just apply the
+      existing one per-drive instead of once globally.
+    - **Two ways to provision a drive's media (owner decision, 2026-07-23):** (a) **mount an
+      existing `.dsk` file** — geometry auto-detected from its label, per the rule below; (b)
+      **manually defined / create-blank** — no file, just the drive's own configured
+      Capacity/Sides (topology axis above) as the geometry, producing a **genuinely unformatted**
+      image: correctly sized for that geometry, filled with a neutral erased-media byte, **no
+      label written, no directory initialized** — mirrors the cassette's blank-tape decision
+      (a blank tape is truly empty, not pre-written with headers) rather than the emulator
+      pre-formatting it. A guest DOS (JWSDOS/PDOS) still has to format it via its own format
+      routine before it's usable, same as inserting a real blank floppy — the emulator does not
+      shortcut that.
+    - **Write model — RESOLVED as buffered, mirrors cassette exactly (owner decision,
+      2026-07-23; closes the open "write-through vs. buffered" question this milestone
+      originally carried):** a mounted or newly-created disk lives as an **in-memory image**,
+      the live device state; WRITE DATA commands from the guest mutate that in-memory image only.
+      Nothing touches the host filesystem until an explicit **Save / Save as `.dsk`…** action —
+      the disk equivalent of ms.13's cassette New/Save/Save-as, not a new pattern. Mounting an
+      existing file loads it into that same in-memory image (like `InsertTape()`); create-blank
+      starts a fresh one (like `InsertBlankTape()`). **Consequence to flag, mirrors the cassette's
+      own accepted trade-off:** ejecting or resetting before an explicit Save discards in-memory
+      changes to the host file — same divergence-from-real-hardware the cassette design already
+      accepted (a real MDCR writes through to the physical tape as it goes; the emulator's
+      `.cas` design chose buffered + explicit save there too, for the same reasons). Whether the
+      UI should warn on eject-with-unsaved-changes is a UI-layer call (P2000.UI CLAUDE.md
+      milestone 14) — this bullet only fixes the machine-layer model.
+    - **Per-drive device state:** `Upd765` already tracks `_cylinder[drive]` per drive (M19) —
+      extend the same shape to selected head, write-protect, and the mounted-image reference, all
+      indexed by drive. **MOTOR — RESOLVED (2026-07-23, M2200 manual, §5.2's connector table):**
+      the 34-pin connector carries a **single, shared `MOTORON` line** (pin 16) — NOT independent
+      per physical drive. Model motor-on as **one board-level bit, not a per-drive array** — the
+      earlier "tracked per selected-drive only" placeholder was a reasonable conservative guess at
+      the time and turns out to match the real wiring, but for a cleaner reason than guessed: it
+      isn't that the emulator only bothers to track the selected drive's motor, it's that **real
+      hardware has exactly one motor-on signal for the whole card**, gating whichever drive(s) are
+      currently addressed. Same source also resolves the drive-select gating question: the US0/US1
+      → `DRISEL0`-`3` decoder (hardware ceiling bullet above) is itself only active while
+      motor-on is asserted — i.e. no drive can be addressed at all until the shared motor line is
+      on, a stronger and more specific gate than "wait ~0.5 s after motor-on before read/write."
+      **`WRPROT`/`TRACK00` are also confirmed as per-*selected*-drive sense lines** (read back only
+      for whichever drive is currently addressed), not simultaneously-tracked state for every
+      drive at once — the emulator's own per-drive write-protect **config** (a host-side flag per
+      mounted image, from the write-protect bullet elsewhere in this milestone) is unaffected by
+      this; it just means "what value is read back on `WRPROT`" depends on which drive is
+      currently selected, same as real hardware, not a new modeling requirement.
+    - **Drive-timeout watchdog — RESOLVED, OUT OF SCOPE for this milestone (owner decision,
+      2026-07-23): do not model a watchdog device or any drive-door state here; defer
+      indefinitely to a future M2200-specific milestone.** Background: real hardware (IC118, per
+      the M2200 manual §2.1) monitors the drive's index signal and fires an interrupt after ~1s
+      if no index pulse arrives during a transfer (no disk present, or door open) — but this
+      chip is sourced ONLY from the M2200 manual, never independently confirmed on the plain
+      floppy+RAM board this milestone actually targets (unlike the drive-count/motor-line facts,
+      which DID get cross-confirmed for both boards). **Decision: no new device, no door state.**
+      Instead, the existing "unmounted drive is a no-op" rule (§13.19 — a read/write to an
+      absent drive resolves instantly, zero-filled buffer, no exception) is explicitly WIDENED to
+      also cover: (a) a configured/enabled drive that currently has no image mounted, and (b) a
+      drive whose image is ejected while a transfer is in flight (a real, newly-reachable path
+      once eject is a runtime action available at any time, per this milestone's write model).
+      Both resolve exactly like the already-accepted absent-drive case — instant, harmless,
+      no timer, no distinct code path: whatever check the FDC already does for "is a drive
+      actually there" should read the per-drive mounted-image reference, so "not there" and
+      "there but empty" collapse into the same one no-op branch. **Rationale (owner):** the
+      cassette earned its real-world-accurate phase-bitstream model because that fidelity is the
+      point of that device (`docs/MDCR-implementation.md`); the watchdog is a real-world-only
+      edge case (a physical door/missing-media condition) on a chip not even confirmed to exist
+      on this board — not worth a second device for. Revisit only if/when a real M2200 milestone
+      is scoped, where IC118 actually has a primary source.
+    - **New flag, not previously in scope: FDC chip variant.** The M2200 manual reveals that the
+      *first ~100 M2200 units* shipped with a **µPD7265** (Sony-compatible recording format), not
+      the µPD765 this project models — later units got the µPD765 (`docs/M2200-implementation.md`
+      §2.1). This milestone's scope (and M19's) remains µPD765-only; a µPD7265 variant is
+      explicitly out of scope unless the owner asks for it later — noted here so "the FDC" isn't
+      silently assumed to be one universal chip across every real M2200 unit.
+    - **Geometry — auto-detect still wins, config axis is the fallback:** M19 already decided
+      the emulator auto-detects capacity/sidedness from the on-disk label
+      (`docs/JWSDOS-format.md` §3: side at raw `0x0FEF`, track count−1 at raw `0x0FFF`) rather
+      than trusting a config value. The new per-drive **Capacity/Sides config axis exists for
+      blank/newly-formatted images (no valid label yet) and as a manual override if a label is
+      absent or corrupt** — it is NOT a second source of truth competing with the label when one
+      is present. State this order explicitly in the implementation (label wins; config is the
+      seed for blank media).
+    - **Write-protect, per drive, host-side (mirrors the cassette ms.13a pattern):** a live
+      `IsProtected` bool per drive, defaults writable, gates WRITE DATA the same way WEN gates
+      CSAVE. **Does NOT round-trip through the `.dsk` file** the way cassette protect rides
+      spare padding in the `.cas` record container (reference doc §3a) — a raw sector-dump `.dsk`
+      has no equivalent spare byte to (ab)use without corrupting real JWSDOS data. **Persistence
+      mechanism DEFERRED, not a UX call to pick freely (owner, 2026-07-23) — depends on a bigger,
+      still-open question: whether/where UI-layer session state (open windows, memory-watch
+      ranges, etc.) gets persisted at all** (reference doc §3a, "OPEN DESIGN QUESTION"). The
+      owner's reasoning: cassette write-protect already lives in `.state` (`MdcrDevice.Protected`),
+      and a `.state` load is supposed to restore the machine exactly as it was — so disk
+      write-protect should land in whatever container ends up holding "resume exactly where the
+      user left off," not be decided in isolation as session-only vs. a sidecar file. **Do not
+      pick a mechanism here before that's resolved** — this bullet is genuinely blocked, not just
+      unprioritized.
+    - **`.state`:** the FDC device block's shape changes from implicit-single-drive to
+      per-drive arrays (motor/head/cylinder/write-protect/mounted-image-ref × N) → bump
+      `MachineStateFile.CurrentVersion`/`MinVersion` from **v4 to v5** at build time (reject v4),
+      same discipline as every prior bump — never retroactively. **"mounted-image-ref" is
+      deliberately vague, not yet decided (owner, 2026-07-23) — reference doc §3a "self-contained
+      `.state`" note:** whether this is a path (remount required on load, matching the cassette's
+      existing precedent) or the actual in-memory disk bytes (making `.state` self-contained/
+      shareable) is an open question shared with the cassette's own reopened embedding decision —
+      don't build one silently before that's settled; the version bump above happens regardless
+      of which way it lands, so it doesn't block starting this milestone.
+    - **Host `.dsk` API:** extend M19's API — **mount** (existing file → in-memory image, geometry
+      from label), **create-blank** (drive's configured Capacity/Sides → in-memory unformatted
+      image, no file involved yet), **eject** (drops the in-memory image; discards unsaved
+      changes per the write-model bullet above), **save/save-as** (serialize the in-memory image
+      to a host `.dsk` file — for a plain raw sector dump this is a straight byte-for-byte write,
+      no bitstream-style encode step the way `.cas` needed), **write-protect**, **browse** — all
+      take a drive index; behaviour per call otherwise unchanged from M19. **Side 2 directory
+      browsing stays blocked** on the same open item M19 already flagged — side 2's directory
+      location in a raw `.dsk` file is not yet confirmed (`docs/JWSDOS-format.md` §7 item 2) —
+      do not guess an offset just because multi-drive makes double-sided images more prominent;
+      browse side 1 only for a DS-mounted image until that's sourced.
+    - **Tests:** (a) config validation accepts 1 to 4 drives (updated ceiling, per the hardware-
+      ceiling bullet above) combined with `Board == FloppyRam` and a valid `RamVariant`, same gate
+      M19 added; (b) two (of up to four) drives transfer independently with no cross-talk — a
+      read in progress on one drive and a seek on another don't corrupt each other's tracked
+      cylinder/state (the regression guard the existing `_cylinder[drive]` array already sets up
+      for); (c) geometry auto-detect runs per-drive from each mounted image's own label,
+      independent of the other drives' config; (d) write-protect on drive N blocks a WRITE DATA
+      command targeting drive N only, other drives unaffected; (e) `.state` v5 round-trip with
+      multiple drives mid-transfer at different
+      head/cylinder positions reproduces identical subsequent frames; (f) v4 `.state` files are
+      rejected with a clear version-mismatch error, not a silent misload; (g) **create-blank**
+      produces an image of exactly the right byte size for the configured Capacity/Sides, with
+      no valid label at the auto-detect offsets (`0x0FEF`/`0x0FFF`) — confirms it reads as
+      genuinely unformatted, not silently pre-labeled; (h) a guest write to a freshly created
+      blank image followed by **Save as** round-trips byte-for-byte on reload, and ejecting
+      the SAME state without saving first leaves no trace in a freshly-mounted copy of the
+      original file (the buffered-write regression guard). → commit.
+20a. **Cassette + disk — dirty-tracking for the UI's unsaved-changes warning** (fast-follow,
+    same "milestone + a" pattern as ms.9a/13a — the UI-layer warning `P2000.UI` CLAUDE.md is
+    adding, §14.14a, needs a machine-layer signal to hang off; owner decision, 2026-07-23, that
+    both cassette and disk should warn on eject/replace with unsaved changes).
+    - **Needs a per-device `IsDirty`-equivalent flag; check before adding a new one.**
+      `MdcrDevice`/`MiniTape` (ms.9/9a) already models writes via WCD/WDA capture and the turbo
+      write trap — **verify whether it already exposes something this can reuse (e.g. a
+      modified-since-load marker) before building a second, redundant one.** If nothing exists
+      yet, add `IsDirty` (bool) to both `MdcrDevice` and the per-drive disk state (M20 above):
+      set on any write that mutates the in-memory image (WCD/WDA capture or the turbo trap for
+      cassette; WRITE DATA for disk), cleared on a fresh mount/create-blank/InsertBlankTape AND
+      on a successful Save/Save-as. Eject/replace-mount themselves do NOT clear it — the UI reads
+      the flag to decide whether to warn, then the eject/replace proceeds (or is cancelled) per
+      the user's choice at the UI layer; the machine layer only tracks and exposes the bit.
+    - **`.state` — DEFERRED, same reason and same dependency as M20's write-protect item (owner,
+      2026-07-23):** whether `IsDirty` should serialize into `.state` (a session saved with an
+      unsaved cassette/disk change pending would then restore as still-dirty) or stay a
+      live/transient UI hint is tied to the still-open "what does resuming a session persist"
+      question (reference doc §3a). Same logic as write-protect: `.state` is meant to bring the
+      machine back exactly as it was, so this isn't an independent UX call to make now — it lands
+      wherever that broader question lands (inside `.state` itself, a UI-state sidecar, or
+      elsewhere). Doesn't block the UI-layer warning from being built either way (the flag exists
+      and works live regardless of whether it persists) — only the persistence question is
+      deferred.
+    - **Tests:** (a) a freshly mounted/created image (no writes yet) reads NOT dirty; (b) a
+      write (authentic or turbo) sets dirty on both cassette and disk; (c) Save/Save-as clears
+      dirty; (d) eject/replace do not themselves clear or set dirty — only reads it; (e) a
+      second write after Save re-sets dirty (the flag isn't sticky-false after the first save).
+      → commit.
 
 ---
 
 ## 14. Deferred (build the seams now, implement later)
 
 Do NOT implement these in this build, but keep the interfaces ready (they're specced in the
-reference doc): **P2000M** (different video-memory sharing, 4 KB VRAM); **the multi-board
-RAM-variant framework** (T/54 / T/102 / PTC-96K socket population and the wider-`0x94`
-homebrew bank register — M20, now that the FDC chip itself and its minimal board seam are
-built in M19); **hires overlay board**; **SLOT2 expansion cards**; **80-column mode**;
-**printer**. The aggregator (§8), slot model (§12.12), and `TimingPolicy` (§7) are the seams
-these plug into.
+reference doc): **P2000M** (different video-memory sharing, 4 KB VRAM); **PTC-96K** (blocked on
+reference doc open item #4, the unsourced wider-`0x94` addressing scheme — see §13.20; T38/T54/
+T102 are already implemented, so this is the only RAM-variant piece still deferred); **hires
+overlay board**; **SLOT2 expansion cards**; **80-column mode**; **printer**. The aggregator
+(§8), slot model (§12.12), and `TimingPolicy` (§7) are the seams these plug into.
 
-(**FDC dropped off this list as of M19** — §13.19. The floppy+RAM board's *RAM* axis and
-PTC-96K move to M20 alongside the multi-board framework, since — per reference doc §5 —
-they're the same physical board as the FDC card, just a different concern.)
+- **M2200's full feature set beyond the shared FDC/RAM-bank-switch** (RTC, RAM disk, Serial/SIO,
+  Centronics, and a previously-undiscovered **second Z80 CTC at `0x80`-`0x83`**) is now
+  well-documented (`docs/M2200-implementation.md`, expanded 2026-07-23 from the owner-supplied
+  full Miniware Technical Manual) but **not scoped into any milestone yet** — M20 above only
+  covers the two features M2200 shares with the plain floppy+RAM board. A future M2200-specific
+  milestone has a real primary source to build against now (full RTC register set, SIO control
+  model + daisy-chain wiring, RAM disk geometry, and the second CTC's role/ports), which it did
+  not have before this pass.
+
+(**FDC dropped off this list as of M19** — §13.19. **The multi-board RAM-variant framework and
+multi-drive floppy subsystem dropped off this list as of M20** — §13.20; only the unsourced
+PTC-96K addressing scheme remains genuinely deferred.)
 
 ---
 
@@ -1506,7 +1735,7 @@ marked synced. Do NOT edit the reference doc from this project.
     implement `Reset()` differently if a hardware reason ever surfaces — build it the same way
     (non-zero garbage fill) until/unless a specific card's hardware says otherwise.
   - **CONCRETE example, not hypothetical (owner-supplied, 2026-07-23; slot placement CORRECTED
-    2026-07-24):** the **M2200 multi-function board** has a **real-time clock with a small
+    2026-07-23):** the **M2200 multi-function board** has a **real-time clock with a small
     battery-backed memory** for time, date, and alarms. **Plugs into the internal extension
     slot family (reference doc §5c "Daisy-chaining on the M"), NOT SLOT2** — an earlier version
     of this note mis-placed it on SLOT2; corrected per the owner citing the Field Service

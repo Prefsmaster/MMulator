@@ -1154,6 +1154,37 @@ Ordinary in-project choices: proceed and keep CI green.
 
 ## 17. Findings log (working scratchpad — synced to the reference doc by the human)
 
+### 2026-07-23 — FIXED: RamSeed never serialized in .cfg/.state (gap flagged during M20/20a)
+- **Bug:** `MachineConfigFile`'s `ConfigDto`/`ToDto`/`FromDto` never included
+  `MachineConfig.RamSeed` (`ulong?`) — only `Model`/`Board`/`RamVariant`/`BankCount`/
+  `MonitorRomPath`/`Slot1CartridgePath`/`FloppyDrives` round-tripped. A `.cfg` or `.state`
+  saved with an explicit `RamSeed` silently lost it on load (fell back to a fresh random seed
+  via `EmulationRunner`, or `PageTable.DefaultRamSeed` elsewhere) — a real, silent correctness
+  gap against `RamSeed`'s own doc comment, which describes it as exactly the kind of override a
+  saved config should be able to pin (e.g. to reproduce a specific bug report that names its
+  seed).
+- **Fix:** added `RamSeed` to `ConfigDto` and wired it through `ToDto`/`FromDto` in
+  `src/P2000.Machine/State/MachineConfigFile.cs`. `MachineStateFile.cs` needed NO change —
+  it only ever serializes the config via `MachineConfigFile.Serialize`, so the fix is entirely
+  upstream of it.
+- **No version bump (`.cfg` or `.state`), and this is a deliberate call, not an oversight:**
+  the field is purely additive and nullable. An old file with no `ramSeed` key still
+  deserializes to `null` — IDENTICAL to today's (buggy) behaviour, so no old file's meaning
+  changes. This differs from the M20 `FloppyDrives` bump (which renamed/reshaped an EXISTING
+  field, so an old file's disk-mount intent would have silently changed under the new DTO) —
+  that was a real semantic break; this is a new field with no prior semantics to break. Matches
+  this file's own established precedent: `BankCount`/`MonitorRomPath`/`Slot1CartridgePath`/
+  `FloppyDrives` were all added to this same DTO over time without bumping
+  `MachineConfigFile.CurrentVersion` (still `1`).
+- **Tests:** `MachineConfigFileTests` (+2): explicit `RamSeed` round-trips; absent `RamSeed`
+  still defaults to `null`. `MachineStateFileTests` (+1): a full `.state` save/reload preserves
+  an explicit `RamSeed` via the embedded config. Full `P2000.Machine.Tests`: 458/458 green (was
+  455); `P2000.UI.Tests`: 99/99, unaffected (no call site changed).
+- **Applies to:** `src/P2000.Machine/State/MachineConfigFile.cs` (`ConfigDto.RamSeed`,
+  `ToDto`/`FromDto`), `tests/P2000.Machine.Tests/State/MachineConfigFileTests.cs`,
+  `tests/P2000.Machine.Tests/State/MachineStateFileTests.cs`.
+- **Synced:** no (implementation-only bug fix, no new hardware content).
+
 ### 2026-07-23 — Milestones 20/20a IMPLEMENTED: multi-drive floppy config + cassette/disk dirty-tracking
 - **Assumed (per the milestone's own text):** the multi-drive generalization would require real
   chip-layer (`Upd765`) changes — per-drive head/motor/state arrays.

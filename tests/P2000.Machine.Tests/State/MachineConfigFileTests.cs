@@ -81,6 +81,26 @@ public class MachineConfigFileTests
     }
 
     [Fact]
+    public void RoundTrip_ExplicitRamSeed_IsPreserved()
+    {
+        // Pre-existing gap (flagged during milestone 20/20a, now fixed): RamSeed was never
+        // wired into ConfigDto at all, so a .cfg/.state saved with an explicit RamSeed silently
+        // lost it on load — MachineConfig.RamSeed's own doc comment describes it as exactly the
+        // kind of override a saved config should be able to pin.
+        var original = new MachineConfig { RamSeed = 0xCAFEF00DDEADBEEF };
+        var restored = MachineConfigFile.Deserialize(MachineConfigFile.Serialize(original));
+
+        Assert.Equal(original.RamSeed, restored.RamSeed);
+    }
+
+    [Fact]
+    public void RoundTrip_NoRamSeed_DefaultsToNull()
+    {
+        var restored = MachineConfigFile.Deserialize(MachineConfigFile.Serialize(new MachineConfig()));
+        Assert.Null(restored.RamSeed);
+    }
+
+    [Fact]
     public void Serialize_ProducesReadableJson_WithVersionField()
     {
         var json = MachineConfigFile.Serialize(new MachineConfig());

@@ -153,6 +153,23 @@ public class MachineStateFileTests
         Assert.Equal(config.Board, restored.Config.Board);
     }
 
+    /// <summary>Pre-existing gap, flagged during milestone 20/20a and fixed here:
+    /// <see cref="MachineConfigFile"/>'s DTO never wired up <see cref="MachineConfig.RamSeed"/>,
+    /// so a <c>.state</c> saved with an explicit seed silently lost it on reload (the embedded
+    /// config is what <see cref="MachineStateFile.Load(System.IO.Stream)"/> rebuilds the machine
+    /// from). No version bump needed — purely additive, nullable field; an old file with no
+    /// <c>ramSeed</c> key still deserializes to <c>null</c>, identical to today's behaviour.</summary>
+    [Fact]
+    public void StateRoundTrip_ExplicitRamSeed_IsPreserved()
+    {
+        var config = new MachineConfig { RamSeed = 0x1122334455667788 };
+        var machine = new Machine(config);
+
+        var restored = SaveAndReload(machine);
+
+        Assert.Equal(config.RamSeed, restored.Config.RamSeed);
+    }
+
     /// <summary>Project CLAUDE.md §13 milestone 17: the optional Ctc block (present only when
     /// the FloppyRam board is fitted) and the aggregator's Lock bool both survive a round trip.</summary>
     [Fact]

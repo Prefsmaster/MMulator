@@ -68,6 +68,7 @@ public static class MachineConfigFile
         MonitorRomPath = c.MonitorRomPath,
         Slot1CartridgePath = c.Slot1CartridgePath,
         FloppyDrives = c.FloppyDrives.ToList(),
+        RamSeed = c.RamSeed,
     };
 
     private static MachineConfig FromDto(ConfigDto d) => new()
@@ -79,6 +80,7 @@ public static class MachineConfigFile
         MonitorRomPath = d.MonitorRomPath,
         Slot1CartridgePath = d.Slot1CartridgePath,
         FloppyDrives = d.FloppyDrives ?? new List<FloppyDriveConfig>(),
+        RamSeed = d.RamSeed,
     };
 
     private sealed class ConfigDto
@@ -91,5 +93,6 @@ public static class MachineConfigFile
         public string? MonitorRomPath { get; set; }
         public string? Slot1CartridgePath { get; set; }
         public List<FloppyDriveConfig>? FloppyDrives { get; set; }
+        public ulong? RamSeed { get; set; }
     }
 }

@@ -53,11 +53,23 @@ public sealed class Video : IDevice
     /// row, panned by <see cref="PanX"/> to select which 40-wide slice is visible.</summary>
     private const int BufferColumns = 80;
 
+    /// <summary>Fill colour for the blanking margins outside the active (144,98)-(784,578)
+    /// window (reference doc §4a) — the periods where the SAA5050 isn't driving active
+    /// picture. A very dark grey rather than pure black (UI/UX choice, not a hardware fact —
+    /// real hardware's blanking signal IS black) so the Full-Field crop's boundary against the
+    /// active window stays visible even when the active picture itself shows a black
+    /// background: background-colour-0 palette entries (<see cref="Saa5050Palette.ColorTable"/>)
+    /// are ALSO pure black, so without this the margin and an all-black screen would be
+    /// visually indistinguishable. BGRA8888, opaque alpha, RGB (32,32,32) — channel order is
+    /// irrelevant for a pure grey. <c>internal</c> (not <c>private</c>) so
+    /// <c>P2000.Machine.Tests</c> can assert against it directly.</summary>
+    internal const uint BlankingColor = 0xFF202020;
+
     private readonly PageTable _memory;
     private readonly VideoFetchUnit _fetchUnit = new();
     private readonly Saa5050Generator _generator = new();
 
-    private readonly uint[] _framebuffer = new uint[Width * Height];
+    private readonly uint[] _framebuffer = CreateBlankedFramebuffer();
     private readonly bool[] _corruptionOverlay = new bool[VideoFetchUnit.Columns * CharRows];
     private bool _oddField;
 
@@ -67,6 +79,13 @@ public sealed class Video : IDevice
         _fetchUnit.ColumnFetch += OnColumnFetch;
         _fetchUnit.LineComplete += OnLineComplete;
         _fetchUnit.FieldComplete += OnFieldComplete;
+    }
+
+    private static uint[] CreateBlankedFramebuffer()
+    {
+        var buffer = new uint[Width * Height];
+        Array.Fill(buffer, BlankingColor);
+        return buffer;
     }
 
     /// <summary>Upper-left X of the panned 40-column viewport into the 80-column screen
@@ -115,7 +134,7 @@ public sealed class Video : IDevice
         _fetchUnit.Reset();
         _generator.Reset();
         _oddField = false;
-        Array.Clear(_framebuffer);
+        Array.Fill(_framebuffer, BlankingColor);
         Array.Clear(_corruptionOverlay);
     }
 
@@ -153,7 +172,8 @@ public sealed class Video : IDevice
         // Interlaced (project CLAUDE.md §3): this field pass owns only ITS rows (even or odd),
         // not both - the other field's rows are left untouched from ~20 ms ago (the comb).
         // Offset into the active "graphics window" crop rectangle within the full-field buffer
-        // (reference doc §4a) - blanking pixels around it are never touched, staying flat black.
+        // (reference doc §4a) - blanking pixels around it are never touched, staying at
+        // BlankingColor (a very dark grey, not pure black - see that constant's doc comment).
         var row = ActiveOffsetY + activeLine * 2 + (_oddField ? 1 : 0);
         var pixelX = ActiveOffsetX + column * 16;
         _generator.RenderField(_framebuffer, row * Width + pixelX, oddField: _oddField);

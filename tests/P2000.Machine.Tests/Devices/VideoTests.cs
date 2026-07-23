@@ -58,10 +58,10 @@ public class VideoTests
         Array.Copy(video.Framebuffer, ActiveOrigin, actualEvenRow, 0, 16);
         Assert.Equal(expected, actualEvenRow);
 
-        // The odd row (y=1) has not been touched by this field at all - still zero.
+        // The odd row (y=1) has not been touched by this field at all - still the blanking fill.
         for (var pixel = OddRowOrigin; pixel < OddRowOrigin + 16; pixel++)
         {
-            Assert.Equal(0u, video.Framebuffer[pixel]);
+            Assert.Equal(Video.BlankingColor, video.Framebuffer[pixel]);
         }
     }
 
@@ -185,8 +185,25 @@ public class VideoTests
 
         video.Reset();
 
-        Assert.All(video.Framebuffer, pixel => Assert.Equal(0u, pixel));
+        Assert.All(video.Framebuffer, pixel => Assert.Equal(Video.BlankingColor, pixel));
         Assert.False(video.IsOddField);
+    }
+
+    /// <summary>Project CLAUDE.md §17, 2026-07-23: blanking margins fill with a very dark grey,
+    /// not pure black, so the Full-Field crop's boundary against the active window stays
+    /// visible even when the active picture itself shows an all-black background (background
+    /// colour 0 is also pure black — see <c>ExpectedCellRow</c>'s palette lookup).</summary>
+    [Fact]
+    public void FreshlyConstructed_BlankingMargin_IsDarkGrey_NotPureBlack()
+    {
+        var (video, _) = Create();
+
+        // A pixel well inside the leading horizontal blanking margin (column 0, row
+        // ActiveOffsetY - never touched by any fetch, active or otherwise).
+        var marginPixel = Video.ActiveOffsetY * Video.Width;
+
+        Assert.Equal(Video.BlankingColor, video.Framebuffer[marginPixel]);
+        Assert.NotEqual(0u, video.Framebuffer[marginPixel]);
     }
 
     /// <summary>

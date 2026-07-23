@@ -112,9 +112,16 @@ and any consumer (Avalonia display, a test, a screenshot writer) reads. Define i
     buffer — a constant crop rectangle, same every field (fixed hardware timing, not
     data-dependent). Horizontally symmetric (144 px border both sides of the 640 px active
     width) as a side effect of the 6-char-time retrace assumption, not independently confirmed.
-  - **Blanking pixels are always flat black** — no fetch happens there (§4/reference doc: no
-    VRAM access outside the active window), so there's no content to render and no contention
-    possible; just fill black, no `CombineRows` smoothing work needed for those rows.
+  - **Blanking pixels are a fixed fill colour, no per-fetch rendering** — no fetch happens
+    there (§4/reference doc: no VRAM access outside the active window), so there's no content
+    to render and no contention possible; no `CombineRows` smoothing work needed for those rows.
+    **CHANGED (2026-07-23, owner request — UI/UX choice, not a hardware fact):** filled with a
+    very dark grey (`Video.BlankingColor`, RGB (32,32,32)), not pure black — real hardware's
+    blanking signal genuinely IS black, but an all-black-background screen (background colour 0
+    is also pure black — reference doc §4/`Saa5050Palette`) would otherwise be visually
+    indistinguishable from the surrounding Full-Field margin. Filled once, at construction and
+    on `Reset()` (`Array.Fill`, not `Array.Clear`) — still no per-field fill cost, since the
+    active-window overwrite on every fetch is unaffected.
   - **Why this is the right owner (continuing the 2026-07-21 ownership correction below):** the
     machine's job is to produce the complete, truthful raw signal; the UI decides how much of
     it to show. This extends that same principle from "which field(s)" to "how much of each
@@ -1153,6 +1160,37 @@ Ordinary in-project choices: proceed and keep CI green.
 ---
 
 ## 17. Findings log (working scratchpad — synced to the reference doc by the human)
+
+### 2026-07-23 — CHANGED (owner request): blanking margin is now dark grey, not pure black
+- **Trigger:** owner reported the Full-Field crop's blanking margins render as full black,
+  making the boundary against an all-black active picture (background colour 0 is also pure
+  black — `Saa5050Palette.ColorTable`) invisible. Requested a very dark grey instead, purely
+  for visual debugging — NOT a hardware-accuracy claim; real hardware's blanking signal is
+  genuinely black.
+- **Fix:** added `Video.BlankingColor` (`internal const uint`, `0xFF202020` — BGRA8888, opaque,
+  RGB (32,32,32); channel order is irrelevant for a pure grey). `Video`'s framebuffer is now
+  filled with this (`Array.Fill`) instead of zeroed (`Array.Clear`) at both construction
+  (`CreateBlankedFramebuffer()`) and `Reset()`. Nothing else changes — the active window still
+  overwrites its own pixels every fetch regardless of what the margin holds, so there's no
+  added per-field cost, and `CorruptLastFetch`'s contention-corruption blanking (a distinct,
+  already-documented "black/suppression" concept — reference doc §4) is deliberately left as
+  pure black, unaffected by this change.
+- **Tests:** `VideoTests` (+1): a freshly-constructed machine's margin pixel is
+  `Video.BlankingColor`, not `0`. Updated 2 pre-existing tests that asserted an untouched pixel
+  is exactly `0u` (`FirstField_IsEven...`'s odd-row check, `Reset_ClearsTheFramebuffer...`) to
+  expect `Video.BlankingColor` instead — genuine behavior changes, not incidental breakage.
+  `MachineTests.Reset_ClearsTheVideoFramebuffer` renamed to
+  `Reset_FillsTheVideoFramebufferWithTheBlankingColor` and updated the same way. Full
+  `P2000.Machine.Tests`: 459/459 green (was 458). `P2000.UI.Tests` not re-run this pass — the
+  owner's own `P2000.UI` instance was running locally and holding a file lock on
+  `P2000.Machine.dll`; no `P2000.UI` source changed, so no regression expected, but flag to
+  re-run once free. **The owner's running instance predates this fix — needs a relaunch to
+  show the new margin colour** (same caveat as the 2026-07-21 pre-roll fix entry above).
+- **Applies to:** `src/P2000.Machine/Devices/Video.cs` (`BlankingColor`,
+  `CreateBlankedFramebuffer`, `Reset`), `tests/P2000.Machine.Tests/Devices/VideoTests.cs`,
+  `tests/P2000.Machine.Tests/MachineTests.cs`.
+- **Synced:** no (a deliberate debug/UX choice, explicitly not a hardware fact — nothing to
+  correct in the reference doc, which correctly still says real hardware's blanking is black).
 
 ### 2026-07-23 — FIXED: RamSeed never serialized in .cfg/.state (gap flagged during M20/20a)
 - **Bug:** `MachineConfigFile`'s `ConfigDto`/`ToDto`/`FromDto` never included

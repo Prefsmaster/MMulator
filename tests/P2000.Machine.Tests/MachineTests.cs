@@ -1,5 +1,6 @@
 using P2000.Machine.Contention;
 using P2000.Machine.Debug;
+using P2000.Machine.Devices;
 using P2000.Machine.Io;
 using P2000.Machine.Memory;
 
@@ -190,8 +191,10 @@ public class MachineTests
     }
 
     [Fact]
-    public void Reset_ClearsTheVideoFramebuffer()
+    public void Reset_FillsTheVideoFramebufferWithTheBlankingColor()
     {
+        // Not literally zero since project CLAUDE.md §17 (2026-07-23): blanking margins fill
+        // with a very dark grey (Video.BlankingColor), not pure black.
         var machine = new Machine();
         machine.Memory.Write(PageTable.VideoRamStart, (byte)'@');
         for (var i = 0; i < VideoFetchUnit.TStatesPerField; i++)
@@ -201,7 +204,7 @@ public class MachineTests
 
         machine.Reset();
 
-        Assert.All(machine.Video.Framebuffer, pixel => Assert.Equal(0u, pixel));
+        Assert.All(machine.Video.Framebuffer, pixel => Assert.Equal(Video.BlankingColor, pixel));
     }
 
     // ---- Keyboard wiring (milestone 8) --------------------------------------------

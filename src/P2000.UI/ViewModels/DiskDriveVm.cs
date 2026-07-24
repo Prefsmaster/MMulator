@@ -43,8 +43,8 @@ public sealed partial class DiskDriveVm : ObservableObject
     /// <summary>True when the mounted image has unsaved changes (machine milestone 20a
     /// <c>DskImage.IsDirty</c>) — surfaced in the tab header (project CLAUDE.md §14 "DRIVE
     /// TABS" decision, 2026-07-23) so the user can tell which drives have pending changes
-    /// without opening each tab. Not yet wired to an eject/replace warning (milestone 14a,
-    /// still unbuilt) — this is only the display half.</summary>
+    /// without opening each tab. Also gates the eject/replace unsaved-changes warning
+    /// (milestone 14a, via <see cref="ConfirmDiscardRequested"/>).</summary>
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(TabHeader))]
     private bool _isDirty;
@@ -78,6 +78,13 @@ public sealed partial class DiskDriveVm : ObservableObject
 
     /// <summary>Raised when a save error should be surfaced as a dialog.</summary>
     public event Action<string>? ShowMessageRequested;
+
+    /// <summary>Raised before an eject/replace that would discard unsaved changes (project
+    /// CLAUDE.md §14 milestone 14a — wired to <c>DskImage.IsDirty</c>, machine ms.20a). The
+    /// view must show a Discard/Cancel dialog and resolve true to proceed, false to cancel. No
+    /// subscriber (e.g. headless tests) means "proceed" — the machine-layer flag, not this
+    /// event, is what actually gates the warning.</summary>
+    public event Func<string, Task<bool>>? ConfirmDiscardRequested;
 
     public DiskDriveVm(EmulationRunner runner, int driveIndex, int capacity, DiskSides sides)
     {
@@ -149,12 +156,38 @@ public sealed partial class DiskDriveVm : ObservableObject
         await stream.CopyToAsync(ms);
         var name = Path.GetFileNameWithoutExtension(files[0].Name);
 
-        MountBytes(ms.ToArray(), name, files[0]);
+        await TryMountBytesAsync(ms.ToArray(), name, files[0]);
+    }
+
+    /// <summary>Gate for eject/replace (§14 milestone 14a): true immediately when the mounted
+    /// image isn't dirty (the common case — no added friction) or when no view has subscribed
+    /// (headless/tests); otherwise defers to <see cref="ConfirmDiscardRequested"/> and returns
+    /// its Discard(true)/Cancel(false) answer.</summary>
+    private Task<bool> ConfirmDiscardAsync(string action)
+    {
+        var dirty = _runner.Machine.Fdc?.GetDisk(DriveIndex)?.IsDirty ?? false;
+        if (!dirty || ConfirmDiscardRequested is null)
+            return Task.FromResult(true);
+        return ConfirmDiscardRequested($"Drive {DriveIndex}'s disk has unsaved changes — {action} anyway?");
+    }
+
+    /// <summary>Gated entry point for a user-initiated mount (file dialog or drag-drop) that
+    /// may replace an already-mounted, dirty image (§14 milestone 14a). Runs the same
+    /// discard-confirmation as <see cref="EjectAsync"/>/<see cref="NewBlankDiskAsync"/> before
+    /// calling <see cref="MountBytes"/>; returns false without mounting if the user cancels.
+    /// Called by the drag-drop handler in <see cref="Views.DiskDriveWindow"/>.</summary>
+    public async Task<bool> TryMountBytesAsync(byte[] diskImage, string filename, IStorageFile? backingFile = null)
+    {
+        if (!await ConfirmDiscardAsync("replace")) return false;
+        MountBytes(diskImage, filename, backingFile);
+        return true;
     }
 
     /// <summary>Mounts a <c>.dsk</c> image at runtime (host-side, always fast — machine M19/
-    /// M20). Also called by a future drag-drop handler. <paramref name="backingFile"/> becomes
-    /// this drive's Save target; pass null for an unbacked mount.</summary>
+    /// M20), unconditionally — no discard-confirmation. <paramref name="backingFile"/> becomes
+    /// this drive's Save target; pass null for an unbacked mount. User-facing mount paths
+    /// should go through <see cref="TryMountBytesAsync"/> instead so a dirty image isn't
+    /// silently discarded.</summary>
     public void MountBytes(byte[] diskImage, string filename, IStorageFile? backingFile = null)
     {
         var fdc = _runner.Machine.Fdc;
@@ -181,8 +214,10 @@ public sealed partial class DiskDriveVm : ObservableObject
     }
 
     [RelayCommand(CanExecute = nameof(HasImage))]
-    private void Eject()
+    private async Task EjectAsync()
     {
+        if (!await ConfirmDiscardAsync("eject")) return;
+
         _runner.Machine.Fdc?.EjectDisk(DriveIndex);
         _backingFile = null;
         HasImage = false;
@@ -198,8 +233,10 @@ public sealed partial class DiskDriveVm : ObservableObject
     /// still has to format it via its own routine before it's usable, same as a real blank
     /// floppy.</summary>
     [RelayCommand]
-    private void NewBlankDisk()
+    private async Task NewBlankDiskAsync()
     {
+        if (!await ConfirmDiscardAsync("replace")) return;
+
         var fdc = _runner.Machine.Fdc;
         if (fdc is null) return;
 

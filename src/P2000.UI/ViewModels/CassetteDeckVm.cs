@@ -46,6 +46,13 @@ public sealed partial class CassetteDeckVm : ObservableObject
     /// <summary>Raised when a save error should be surfaced as a dialog.</summary>
     public event Action<string>? ShowMessageRequested;
 
+    /// <summary>Raised before an eject/replace that would discard unsaved changes (project
+    /// CLAUDE.md §14 milestone 14a — wired to <c>MdcrDevice.IsDirty</c>, machine ms.20a). The
+    /// view must show a Discard/Cancel dialog and resolve true to proceed, false to cancel. No
+    /// subscriber (e.g. headless tests) means "proceed" — the machine-layer flag, not this
+    /// event, is what actually gates the warning.</summary>
+    public event Func<string, Task<bool>>? ConfirmDiscardRequested;
+
     public CassetteDeckVm(EmulationRunner runner)
     {
         _runner = runner;
@@ -113,12 +120,14 @@ public sealed partial class CassetteDeckVm : ObservableObject
         var bytes = ms.ToArray();
         var name = Path.GetFileNameWithoutExtension(files[0].Name);
 
-        MountBytes(bytes, name, files[0]);
+        await TryMountBytesAsync(bytes, name, files[0]);
     }
 
     [RelayCommand(CanExecute = nameof(CanEject))]
-    private void Eject()
+    private async Task EjectAsync()
     {
+        if (!await ConfirmDiscardAsync("eject")) return;
+
         _runner.Machine.Mdcr.EjectTape();
         _casBytes = null;
         _backingFile = null;
@@ -130,6 +139,17 @@ public sealed partial class CassetteDeckVm : ObservableObject
     }
 
     private bool CanEject() => HasTape;
+
+    /// <summary>Gate for eject/replace (§14 milestone 14a): true immediately when the mounted
+    /// tape isn't dirty (the common case — no added friction) or when no view has subscribed
+    /// (headless/tests); otherwise defers to <see cref="ConfirmDiscardRequested"/> and returns
+    /// its Discard(true)/Cancel(false) answer.</summary>
+    private Task<bool> ConfirmDiscardAsync(string action)
+    {
+        if (!_runner.Machine.Mdcr.IsDirty || ConfirmDiscardRequested is null)
+            return Task.FromResult(true);
+        return ConfirmDiscardRequested($"This tape has unsaved changes — {action} anyway?");
+    }
 
     /// <summary>Flips the mounted tape's write-protect state (the clickable padlock, §14
     /// milestone 13a). Setting <see cref="IsWriteProtected"/> is itself what pushes to the
@@ -143,8 +163,10 @@ public sealed partial class CassetteDeckVm : ObservableObject
     /// live runtime exception a file-dialog mount already uses, not a topology change. No
     /// format step: the blank tape is immediately writable (CSAVE appends at BOT).</summary>
     [RelayCommand]
-    private void NewBlankTape()
+    private async Task NewBlankTapeAsync()
     {
+        if (!await ConfirmDiscardAsync("replace")) return;
+
         _runner.Machine.Mdcr.InsertBlankTape();
         _casBytes = null;
         _backingFile = null;
@@ -230,11 +252,23 @@ public sealed partial class CassetteDeckVm : ObservableObject
 
     // ── Public host-face (called by drag-drop handler in the view) ──────────────────────────
 
-    /// <summary>Inserts a <c>.cas</c> image at runtime (live CIP transition). Safe to call
-    /// from the UI thread. Also called by the drag-drop handler in
-    /// <see cref="Views.DisplayWindow"/>. <paramref name="backingFile"/> is the source file
-    /// when known (file dialog/drag-drop) — it becomes the tape's Save target; pass null for
-    /// an unbacked mount.</summary>
+    /// <summary>Gated entry point for a user-initiated mount (file dialog or drag-drop) that
+    /// may replace an already-mounted, dirty tape (§14 milestone 14a). Runs the same
+    /// discard-confirmation as <see cref="EjectAsync"/>/<see cref="NewBlankTapeAsync"/> before
+    /// calling <see cref="MountBytes"/>; returns false without mounting if the user cancels.
+    /// Called by the drag-drop handler in <see cref="Views.DisplayWindow"/>.</summary>
+    public async Task<bool> TryMountBytesAsync(byte[] casImage, string filename, IStorageFile? backingFile = null)
+    {
+        if (!await ConfirmDiscardAsync("replace")) return false;
+        MountBytes(casImage, filename, backingFile);
+        return true;
+    }
+
+    /// <summary>Inserts a <c>.cas</c> image at runtime (live CIP transition), unconditionally —
+    /// no discard-confirmation. Safe to call from the UI thread. <paramref name="backingFile"/>
+    /// is the source file when known (file dialog/drag-drop) — it becomes the tape's Save
+    /// target; pass null for an unbacked mount. User-facing mount paths should go through
+    /// <see cref="TryMountBytesAsync"/> instead so a dirty tape isn't silently discarded.</summary>
     public void MountBytes(byte[] casImage, string filename, IStorageFile? backingFile = null)
     {
         // Write-protect is read from the file itself (record offset 0x50, bit 0 — machine

@@ -34,6 +34,11 @@ public sealed partial class DiskDriveWindowVm : ObservableObject
     /// <summary>Raised when a drive's save/mount error should be surfaced as a dialog.</summary>
     public event Action<string>? ShowMessageRequested;
 
+    /// <summary>Raised when a drive's eject/replace needs the unsaved-changes Discard/Cancel
+    /// dialog (§14 milestone 14a) — relayed from whichever <see cref="DiskDriveVm"/> triggered
+    /// it, same aggregation pattern as <see cref="ShowMessageRequested"/>.</summary>
+    public event Func<string, Task<bool>>? ConfirmDiscardRequested;
+
     public DiskDriveWindowVm(EmulationRunner runner)
     {
         _runner = runner;
@@ -51,6 +56,7 @@ public sealed partial class DiskDriveWindowVm : ObservableObject
         foreach (var drive in Drives)
         {
             drive.ShowMessageRequested -= OnDriveMessage;
+            drive.ConfirmDiscardRequested -= OnDriveConfirmDiscard;
             drive.Detach();
         }
         Drives.Clear();
@@ -65,6 +71,7 @@ public sealed partial class DiskDriveWindowVm : ObservableObject
             if (!driveConfig.Enabled) continue;
             var vm = new DiskDriveVm(_runner, driveConfig.DriveIndex, driveConfig.Capacity, driveConfig.Sides);
             vm.ShowMessageRequested += OnDriveMessage;
+            vm.ConfirmDiscardRequested += OnDriveConfirmDiscard;
             Drives.Add(vm);
         }
         SelectedDrive = Drives.Count > 0 ? Drives[0] : null;
@@ -72,12 +79,16 @@ public sealed partial class DiskDriveWindowVm : ObservableObject
 
     private void OnDriveMessage(string message) => ShowMessageRequested?.Invoke(message);
 
+    private Task<bool> OnDriveConfirmDiscard(string message) =>
+        ConfirmDiscardRequested?.Invoke(message) ?? Task.FromResult(true);
+
     public void Detach()
     {
         _runner.FrameReady -= OnFrameReady;
         foreach (var drive in Drives)
         {
             drive.ShowMessageRequested -= OnDriveMessage;
+            drive.ConfirmDiscardRequested -= OnDriveConfirmDiscard;
             drive.Detach();
         }
     }

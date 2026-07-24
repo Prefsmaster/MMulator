@@ -182,6 +182,165 @@ public class CassetteDeckVmTests
         Assert.Equal("(blank tape)", vm.TapeLabel);
     }
 
+    // ---- Unsaved-changes discard confirmation (§14 milestone 14a) --------------------------
+    // ConfirmDiscardRequested is wired to the machine-layer MdcrDevice.IsDirty (machine ms.20a);
+    // WriteBlockAtHead is the turbo-trap write path already used by MdcrDeviceTests to dirty a
+    // tape without driving the ROM.
+
+    [Fact]
+    public void Eject_CleanTape_NoConfirmDialogShown()
+    {
+        var runner = new EmulationRunner();
+        var vm = new CassetteDeckVm(runner);
+        vm.NewBlankTapeCommand.Execute(null);
+        var confirmShown = false;
+        vm.ConfirmDiscardRequested += _ => { confirmShown = true; return Task.FromResult(true); };
+
+        vm.EjectCommand.Execute(null);
+
+        Assert.False(confirmShown);
+        Assert.False(vm.HasTape);
+    }
+
+    [Fact]
+    public void Eject_DirtyTape_ShowsConfirmDialog()
+    {
+        var runner = new EmulationRunner();
+        var vm = new CassetteDeckVm(runner);
+        vm.NewBlankTapeCommand.Execute(null);
+        runner.Machine.Mdcr.WriteBlockAtHead(new byte[32], new byte[1024]);
+        var confirmShown = false;
+        vm.ConfirmDiscardRequested += _ => { confirmShown = true; return Task.FromResult(true); };
+
+        vm.EjectCommand.Execute(null);
+
+        Assert.True(confirmShown);
+    }
+
+    [Fact]
+    public void Eject_DirtyTape_CancelLeavesTapeMountedAndStillDirty()
+    {
+        var runner = new EmulationRunner();
+        var vm = new CassetteDeckVm(runner);
+        vm.NewBlankTapeCommand.Execute(null);
+        runner.Machine.Mdcr.WriteBlockAtHead(new byte[32], new byte[1024]);
+        vm.ConfirmDiscardRequested += _ => Task.FromResult(false); // Cancel
+
+        vm.EjectCommand.Execute(null);
+
+        Assert.True(vm.HasTape);
+        Assert.True(runner.Machine.Mdcr.IsDirty);
+    }
+
+    [Fact]
+    public void Eject_DirtyTape_DiscardProceedsExactlyAsAnUnconfirmedEject()
+    {
+        var runner = new EmulationRunner();
+        var vm = new CassetteDeckVm(runner);
+        vm.NewBlankTapeCommand.Execute(null);
+        runner.Machine.Mdcr.WriteBlockAtHead(new byte[32], new byte[1024]);
+        vm.ConfirmDiscardRequested += _ => Task.FromResult(true); // Discard
+
+        vm.EjectCommand.Execute(null);
+
+        Assert.False(vm.HasTape);
+        Assert.Equal("No cassette", vm.TapeLabel);
+    }
+
+    [Fact]
+    public void Eject_AfterSaveClearsDirty_NoConfirmDialog()
+    {
+        // Stand-in for a real Save/Save-as (untestable headless — no desktop TopLevel, same
+        // limitation noted at the top of this file): MarkClean() is exactly what a successful
+        // save calls machine-side, so this isolates "clean again → no prompt" from the file I/O.
+        var runner = new EmulationRunner();
+        var vm = new CassetteDeckVm(runner);
+        vm.NewBlankTapeCommand.Execute(null);
+        runner.Machine.Mdcr.WriteBlockAtHead(new byte[32], new byte[1024]);
+        runner.Machine.Mdcr.MarkClean();
+        var confirmShown = false;
+        vm.ConfirmDiscardRequested += _ => { confirmShown = true; return Task.FromResult(true); };
+
+        vm.EjectCommand.Execute(null);
+
+        Assert.False(confirmShown);
+        Assert.False(vm.HasTape);
+    }
+
+    [Fact]
+    public void NewBlankTape_OverDirtyTape_CancelLeavesOriginalMounted()
+    {
+        var runner = new EmulationRunner();
+        var vm = new CassetteDeckVm(runner);
+        vm.MountBytes(OneCasRecord(), "ORIGINAL");
+        runner.Machine.Mdcr.WriteBlockAtHead(new byte[32], new byte[1024]);
+        vm.ConfirmDiscardRequested += _ => Task.FromResult(false);
+
+        vm.NewBlankTapeCommand.Execute(null);
+
+        Assert.Equal("ORIGINAL", vm.TapeLabel);
+    }
+
+    [Fact]
+    public void NewBlankTape_OverDirtyTape_DiscardReplacesIt()
+    {
+        var runner = new EmulationRunner();
+        var vm = new CassetteDeckVm(runner);
+        vm.MountBytes(OneCasRecord(), "ORIGINAL");
+        runner.Machine.Mdcr.WriteBlockAtHead(new byte[32], new byte[1024]);
+        vm.ConfirmDiscardRequested += _ => Task.FromResult(true);
+
+        vm.NewBlankTapeCommand.Execute(null);
+
+        Assert.Equal("(blank tape)", vm.TapeLabel);
+    }
+
+    [Fact]
+    public async Task TryMountBytesAsync_OverDirtyTape_CancelLeavesOriginalMounted()
+    {
+        var runner = new EmulationRunner();
+        var vm = new CassetteDeckVm(runner);
+        vm.MountBytes(OneCasRecord(), "ORIGINAL");
+        runner.Machine.Mdcr.WriteBlockAtHead(new byte[32], new byte[1024]);
+        vm.ConfirmDiscardRequested += _ => Task.FromResult(false);
+
+        var mounted = await vm.TryMountBytesAsync(OneCasRecord(), "REPLACEMENT");
+
+        Assert.False(mounted);
+        Assert.Equal("ORIGINAL", vm.TapeLabel);
+    }
+
+    [Fact]
+    public async Task TryMountBytesAsync_OverDirtyTape_DiscardReplacesIt()
+    {
+        var runner = new EmulationRunner();
+        var vm = new CassetteDeckVm(runner);
+        vm.MountBytes(OneCasRecord(), "ORIGINAL");
+        runner.Machine.Mdcr.WriteBlockAtHead(new byte[32], new byte[1024]);
+        vm.ConfirmDiscardRequested += _ => Task.FromResult(true);
+
+        var mounted = await vm.TryMountBytesAsync(OneCasRecord(), "REPLACEMENT");
+
+        Assert.True(mounted);
+        Assert.Equal("REPLACEMENT", vm.TapeLabel);
+    }
+
+    [Fact]
+    public async Task TryMountBytesAsync_OverCleanTape_NoConfirmDialogShown()
+    {
+        var runner = new EmulationRunner();
+        var vm = new CassetteDeckVm(runner);
+        vm.MountBytes(OneCasRecord(), "ORIGINAL");
+        var confirmShown = false;
+        vm.ConfirmDiscardRequested += _ => { confirmShown = true; return Task.FromResult(true); };
+
+        var mounted = await vm.TryMountBytesAsync(OneCasRecord(), "REPLACEMENT");
+
+        Assert.False(confirmShown);
+        Assert.True(mounted);
+        Assert.Equal("REPLACEMENT", vm.TapeLabel);
+    }
+
     // Note: the directory-refresh-on-motor-stop fix (RefreshDirectoryFromLiveTape, wired from
     // OnFrameReady) is not unit-tested here. A live Machine actively runs the embedded ROM,
     // which drives CPOUT itself (keyboard scan, its own CIP-triggered auto-load attempt on a

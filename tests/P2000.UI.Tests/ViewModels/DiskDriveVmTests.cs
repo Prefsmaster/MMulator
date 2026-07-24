@@ -329,6 +329,168 @@ public class DiskDriveVmTests
         runner.Dispose();
     }
 
+    // ---- Unsaved-changes discard confirmation (§14 milestone 14a) --------------------------
+    // ConfirmDiscardRequested is wired to the machine-layer DskImage.IsDirty (machine ms.20a);
+    // WriteSector is the same write path DiskDriveVmTests' own dirty-tracking tests above use.
+
+    [AvaloniaFact]
+    public async Task Eject_CleanDisk_NoConfirmDialogShown()
+    {
+        var runner = await NewFloppyRunnerAsync();
+        var vm = NewVm(runner);
+        vm.NewBlankDiskCommand.Execute(null);
+        var confirmShown = false;
+        vm.ConfirmDiscardRequested += _ => { confirmShown = true; return Task.FromResult(true); };
+
+        vm.EjectCommand.Execute(null);
+
+        Assert.False(confirmShown);
+        Assert.False(vm.HasImage);
+
+        runner.Dispose();
+    }
+
+    [AvaloniaFact]
+    public async Task Eject_DirtyDisk_ShowsConfirmDialog()
+    {
+        var runner = await NewFloppyRunnerAsync();
+        var vm = NewVm(runner);
+        vm.NewBlankDiskCommand.Execute(null);
+        runner.Machine.Fdc!.GetDisk(0)!.WriteSector(0, 0, 1, new byte[256]);
+        var confirmShown = false;
+        vm.ConfirmDiscardRequested += _ => { confirmShown = true; return Task.FromResult(true); };
+
+        vm.EjectCommand.Execute(null);
+
+        Assert.True(confirmShown);
+
+        runner.Dispose();
+    }
+
+    [AvaloniaFact]
+    public async Task Eject_DirtyDisk_CancelLeavesImageMountedAndStillDirty()
+    {
+        var runner = await NewFloppyRunnerAsync();
+        var vm = NewVm(runner);
+        vm.NewBlankDiskCommand.Execute(null);
+        var disk = runner.Machine.Fdc!.GetDisk(0)!;
+        disk.WriteSector(0, 0, 1, new byte[256]);
+        vm.ConfirmDiscardRequested += _ => Task.FromResult(false); // Cancel
+
+        vm.EjectCommand.Execute(null);
+
+        Assert.True(vm.HasImage);
+        Assert.True(disk.IsDirty);
+
+        runner.Dispose();
+    }
+
+    [AvaloniaFact]
+    public async Task Eject_DirtyDisk_DiscardProceedsExactlyAsAnUnconfirmedEject()
+    {
+        var runner = await NewFloppyRunnerAsync();
+        var vm = NewVm(runner);
+        vm.NewBlankDiskCommand.Execute(null);
+        runner.Machine.Fdc!.GetDisk(0)!.WriteSector(0, 0, 1, new byte[256]);
+        vm.ConfirmDiscardRequested += _ => Task.FromResult(true); // Discard
+
+        vm.EjectCommand.Execute(null);
+
+        Assert.False(vm.HasImage);
+        Assert.Null(runner.Machine.Fdc!.GetDisk(0));
+
+        runner.Dispose();
+    }
+
+    [AvaloniaFact]
+    public async Task Eject_AfterSaveClearsDirty_NoConfirmDialog()
+    {
+        // Stand-in for a real Save/Save-as (untestable headless — no desktop TopLevel, same
+        // limitation noted at the top of this file): MarkClean() is exactly what a successful
+        // save calls machine-side, so this isolates "clean again → no prompt" from the file I/O.
+        var runner = await NewFloppyRunnerAsync();
+        var vm = NewVm(runner);
+        vm.NewBlankDiskCommand.Execute(null);
+        var disk = runner.Machine.Fdc!.GetDisk(0)!;
+        disk.WriteSector(0, 0, 1, new byte[256]);
+        disk.MarkClean();
+        var confirmShown = false;
+        vm.ConfirmDiscardRequested += _ => { confirmShown = true; return Task.FromResult(true); };
+
+        vm.EjectCommand.Execute(null);
+
+        Assert.False(confirmShown);
+        Assert.False(vm.HasImage);
+
+        runner.Dispose();
+    }
+
+    [AvaloniaFact]
+    public async Task NewBlankDisk_OverDirtyImage_CancelLeavesOriginalMounted()
+    {
+        var runner = await NewFloppyRunnerAsync();
+        var vm = NewVm(runner);
+        vm.MountBytes(BuildSyntheticImage(40, 2), "ORIGINAL");
+        runner.Machine.Fdc!.GetDisk(0)!.WriteSector(0, 0, 1, new byte[256]);
+        vm.ConfirmDiscardRequested += _ => Task.FromResult(false);
+
+        vm.NewBlankDiskCommand.Execute(null);
+
+        Assert.Equal("ORIGINAL", vm.ImageLabel);
+
+        runner.Dispose();
+    }
+
+    [AvaloniaFact]
+    public async Task NewBlankDisk_OverDirtyImage_DiscardReplacesIt()
+    {
+        var runner = await NewFloppyRunnerAsync();
+        var vm = NewVm(runner);
+        vm.MountBytes(BuildSyntheticImage(40, 2), "ORIGINAL");
+        runner.Machine.Fdc!.GetDisk(0)!.WriteSector(0, 0, 1, new byte[256]);
+        vm.ConfirmDiscardRequested += _ => Task.FromResult(true);
+
+        vm.NewBlankDiskCommand.Execute(null);
+
+        Assert.Equal("(blank disk)", vm.ImageLabel);
+
+        runner.Dispose();
+    }
+
+    [AvaloniaFact]
+    public async Task TryMountBytesAsync_OverDirtyImage_CancelLeavesOriginalMounted()
+    {
+        var runner = await NewFloppyRunnerAsync();
+        var vm = NewVm(runner);
+        vm.MountBytes(BuildSyntheticImage(40, 2), "ORIGINAL");
+        runner.Machine.Fdc!.GetDisk(0)!.WriteSector(0, 0, 1, new byte[256]);
+        vm.ConfirmDiscardRequested += _ => Task.FromResult(false);
+
+        var mounted = await vm.TryMountBytesAsync(BuildSyntheticImage(40, 2), "REPLACEMENT");
+
+        Assert.False(mounted);
+        Assert.Equal("ORIGINAL", vm.ImageLabel);
+
+        runner.Dispose();
+    }
+
+    [AvaloniaFact]
+    public async Task TryMountBytesAsync_OverDirtyImage_DiscardReplacesIt()
+    {
+        var runner = await NewFloppyRunnerAsync();
+        var vm = NewVm(runner);
+        vm.MountBytes(BuildSyntheticImage(40, 2), "ORIGINAL");
+        runner.Machine.Fdc!.GetDisk(0)!.WriteSector(0, 0, 1, new byte[256]);
+        vm.ConfirmDiscardRequested += _ => Task.FromResult(true);
+
+        var mounted = await vm.TryMountBytesAsync(BuildSyntheticImage(40, 2), "REPLACEMENT");
+
+        Assert.True(mounted);
+        Assert.Equal("REPLACEMENT", vm.ImageLabel);
+
+        runner.Dispose();
+    }
+
     [AvaloniaFact]
     public async Task TabHeader_IncludesDriveIndexAndImageLabel()
     {

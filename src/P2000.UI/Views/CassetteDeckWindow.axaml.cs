@@ -12,12 +12,18 @@ public partial class CassetteDeckWindow : Window
     protected override void OnDataContextChanged(EventArgs e)
     {
         if (_vm is not null)
+        {
             _vm.ShowMessageRequested -= ShowErrorDialog;
+            _vm.ConfirmDiscardRequested -= ShowConfirmDiscardDialog;
+        }
 
         _vm = DataContext as CassetteDeckVm;
 
         if (_vm is not null)
+        {
             _vm.ShowMessageRequested += ShowErrorDialog;
+            _vm.ConfirmDiscardRequested += ShowConfirmDiscardDialog;
+        }
 
         base.OnDataContextChanged(e);
     }
@@ -50,5 +56,40 @@ public partial class CassetteDeckWindow : Window
             }
         };
         await dialog.ShowDialog(this);
+    }
+
+    // ── Discard/Cancel dialog (unsaved-changes warning, §14 milestone 14a) ──────────────────
+    private async Task<bool> ShowConfirmDiscardDialog(string message)
+    {
+        var dialog = new Window
+        {
+            Title = "MMulator",
+            Width = 440, Height = 190,
+            CanResize = false,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+        };
+        var result = false;
+        var cancel = new Button { Content = "Cancel", MinWidth = 80 };
+        var discard = new Button { Content = "Discard", MinWidth = 80 };
+        cancel.Click += (_, _) => { result = false; dialog.Close(); };
+        discard.Click += (_, _) => { result = true; dialog.Close(); };
+        dialog.Content = new StackPanel
+        {
+            Margin = new Avalonia.Thickness(20),
+            Spacing = 16,
+            Children =
+            {
+                new TextBlock { Text = message, TextWrapping = Avalonia.Media.TextWrapping.Wrap },
+                new StackPanel
+                {
+                    Orientation = Avalonia.Layout.Orientation.Horizontal,
+                    Spacing = 8,
+                    HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Center,
+                    Children = { cancel, discard },
+                },
+            }
+        };
+        await dialog.ShowDialog(this);
+        return result;
     }
 }

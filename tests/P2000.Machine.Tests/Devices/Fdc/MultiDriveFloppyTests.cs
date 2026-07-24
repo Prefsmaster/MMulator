@@ -260,6 +260,10 @@ public class MultiDriveFloppyTests
             fdc.WriteData(0x00);
             fdc.WriteData(0x00);
             for (var i = 0; i < 256; i++) fdc.WriteData(0xAA);
+            // Milestone 19a backfilled a real 7-byte result phase for every command — drain it
+            // back to Idle before the next command, exactly as the real ROM's completion ISR
+            // does (Disk.asm read_IO_status -> read_status_bytes with B=7).
+            for (var i = 0; i < 7; i++) fdc.ReadData();
         }
 
         WriteDataToDrive(0);

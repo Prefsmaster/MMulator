@@ -4,24 +4,33 @@ using P2000.Machine.State;
 namespace P2000.Machine.Devices.Fdc;
 
 /// <summary>
-/// Standalone, board-agnostic µPD765 floppy disk controller (project CLAUDE.md §13 milestone
-/// 19; reference doc §5d; format specifics <c>docs/JWSDOS-format.md</c>). Modelled like the
-/// SAA5050/Z80-CTC: the chip has no opinion on which board it's mounted on. The OWNING BOARD
-/// (<see cref="InternalExtensionBoard"/>) maps <see cref="ReadStatus"/>/<see cref="ReadData"/>/
-/// <see cref="WriteData"/>/<see cref="ReadControl"/>/<see cref="WriteControl"/> onto ports
-/// 0x8C/0x8D/0x90 and wires <see cref="ResultReady"/> to the CTC ch0 CLK/TRG input — the FDC
-/// has NO direct CPU INT line (reference doc §5d).
+/// Standalone, board-agnostic µPD765 floppy disk controller (project CLAUDE.md §13 milestones
+/// 19 and 19a; reference doc §5d; <c>docs/FDC-implementation.md</c> for the full device guide).
+/// Modelled like the SAA5050/Z80-CTC: the chip has no opinion on which board it's mounted on.
+/// The OWNING BOARD (<see cref="InternalExtensionBoard"/>) maps <see cref="ReadStatus"/>/
+/// <see cref="ReadData"/>/<see cref="WriteData"/>/<see cref="ReadControl"/>/
+/// <see cref="WriteControl"/> onto ports 0x8C/0x8D/0x90 and wires <see cref="ResultReady"/> to
+/// the CTC ch0 CLK/TRG input — the FDC has NO direct CPU INT line (reference doc §5d).
 ///
-/// Command subset is exactly what the ROM driver issues (reference doc §5d, confirmed exact
-/// bytes) — SPECIFY, RECALIBRATE, SEEK, READ DATA, WRITE DATA, SENSE INTERRUPT STATUS. Match
-/// dispatch on the opcode byte and standard µPD765 parameter-block positions, not a
-/// reconstructed MT/MF/SK bit-flag theory of the opcode itself.
+/// <b>Full 15-command µPD765/8272A set</b> (milestone 19a — chip fidelity for its own sake, the
+/// same way <c>Z80.Core</c> targets the whole instruction set rather than just what one ROM
+/// uses). Dispatch keys on the command byte's masked base opcode (bits 4-0; <see cref="OpcodeMask"/>
+/// strips MT/MF/SK), not a literal per-caller byte — this generalizes milestone 19's "match on
+/// real confirmed bytes" rule to the full command space, since 6 of the 15 (7 counting Sense
+/// Drive Status, 8 counting Format A Track) are real, confirmed ROM/JWSDOS/JWSFormat usage and
+/// the remaining 7 have no known real P2000 caller (docs/FDC-implementation.md §2/§4).
 ///
-/// <b>Deliberate simplification (documented, not ROM-confirmed either way):</b> READ DATA/WRITE
-/// DATA do not implement their own 7-byte result phase (ST0/ST1/ST2/C/H/R/N) — the ROM driver
-/// never reads it (the FDC's result-phase INT redirects the polling loop's return address
-/// instead, an ISR technique, not a protocol requirement per <c>docs/JWSDOS-format.md</c> §6).
-/// <see cref="ResultReady"/> fires and the chip returns directly to <see cref="Phase.Idle"/>.
+/// <b>Opcode-identity finding (project CLAUDE.md §17, 2026-07-24):</b> the byte milestone 19
+/// confirmed from the ROM disassembly and labelled "READ DATA" — <c>0x42</c> — does NOT decode
+/// to READ DATA's official base opcode (<c>0x06</c>). WRITE DATA's own confirmed real byte
+/// (<c>0x45 = 0x05|0x40</c>) already proves the MF bit (bit 6) is set platform-wide, and
+/// <c>0x42</c> can only equal <c>0x02|0x40</c> (READ A TRACK's base, per the datasheet's own
+/// numbering) — never <c>0x06|0x40 = 0x46</c>. So the ROM's real read command is READ A TRACK,
+/// not READ DATA: it necessarily ignores R and always starts at sector 1 (right after the index
+/// pulse) rather than searching for R. This is behaviourally invisible in every known real usage
+/// (R is always 1 there), so nothing that worked before changes — but a genuine, separate READ
+/// DATA (<c>0x06</c>) now exists as one of the 7 synthetic-only commands, since no real P2000
+/// software has been found to issue it.
 /// </summary>
 public sealed class Upd765 : IDevice
 {
@@ -55,15 +64,65 @@ public sealed class Upd765 : IDevice
     private enum Phase { Idle, CommandPhase, ExecutionPhase, ResultPhase }
     private enum PendingAction { None, SeekSettle, ByteReady }
 
+    /// <summary>Which of the 15 commands is driving the current execution-phase byte loop —
+    /// needed because the loop's shape (direction, per-byte meaning, completion behaviour)
+    /// differs per command (docs/FDC-implementation.md §6).</summary>
+    private enum TransferKind
+    {
+        None,
+        ReadData,
+        WriteData,
+        ReadDeletedData,
+        WriteDeletedData,
+        ReadTrack,
+        Format,
+        ScanEqual,
+        ScanLowOrEqual,
+        ScanHighOrEqual,
+    }
+
+    // Base opcodes (bits 4-0 once MT/MF/SK are masked off) — NEC µPD765/8272A datasheet, cross-
+    // checked against MAME's check_command() (docs/FDC-implementation.md §0/§4).
+    private const byte OpReadTrack = 0x02;
+    private const byte OpSpecify = 0x03;
+    private const byte OpSenseDriveStatus = 0x04;
+    private const byte OpWriteData = 0x05;
+    private const byte OpReadData = 0x06;
+    private const byte OpRecalibrate = 0x07;
+    private const byte OpSenseInterruptStatus = 0x08;
+    private const byte OpWriteDeletedData = 0x09;
+    private const byte OpReadId = 0x0A;
+    private const byte OpReadDeletedData = 0x0C;
+    private const byte OpFormatATrack = 0x0D;
+    private const byte OpSeek = 0x0F;
+    private const byte OpScanEqual = 0x11;
+    private const byte OpScanLowOrEqual = 0x19;
+    private const byte OpScanHighOrEqual = 0x1D;
+
+    /// <summary>Strips MT(bit7)/MF(bit6)/SK(bit5) to isolate the 5-bit base command code — every
+    /// real base opcode in the 15-command set fits in bits 4-0 (docs/FDC-implementation.md §4).</summary>
+    private const byte OpcodeMask = 0x1F;
+
     private static readonly Dictionary<byte, int> CommandLengths = new()
     {
-        { 0x03, 3 }, // SPECIFY
-        { 0x07, 2 }, // RECALIBRATE
-        { 0x0F, 3 }, // SEEK
-        { 0x42, 9 }, // READ DATA
-        { 0x45, 9 }, // WRITE DATA
-        { 0x08, 1 }, // SENSE INTERRUPT STATUS
+        { OpReadTrack, 9 },
+        { OpSpecify, 3 },
+        { OpSenseDriveStatus, 2 },
+        { OpWriteData, 9 },
+        { OpReadData, 9 },
+        { OpRecalibrate, 2 },
+        { OpSenseInterruptStatus, 1 },
+        { OpWriteDeletedData, 9 },
+        { OpReadId, 2 },
+        { OpReadDeletedData, 9 },
+        { OpFormatATrack, 6 },
+        { OpSeek, 3 },
+        { OpScanEqual, 9 },
+        { OpScanLowOrEqual, 9 },
+        { OpScanHighOrEqual, 9 },
     };
+
+    private const int FormatBytesPerSectorGroup = 4; // host feeds (C,H,R,N) per formatted sector
 
     public TimingPolicy Policy { get; set; } = TimingPolicy.Authentic;
 
@@ -73,10 +132,11 @@ public sealed class Upd765 : IDevice
     private readonly List<byte> _commandBuffer = new();
     private int _expectedLength;
 
-    private readonly byte[] _resultBuffer = new byte[2];
+    private readonly byte[] _resultBuffer = new byte[7]; // ST0,ST1,ST2,C,H,R,N — the widest shape
     private int _resultLength;
     private int _resultIndex;
 
+    private TransferKind _transferKind = TransferKind.None;
     private byte[] _transferBuffer = Array.Empty<byte>();
     private int _transferIndex;
     private bool _transferIsWrite;
@@ -86,6 +146,10 @@ public sealed class Upd765 : IDevice
     private int _transferStartSector;
     private int _transferSectorSize;
     private bool _byteReady;
+
+    // FORMAT A TRACK-only execution state (docs/FDC-implementation.md §2/§5/§6).
+    private byte _formatFillByte;
+    private int _formatSectorSize;
 
     private PendingAction _pending = PendingAction.None;
     private int _delayCounter;
@@ -100,10 +164,11 @@ public sealed class Upd765 : IDevice
     private bool _motorOn;
     private bool _enabled;
 
-    /// <summary>Fires when a RECALIBRATE/SEEK settle completes or a READ/WRITE DATA transfer
-    /// finishes — the board wires this to <c>Ctc.ClkTrg(0)</c> (the FDC has no direct CPU INT
-    /// line, reference doc §5d). Not fired for SPECIFY (no interrupt) or SENSE INTERRUPT STATUS
-    /// (which consumes a prior pending interrupt rather than creating one).</summary>
+    /// <summary>Fires when a RECALIBRATE/SEEK settle completes or a data-shaped command's
+    /// transfer finishes — the board wires this to <c>Ctc.ClkTrg(0)</c> (the FDC has no direct
+    /// CPU INT line, reference doc §5d). Not fired for SPECIFY (no interrupt) or SENSE
+    /// INTERRUPT STATUS/SENSE DRIVE STATUS/READ ID (which complete via an immediate result
+    /// phase rather than an execution-phase transfer).</summary>
     public event Action? ResultReady;
 
     /// <summary>Mounts a disk image on the given drive (0-3; the ROM driver only ever
@@ -133,7 +198,7 @@ public sealed class Upd765 : IDevice
     /// from the command's own starting sector (R) plus how many bytes have moved through the
     /// semi-DMA byte-loop so far, not just echoing R for the whole transfer; exposing state the
     /// chip already implicitly tracks, not new state. <c>Head</c>/<c>Sector</c> are only
-    /// meaningful during an actual READ/WRITE DATA transfer — a SEEK/RECALIBRATE settle is also
+    /// meaningful during an actual data-shaped transfer — a SEEK/RECALIBRATE settle is also
     /// <see cref="Phase.ExecutionPhase"/> but has no head/sector of its own; it reads whatever
     /// the LAST real transfer's values were (a known, accepted cosmetic imprecision, not a data
     /// hazard — nothing in the chip's own dispatch consults this struct).</summary>
@@ -166,8 +231,8 @@ public sealed class Upd765 : IDevice
         };
     }
 
-    /// <summary>0x8D IN — data register: the next transfer byte during a READ DATA execution
-    /// phase, or the next SENSE INTERRUPT STATUS result byte.</summary>
+    /// <summary>0x8D IN — data register: the next transfer byte during a read-shaped execution
+    /// phase, or the next result-phase byte.</summary>
     public byte ReadData()
     {
         if (_phase == Phase.ResultPhase)
@@ -199,21 +264,19 @@ public sealed class Upd765 : IDevice
 
     private const byte PortDispatch_OpenBusLike = 0xFF;
 
-    /// <summary>0x8D OUT — data register: a command byte (Idle/CommandPhase) or a WRITE DATA
-    /// transfer byte (ExecutionPhase).</summary>
+    /// <summary>0x8D OUT — data register: a command byte (Idle/CommandPhase) or a write-shaped
+    /// (WRITE DATA/WRITE DELETED DATA/FORMAT A TRACK/SCAN*) transfer byte (ExecutionPhase).</summary>
     public void WriteData(byte value)
     {
         if (_phase == Phase.Idle)
         {
             _commandBuffer.Clear();
             _commandBuffer.Add(value);
-            if (!CommandLengths.TryGetValue(value, out _expectedLength))
+            var baseOpcode = (byte)(value & OpcodeMask);
+            if (!CommandLengths.TryGetValue(baseOpcode, out _expectedLength))
             {
                 // Unknown opcode — invalid command, standard µPD765 1-byte ST0=0x80 result.
-                _resultBuffer[0] = 0x80;
-                _resultLength = 1;
-                _resultIndex = 0;
-                _phase = Phase.ResultPhase;
+                SetResult(0x80);
                 return;
             }
             _phase = _expectedLength == 1 ? Phase.Idle : Phase.CommandPhase;
@@ -337,14 +400,24 @@ public sealed class Upd765 : IDevice
     private void Dispatch()
     {
         var opcode = _commandBuffer[0];
-        switch (opcode)
+        var baseOpcode = (byte)(opcode & OpcodeMask);
+        switch (baseOpcode)
         {
-            case 0x03: DispatchSpecify(); break;
-            case 0x07: DispatchRecalibrate(); break;
-            case 0x0F: DispatchSeek(); break;
-            case 0x42: DispatchReadWrite(isWrite: false); break;
-            case 0x45: DispatchReadWrite(isWrite: true); break;
-            case 0x08: DispatchSenseInterruptStatus(); break;
+            case OpSpecify: DispatchSpecify(); break;
+            case OpSenseDriveStatus: DispatchSenseDriveStatus(); break;
+            case OpRecalibrate: DispatchRecalibrate(); break;
+            case OpSeek: DispatchSeek(); break;
+            case OpSenseInterruptStatus: DispatchSenseInterruptStatus(); break;
+            case OpReadId: DispatchReadId(); break;
+            case OpFormatATrack: DispatchFormat(); break;
+            case OpReadData: DispatchDataCommand(TransferKind.ReadData); break;
+            case OpWriteData: DispatchDataCommand(TransferKind.WriteData); break;
+            case OpReadDeletedData: DispatchDataCommand(TransferKind.ReadDeletedData); break;
+            case OpWriteDeletedData: DispatchDataCommand(TransferKind.WriteDeletedData); break;
+            case OpReadTrack: DispatchDataCommand(TransferKind.ReadTrack); break;
+            case OpScanEqual: DispatchDataCommand(TransferKind.ScanEqual); break;
+            case OpScanLowOrEqual: DispatchDataCommand(TransferKind.ScanLowOrEqual); break;
+            case OpScanHighOrEqual: DispatchDataCommand(TransferKind.ScanHighOrEqual); break;
         }
     }
 
@@ -354,6 +427,30 @@ public sealed class Upd765 : IDevice
         // model; not currently consulted (see SeekTStatesPerTrack). No interrupt, no result
         // phase, immediate.
         _phase = Phase.Idle;
+    }
+
+    /// <summary>SENSE DRIVE STATUS (0x04) — confirmed real usage, TWO independent callers
+    /// (JWSDOS's <c>check_write_enable</c> and JWSFormat's <c>check_write_protect</c>, both
+    /// `02 04 &lt;drive&gt;` and both testing ST3 bit 6 — docs/FDC-implementation.md §2).</summary>
+    private void DispatchSenseDriveStatus()
+    {
+        var driveHeadByte = _commandBuffer[1];
+        var drive = driveHeadByte & 0x03;
+        var head = (driveHeadByte >> 2) & 0x01;
+        var disk = _drives[drive];
+
+        byte st3 = 0;
+        if (disk is not null)
+        {
+            if (disk.WriteProtected) st3 |= 0x40; // WP — confirmed real usage, §2
+            st3 |= 0x20; // RY — a mounted disk is ready; no separate "spinning up" model
+            if (_cylinder[drive] == 0) st3 |= 0x10; // T0
+            if (disk.Sides == 2) st3 |= 0x08; // TS — two side
+        }
+        st3 |= (byte)((head & 0x01) << 2); // HD
+        st3 |= (byte)(driveHeadByte & 0x03); // US1/US0 echoed back
+
+        SetResult(st3);
     }
 
     private void DispatchRecalibrate()
@@ -389,7 +486,7 @@ public sealed class Upd765 : IDevice
         _phase = Phase.ExecutionPhase;
         _transferIsWrite = false; // no byte transfer during a seek — MSR DIO bit is irrelevant here
         // Real bug, fixed 2026-07-23: _transferDrive previously wasn't updated here, so
-        // CurrentTransfer.Drive reported whichever drive last did a READ/WRITE DATA transfer
+        // CurrentTransfer.Drive reported whichever drive last did a data-shaped transfer
         // (or 0, if none ever had) during a seek on a DIFFERENT drive — the host status
         // surface (P2000.UI milestone 14) would light up the wrong drive's activity indicator.
         _transferDrive = drive;
@@ -412,39 +509,93 @@ public sealed class Upd765 : IDevice
     private void DispatchSenseInterruptStatus()
     {
         var drive = _seekInterruptPending ? _lastCompletedDrive : _selectedDrive;
-        _resultBuffer[0] = _seekInterruptPending ? (byte)(0x20 | drive) : (byte)0x80; // ST0
-        _resultBuffer[1] = (byte)_cylinder[drive]; // PCN
-        _resultLength = 2;
-        _resultIndex = 0;
+        var st0 = _seekInterruptPending ? (byte)(0x20 | drive) : (byte)0x80; // ST0
+        var pcn = (byte)_cylinder[drive];
         _seekInterruptPending = false;
-        _phase = Phase.ResultPhase;
+        SetResult(st0, pcn);
     }
 
-    private void DispatchReadWrite(bool isWrite)
+    /// <summary>READ ID (0x0A) — no execution phase (§5/§6 of the FDC guide: it just latches the
+    /// next ID address mark's C/H/R/N). This project has no separate per-sector ID-field model
+    /// (sectors are addressed directly, not scanned from a bitstream — same reasoning as Format
+    /// A Track's don't-care CHRN, docs/FDC-implementation.md §2), so the most faithful stand-in
+    /// is the drive's current physical position, sector 1, and this platform's one real sector
+    /// size (N=1, 256 B) — "the next ID field encountered" on a freshly-seeked, unread track.</summary>
+    private void DispatchReadId()
+    {
+        var driveHeadByte = _commandBuffer[1];
+        var drive = driveHeadByte & 0x03;
+        var head = (byte)((driveHeadByte >> 2) & 0x01);
+        var cylinder = (byte)_cylinder[drive];
+        SetResult(0x00, 0x00, 0x00, cylinder, head, 0x01, 0x01);
+    }
+
+    /// <summary>FORMAT A TRACK (0x0D) — confirmed real bytes and execution mechanism
+    /// (JWSFormat.bin/jwsformat.asm, docs/FDC-implementation.md §2): 6-byte command phase
+    /// (cmd,HD/US,N,SC,GPL,D), then the host feeds 4 bytes (C,H,R,N) per sector, SC times,
+    /// through the SAME semi-DMA byte-poll mechanism WRITE DATA already uses.</summary>
+    private void DispatchFormat()
+    {
+        var driveHeadByte = _commandBuffer[1];
+        var drive = driveHeadByte & 0x03;
+        var head = (driveHeadByte >> 2) & 0x01;
+        var sizeCode = _commandBuffer[2]; // N
+        var sectorsPerCylinder = _commandBuffer[3]; // SC
+        // _commandBuffer[4] is GPL — not consulted (gap timing has no effect on this project's
+        // sector-addressed DskImage model).
+        _formatFillByte = _commandBuffer[5]; // D
+        _formatSectorSize = 128 << sizeCode;
+
+        _transferKind = TransferKind.Format;
+        _transferCylinder = _cylinder[drive];
+        _transferHead = head;
+        _transferDrive = drive;
+        _transferStartSector = 1;
+        _transferSectorSize = FormatBytesPerSectorGroup; // host-status cosmetic only — see CurrentSector()
+        _transferIndex = 0;
+        _transferIsWrite = true;
+        _phase = Phase.ExecutionPhase;
+        _transferBuffer = new byte[Math.Max(1, (int)sectorsPerCylinder) * FormatBytesPerSectorGroup];
+
+        if (Policy == TimingPolicy.Turbo) _byteReady = true; else StartByteDelay();
+    }
+
+    private static bool IsHostToFdd(TransferKind kind) => kind is TransferKind.WriteData
+        or TransferKind.WriteDeletedData or TransferKind.ScanEqual or TransferKind.ScanLowOrEqual
+        or TransferKind.ScanHighOrEqual;
+
+    /// <summary>Shared dispatcher for the 7 commands sharing the standard 9-byte
+    /// cmd,HD/US,C,H,R,N,EOT,GPL,DTL/STP command shape (READ/WRITE DATA, READ/WRITE DELETED
+    /// DATA, READ A TRACK, SCAN EQUAL/LOW/HIGH).</summary>
+    private void DispatchDataCommand(TransferKind kind)
     {
         var drive = _commandBuffer[1] & 0x03;
         // The command's OWN cylinder byte is NOT used for addressing — confirmed against the
         // real ROM driver (docs/Monitor Documented Disassembly/Disk.asm `getdos`/`read_track`):
-        // the READ DATA command template is copied to RAM ONCE and its cylinder field is never
-        // updated between the two DOS-track reads (both send the identical hardcoded byte),
-        // while the ACTUAL cylinder read differs (track 1 vs track 2) purely because a
-        // separate SEEK command physically repositioned the head in between. Real µPD765
-        // hardware reads/writes at wherever the head physically IS (tracked via prior SEEK/
-        // RECALIBRATE) — the command's C field is for ID-field verification against the
-        // medium, not addressing. This emulator has no separate per-sector ID-field model, so
-        // the most faithful equivalent is: address the mounted image using the FDC's own
-        // internally-tracked <see cref="_cylinder"/>, not the command byte.
+        // the command template is copied to RAM ONCE and its cylinder field is never updated
+        // between the two DOS-track reads (both send the identical hardcoded byte), while the
+        // ACTUAL cylinder read differs (track 1 vs track 2) purely because a separate SEEK
+        // command physically repositioned the head in between. Real µPD765 hardware reads/
+        // writes at wherever the head physically IS (tracked via prior SEEK/RECALIBRATE) — the
+        // command's C field is for ID-field verification against the medium, not addressing.
+        // This emulator has no separate per-sector ID-field model, so the most faithful
+        // equivalent is: address the mounted image using the FDC's own internally-tracked
+        // <see cref="_cylinder"/>, not the command byte.
         var cylinder = _cylinder[drive];
         var head = _commandBuffer[3] & 0x01;
-        var startSector = _commandBuffer[4];
+        var startSectorField = _commandBuffer[4];
         var sizeCode = _commandBuffer[5];
         var endOfTrack = _commandBuffer[6];
 
         var sectorSize = 128 << sizeCode;
+        // READ A TRACK ignores R and always starts right after the index pulse — sector 1 in
+        // this project's fixed sector-per-track layout (this class's own doc comment, "opcode-
+        // identity finding," §17 2026-07-24).
+        var startSector = kind == TransferKind.ReadTrack ? 1 : startSectorField;
         var sectorCount = Math.Max(1, endOfTrack - startSector + 1);
         var length = sectorCount * sectorSize;
 
-        _transferIsWrite = isWrite;
+        _transferKind = kind;
         _transferCylinder = cylinder;
         _transferHead = head;
         _transferDrive = drive;
@@ -453,14 +604,13 @@ public sealed class Upd765 : IDevice
         _transferIndex = 0;
         _phase = Phase.ExecutionPhase;
 
-        if (isWrite)
-        {
-            _transferBuffer = new byte[length];
-        }
-        else
+        var hostToFdd = IsHostToFdd(kind);
+        _transferIsWrite = hostToFdd;
+        _transferBuffer = new byte[length];
+
+        if (!hostToFdd)
         {
             var disk = _drives[drive];
-            _transferBuffer = new byte[length];
             if (disk is not null && sectorSize == DskImage.BytesPerSector)
             {
                 for (var s = 0; s < sectorCount; s++)
@@ -492,27 +642,179 @@ public sealed class Upd765 : IDevice
         _delayCounter = ByteTransferTStates;
     }
 
+    // ---- Execution-phase completion (docs/FDC-implementation.md §6 step 3 — a real result
+    // phase for every command, backfilled retroactively onto Read/Write Data too) -------------
+
     private void CompleteTransfer()
     {
-        if (_transferIsWrite)
+        _byteReady = false;
+        _pending = PendingAction.None;
+
+        byte st0 = 0x00, st1 = 0x00, st2 = 0x00;
+        byte c, h, r, n;
+
+        switch (_transferKind)
         {
-            var disk = _drives[_transferDrive];
-            var sectorSize = DskImage.BytesPerSector;
-            if (disk is not null && _transferBuffer.Length % sectorSize == 0)
+            case TransferKind.WriteData:
+                CommitSectorWrites();
+                (c, h, r, n) = LastSectorResultFields();
+                break;
+
+            case TransferKind.WriteDeletedData:
+                // Documented simplification (docs/FDC-implementation.md §4/§6): this DskImage
+                // model has no separate deleted-DAM marker, so a "deleted data" write is stored
+                // exactly like a normal write — content correctness matters, DAM-type tracking
+                // has no representation in this raw sector-storage model.
+                CommitSectorWrites();
+                (c, h, r, n) = LastSectorResultFields();
+                break;
+
+            case TransferKind.ReadData:
+            case TransferKind.ReadTrack:
+                (c, h, r, n) = LastSectorResultFields();
+                break;
+
+            case TransferKind.ReadDeletedData:
+                // No sector in this model is EVER marked "deleted" — every sector the chip
+                // encounters is normal-marked, which is exactly the mismatch condition the real
+                // datasheet calls Control Mark (ST2 bit 6) + abnormal termination (ST0 IC=01).
+                st0 |= 0x40;
+                st2 |= 0x40;
+                (c, h, r, n) = LastSectorResultFields();
+                break;
+
+            case TransferKind.Format:
+                CommitFormat();
+                c = 0; h = 0; r = 0; n = 0; // don't-care per datasheet (MAME just echoes the
+                                            // last N) — docs/FDC-implementation.md §5.
+                break;
+
+            case TransferKind.ScanEqual:
+            case TransferKind.ScanLowOrEqual:
+            case TransferKind.ScanHighOrEqual:
+                (st1, st2) = CompleteScan(_transferKind);
+                (c, h, r, n) = LastSectorResultFields();
+                break;
+
+            default:
+                (c, h, r, n) = LastSectorResultFields();
+                break;
+        }
+
+        SetResult(st0, st1, st2, c, h, r, n);
+        ResultReady?.Invoke();
+    }
+
+    private (byte c, byte h, byte r, byte n) LastSectorResultFields()
+    {
+        var lastSector = _transferSectorSize > 0
+            ? _transferStartSector + _transferBuffer.Length / _transferSectorSize - 1
+            : _transferStartSector;
+        return ((byte)_transferCylinder, (byte)_transferHead, (byte)lastSector,
+            SizeCodeFor(_transferSectorSize));
+    }
+
+    private static byte SizeCodeFor(int sectorSize)
+    {
+        byte n = 0;
+        var size = 128;
+        while (size < sectorSize) { size <<= 1; n++; }
+        return n;
+    }
+
+    private void CommitSectorWrites()
+    {
+        var disk = _drives[_transferDrive];
+        var sectorSize = DskImage.BytesPerSector;
+        if (disk is not null && _transferSectorSize == sectorSize && _transferBuffer.Length % sectorSize == 0)
+        {
+            var sectorCount = _transferBuffer.Length / sectorSize;
+            for (var s = 0; s < sectorCount; s++)
             {
-                var sectorCount = _transferBuffer.Length / sectorSize;
-                for (var s = 0; s < sectorCount; s++)
+                disk.WriteSector(_transferCylinder, _transferHead, _transferStartSector + s,
+                    _transferBuffer.AsSpan(s * sectorSize, sectorSize));
+            }
+        }
+    }
+
+    /// <summary>Formats the SC sectors of the currently-seeked (cylinder,head) with the fill
+    /// byte D, in host-supplied R order — per docs/FDC-implementation.md §2's recommendation, no
+    /// ID-mark bookkeeping needed since this project's DskImage addresses sectors directly. Each
+    /// 4-byte group the host fed is (C,H,R,N); C/N are not used for addressing (jwsformat.asm's
+    /// own Cylinder byte is a confirmed off-by-one from the real physical track, project
+    /// CLAUDE.md §17 2026-07-24) — only H/R select where the fill byte lands.</summary>
+    private void CommitFormat()
+    {
+        var disk = _drives[_transferDrive];
+        if (disk is null || _formatSectorSize != DskImage.BytesPerSector) return;
+
+        var fill = new byte[DskImage.BytesPerSector];
+        Array.Fill(fill, _formatFillByte);
+
+        for (var offset = 0; offset + FormatBytesPerSectorGroup <= _transferBuffer.Length; offset += FormatBytesPerSectorGroup)
+        {
+            var h = _transferBuffer[offset + 1] & 0x01;
+            var r = _transferBuffer[offset + 2];
+            disk.WriteSector(_transferCylinder, h, r, fill);
+        }
+    }
+
+    /// <summary>SCAN EQUAL/LOW-OR-EQUAL/HIGH-OR-EQUAL — byte-by-byte compare of the host-fed
+    /// bytes (already accumulated in <see cref="_transferBuffer"/> like a write) against the
+    /// mounted disk's actual sector content. SH/SN semantics per docs/FDC-implementation.md §5
+    /// (cross-checked against MAME's compare loop): SH starts SET, clears on the first mismatch
+    /// and stays clear. SN starts CLEAR; each mismatch sets it UNLESS that specific byte pair
+    /// satisfies the variant's inequality (disk&lt;host for Low, disk&gt;host for High), in which
+    /// case SN clears again — so the final SN reflects the LAST mismatch's outcome, not a sticky
+    /// OR across the whole scan (this is how the datasheet's per-event wording reads literally;
+    /// no real caller exists to confirm either way).</summary>
+    private (byte st1, byte st2) CompleteScan(TransferKind kind)
+    {
+        var disk = _drives[_transferDrive];
+        var sectorSize = DskImage.BytesPerSector;
+
+        if (disk is null || _transferSectorSize != sectorSize || _transferBuffer.Length % sectorSize != 0)
+        {
+            return (0x04, 0x08); // ST1 ND (no data — nothing to compare against), ST2 SH still set (vacuously)
+        }
+
+        var sectorCount = _transferBuffer.Length / sectorSize;
+        var sh = true;
+        var sn = false;
+
+        for (var s = 0; s < sectorCount; s++)
+        {
+            var diskBytes = disk.ReadSector(_transferCylinder, _transferHead, _transferStartSector + s);
+            var hostBytes = _transferBuffer.AsSpan(s * sectorSize, sectorSize);
+            for (var i = 0; i < sectorSize; i++)
+            {
+                var diskByte = diskBytes[i];
+                var hostByte = hostBytes[i];
+                if (diskByte == hostByte) continue;
+
+                sh = false;
+                var conditionSatisfied = kind switch
                 {
-                    disk.WriteSector(_transferCylinder, _transferHead, 1 + s,
-                        _transferBuffer.AsSpan(s * sectorSize, sectorSize));
-                }
+                    TransferKind.ScanLowOrEqual => diskByte < hostByte,
+                    TransferKind.ScanHighOrEqual => diskByte > hostByte,
+                    _ => false, // ScanEqual has no inequality condition
+                };
+                sn = !conditionSatisfied;
             }
         }
 
-        _phase = Phase.Idle;
-        _byteReady = false;
-        _pending = PendingAction.None;
-        ResultReady?.Invoke();
+        byte st2 = 0;
+        if (sh) st2 |= 0x08; // SH
+        if (sn) st2 |= 0x04; // SN
+        return (0x00, st2);
+    }
+
+    private void SetResult(params byte[] bytes)
+    {
+        for (var i = 0; i < bytes.Length; i++) _resultBuffer[i] = bytes[i];
+        _resultLength = bytes.Length;
+        _resultIndex = 0;
+        _phase = Phase.ResultPhase;
     }
 
     // ---- IDevice ----------------------------------------------------------------------------
@@ -524,11 +826,14 @@ public sealed class Upd765 : IDevice
         _expectedLength = 0;
         _resultLength = 0;
         _resultIndex = 0;
+        _transferKind = TransferKind.None;
         _transferBuffer = Array.Empty<byte>();
         _transferIndex = 0;
         _transferIsWrite = false;
         _transferStartSector = 0;
         _transferSectorSize = 0;
+        _formatFillByte = 0;
+        _formatSectorSize = 0;
         _byteReady = false;
         _pending = PendingAction.None;
         _delayCounter = 0;
@@ -547,11 +852,11 @@ public sealed class Upd765 : IDevice
         foreach (var b in _commandBuffer) w.WriteByte(b);
         w.WriteInt32(_expectedLength);
 
-        w.WriteByte(_resultBuffer[0]);
-        w.WriteByte(_resultBuffer[1]);
+        foreach (var b in _resultBuffer) w.WriteByte(b);
         w.WriteInt32(_resultLength);
         w.WriteInt32(_resultIndex);
 
+        w.WriteByte((byte)_transferKind);
         w.WriteInt32(_transferBuffer.Length);
         w.WriteBytes(_transferBuffer);
         w.WriteInt32(_transferIndex);
@@ -562,6 +867,8 @@ public sealed class Upd765 : IDevice
         w.WriteInt32(_transferStartSector);
         w.WriteInt32(_transferSectorSize);
         w.WriteBool(_byteReady);
+        w.WriteByte(_formatFillByte);
+        w.WriteInt32(_formatSectorSize);
 
         w.WriteByte((byte)_pending);
         w.WriteInt32(_delayCounter);
@@ -585,11 +892,11 @@ public sealed class Upd765 : IDevice
         for (var i = 0; i < cmdCount; i++) _commandBuffer.Add(r.ReadByte());
         _expectedLength = r.ReadInt32();
 
-        _resultBuffer[0] = r.ReadByte();
-        _resultBuffer[1] = r.ReadByte();
+        for (var i = 0; i < _resultBuffer.Length; i++) _resultBuffer[i] = r.ReadByte();
         _resultLength = r.ReadInt32();
         _resultIndex = r.ReadInt32();
 
+        _transferKind = (TransferKind)r.ReadByte();
         var transferLength = r.ReadInt32();
         _transferBuffer = new byte[transferLength];
         r.ReadBytes(_transferBuffer);
@@ -601,6 +908,8 @@ public sealed class Upd765 : IDevice
         _transferStartSector = r.ReadInt32();
         _transferSectorSize = r.ReadInt32();
         _byteReady = r.ReadBool();
+        _formatFillByte = r.ReadByte();
+        _formatSectorSize = r.ReadInt32();
 
         _pending = (PendingAction)r.ReadByte();
         _delayCounter = r.ReadInt32();

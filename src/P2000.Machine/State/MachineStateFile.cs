@@ -49,8 +49,18 @@ public static class MachineStateFile
     ///     reading it under the new layout would misalign every field after that point
     ///     (byte-ready read as garbage, then cascading into the pending-action block etc.),
     ///     not just silently drop the new fields.</item>
+    ///   <item>v7: the FDC block's layout changed again — <see cref="Devices.Fdc.Upd765"/>'s
+    ///     full 15-command generalization (project CLAUDE.md §13 milestone 19a) resized the
+    ///     result buffer from 2 to 7 bytes (ST0/ST1/ST2/C/H/R/N, backfilled onto every command
+    ///     instead of just Sense Interrupt Status's 2-byte shape) and inserted three new fields
+    ///     mid-stream: a <c>_transferKind</c> byte (which of the 15 commands is driving the
+    ///     current execution-phase byte loop — needed to interpret the transfer buffer
+    ///     correctly on resume, e.g. Format A Track's 4-bytes-per-sector grouping vs a plain
+    ///     sector read/write) and the Format-only <c>_formatFillByte</c>/<c>_formatSectorSize</c>
+    ///     fields. A v6 file's FDC block is a different length and shape entirely — reading it
+    ///     under the new layout misaligns every field, not just drops new ones.</item>
     /// </list></summary>
-    public const int CurrentVersion = 6;
+    public const int CurrentVersion = 7;
 
     /// <summary>Oldest <c>.state</c> version accepted by this build. Older files are rejected
     /// because the device-stream layout (or, for v4→v5, the embedded config JSON shape) changed
@@ -58,8 +68,10 @@ public static class MachineStateFile
     /// to Interrupts; v2→v3: Lock bool added to Interrupts, optional Ctc block appended; v3→v4:
     /// FDC block appended after Ctc; v4→v5: config JSON's disk axis reshaped from a singular path
     /// to a per-drive collection; v5→v6: FDC block gained two int32 fields mid-stream for the
-    /// live current-sector value — see <see cref="CurrentVersion"/>'s v6 note).</summary>
-    private const int MinVersion = 6;
+    /// live current-sector value; v6→v7: FDC block's result buffer resized 2→7 bytes and gained
+    /// the _transferKind/_formatFillByte/_formatSectorSize fields — see
+    /// <see cref="CurrentVersion"/>'s v7 note).</summary>
+    private const int MinVersion = 7;
 
     private static readonly byte[] Magic = "P2ST"u8.ToArray();
 

@@ -145,7 +145,8 @@ public class RealFixtureTests
         var fdc = new Upd765 { Policy = TimingPolicy.Turbo };
         fdc.MountDisk(0, disk);
 
-        // READ DATA: unit=0, cylinder=0, head=0, sector=1, N=1 (256B), EOT=16 (whole track).
+        // READ A TRACK (real ROM byte 0x42 — project CLAUDE.md §17 2026-07-24 opcode-identity
+        // finding): unit=0, cylinder=0, head=0, R=1(ignored), N=1 (256B), EOT=16 (whole track).
         fdc.WriteData(0x42);
         fdc.WriteData(0x00);
         fdc.WriteData(0x00);
@@ -181,8 +182,8 @@ public class RealFixtureTests
         fdc.MountDisk(0, disk);
 
         // SEEK to cylinder 1 first — matches the real ROM driver's own sequence (getdos calls
-        // disk_gotrack/SEEK between track reads; READ DATA addresses wherever the head
-        // physically is, not its own hardcoded cylinder byte — see Upd765.DispatchReadWrite).
+        // disk_gotrack/SEEK between track reads; READ A TRACK addresses wherever the head
+        // physically is, not its own hardcoded cylinder byte — see Upd765.DispatchDataCommand).
         fdc.WriteData(0x0F);
         fdc.WriteData(0x00);
         fdc.WriteData(0x01);

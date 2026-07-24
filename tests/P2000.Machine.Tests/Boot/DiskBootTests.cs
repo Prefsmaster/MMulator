@@ -24,8 +24,9 @@ namespace P2000.Machine.Tests.Boot;
 /// sends are byte-identical — while the actual cylinder read differs because a separate SEEK
 /// command (`disk_gotrack`) repositions the head in between. Real µPD765 hardware reads/writes
 /// wherever the head physically IS; the command's own C field doesn't drive addressing. Fixed
-/// in <see cref="Devices.Fdc.Upd765.DispatchReadWrite"/> (now reads <c>_cylinder[drive]</c>) —
-/// this is what let the RUN-gate test below actually pass.</item>
+/// in what was then <c>Upd765.DispatchReadWrite</c> (now reads <c>_cylinder[drive]</c>) —
+/// this is what let the RUN-gate test below actually pass. (Milestone 19a later generalized
+/// this into <c>Upd765.DispatchDataCommand</c>, covering all 7 data-shaped commands.)</item>
 /// </list>
 /// </summary>
 public class DiskBootTests

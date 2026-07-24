@@ -271,10 +271,12 @@ public class DiskDriveVmTests
         vm.NewBlankDiskCommand.Execute(null);
         runner.Dispose();
 
-        // READ DATA: unit 0, cylinder 0, head 0 (the default drive geometry is single-sided —
-        // head 1 doesn't exist), start sector 3, N=1 (256B), EOT=1.
+        // READ DATA (0x46 = 0x06|MF — NOT the real ROM byte 0x42, which decodes to READ A TRACK
+        // and ignores R; project CLAUDE.md §17 2026-07-24 opcode-identity finding): unit 0,
+        // cylinder 0, head 0 (the default drive geometry is single-sided — head 1 doesn't
+        // exist), start sector 3, N=1 (256B), EOT=1.
         var ports = runner.Machine.Ports;
-        ports.Write(0x8D, 0x42);
+        ports.Write(0x8D, 0x46);
         ports.Write(0x8D, 0x00);
         ports.Write(0x8D, 0x00);
         ports.Write(0x8D, 0x00); // head 0

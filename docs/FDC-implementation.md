@@ -1,10 +1,10 @@
 # FDC-implementation.md
 
 Implementation guide for the **µPD765/8272A floppy disk controller**, for the P2000.Machine
-**FDC device (milestone 19, full-command-set fast-follow milestone 19a)**. Read this when
-extending `Upd765` beyond the 6-command boot/run subset milestone 19 already built. It
-distills reference implementations of the SAME chip family, the authoritative datasheet, and
-this project's own confirmed real-usage findings.
+**FDC device (milestone 19, full-command-set fast-follow milestone 19a — IMPLEMENTED
+2026-07-24)**. Read this for the device's design rationale and the full 15-command reference;
+`Upd765` now implements all 15. It distills reference implementations of the SAME chip family,
+the authoritative datasheet, and this project's own confirmed real-usage findings.
 
 Priorities (per project owner): implement the **full 15-command set**, not just what the
 stock monitor ROM / JWSDOS resident driver happen to issue — milestone 19 deliberately scoped
@@ -58,7 +58,7 @@ exact command bytes, not reconstructed from the MT/MF/SK bit theory:
 | 1 | SPECIFY | `0x03` | `03 60 34` | none |
 | 2 | RECALIBRATE | `0x07` | `07 01` | none (completion via INT) |
 | 3 | SEEK | `0x0F` | `0F 01 01` | none (completion via INT) |
-| 4 | READ DATA | `0x42` (MF\|base) | `42 01 01 00 01 01 10 0E 00` | data phase, semi-DMA |
+| 4 | READ A TRACK (reclassified 2026-07-24, was "READ DATA" — §4's opcode-identity note) | `0x42` (MF\|`0x02`) | `42 01 01 00 01 01 10 0E 00` | data phase, semi-DMA |
 | 5 | WRITE DATA | `0x45` (MF\|base) | same shape | data phase, semi-DMA |
 | 6 | SENSE INTERRUPT STATUS | `0x08` | `08` | 2 bytes: ST0, PCN |
 
@@ -200,30 +200,48 @@ usage.
 
 ---
 
-## 4. Full 15-command table
+## 4. Full 15-command table — ALL 15 BUILT (milestone 19a, 2026-07-24)
 
 Modifier bits sit in the command byte's top bits: **MT** (bit7, multi-track), **MF** (bit6,
 MFM vs FM — always set on this platform, per the confirmed `0x42`/`0x45` opcodes), **SK**
 (bit5, skip deleted-data sectors) — not every command uses all three. Most commands' 2nd
-command-phase byte is a unit-select byte: `0 0 0 0 0 HD US1 US0`.
+command-phase byte is a unit-select byte: `0 0 0 0 0 HD US1 US0`. `Upd765` dispatches on the
+masked base opcode (bits 4-0, MT/MF/SK stripped), so every row below is a distinct dispatch slot.
+
+**Opcode-identity correction (2026-07-24, project CLAUDE.md §17):** the real ROM byte this
+project originally confirmed and labelled "READ DATA" — `0x42` — does NOT decode to READ DATA's
+base (`0x06`). WRITE DATA's own confirmed byte (`0x45 = 0x05|0x40`) already proves the MF bit is
+set platform-wide, and `0x42` can only equal `0x02|0x40` — READ A TRACK's base, never
+`0x06|0x40 = 0x46`. So row 5 below (READ A TRACK), not row 1 (READ DATA), is the real, confirmed
+ROM command — behaviourally invisible in practice since R is always `1` in every real usage, so
+READ A TRACK's "ignore R, start at sector 1" and READ DATA's "search for R" agree there. A
+genuine READ DATA (`0x06`) is built to spec but has no known real P2000 caller.
 
 | # | Command | Opcode (base) | Cmd bytes | Execution | Result | Status |
 |---|---|---|---|---|---|---|
-| 1 | READ DATA | `0x06` | 9: cmd,HD/US,C,H,R,N,EOT,GPL,DTL | FDD→host | 7: ST0,ST1,ST2,C,H,R,N | **CONFIRMED, built** |
-| 2 | READ DELETED DATA | `0x0C` | same 9 | FDD→host, reads deleted-DAM sectors | 7 | modeled only |
+| 1 | READ DATA | `0x06` | 9: cmd,HD/US,C,H,R,N,EOT,GPL,DTL | FDD→host | 7: ST0,ST1,ST2,C,H,R,N | built, no known real caller |
+| 2 | READ DELETED DATA | `0x0C` | same 9 | FDD→host; this project's `DskImage` has no deleted-DAM marker, so every sector is reported as a mismatch (ST2 CM=1, abnormal termination) | 7 | built, no known real caller |
 | 3 | WRITE DATA | `0x05` (no SK) | same 9 | host→FDD | 7 | **CONFIRMED, built** |
-| 4 | WRITE DELETED DATA | `0x09` | same 9 | host→FDD, writes deleted-DAM | 7 | modeled only |
-| 5 | READ A TRACK | `0x02` (no MT) | 9, R ignored | FDD→host, every sector in physical order | 7 | modeled only |
-| 6 | READ ID | `0x0A` | 2: cmd,HD/US | none — latches next ID AM's C,H,R,N | 7 (the ID just read) | modeled only (§ ambiguous sighting above) |
-| 7 | FORMAT A TRACK | `0x0D` | 6: cmd,HD/US,N,SC,GPL,D | host→FDD, 4 bytes/sector (C,H,R,N) via data register, ×SC | 7 (CHRN largely don't-care) | modeled only — **priority, see §5/§6** |
-| 8 | SCAN EQUAL | `0x11` | 9: ...,EOT,GPL,STP | byte compare, disk vs host | 7 | modeled only |
-| 9 | SCAN LOW OR EQUAL | `0x19` | same 9 | compare, disk ≤ host | 7 | modeled only |
-| 10 | SCAN HIGH OR EQUAL | `0x1D` | same 9 | compare, disk ≥ host | 7 | modeled only |
+| 4 | WRITE DELETED DATA | `0x09` | same 9 | host→FDD; written exactly like a normal write (no deleted-DAM model to target) | 7 | built, no known real caller |
+| 5 | READ A TRACK | `0x02` (no MT) | 9, R ignored | FDD→host, always starts at sector 1 | 7 | **CONFIRMED, built — this is the real ROM byte `0x42`, see the opcode-identity correction above** |
+| 6 | READ ID | `0x0A` | 2: cmd,HD/US | none — no per-sector ID-mark model, so the result reports the tracked cylinder/head/sector 1/N=1 | 7 (the ID just read) | built, no known real caller (§ ambiguous sighting above) |
+| 7 | FORMAT A TRACK | `0x0D` | 6: cmd,HD/US,N,SC,GPL,D | host→FDD, 4 bytes/sector (C,H,R,N) via data register, ×SC | 7 (CHRN don't-care) | **CONFIRMED (JWSFormat.bin), built — real integration test in `Upd765Tests.cs`** |
+| 8 | SCAN EQUAL | `0x11` | 9: ...,EOT,GPL,STP | byte compare, disk vs host, full SH/SN algorithm (§5) | 7 | built, no known real caller |
+| 9 | SCAN LOW OR EQUAL | `0x19` | same 9 | compare, disk ≤ host | 7 | built, no known real caller |
+| 10 | SCAN HIGH OR EQUAL | `0x1D` | same 9 | compare, disk ≥ host | 7 | built, no known real caller |
 | 11 | RECALIBRATE | `0x07` | 2: cmd,US | steps to track 0 | 0 (→ Sense Interrupt Status) | **CONFIRMED, built** |
 | 12 | SEEK | `0x0F` | 3: cmd,HD/US,NCN | steps to NCN | 0 (→ Sense Interrupt Status) | **CONFIRMED, built** |
 | 13 | SENSE INTERRUPT STATUS | `0x08` | 1: cmd | none | 2: ST0, PCN | **CONFIRMED, built** |
 | 14 | SPECIFY | `0x03` | 3: cmd,SRT/HUT,HLT/ND | none | 0 | **CONFIRMED, built** |
-| 15 | SENSE DRIVE STATUS | `0x04` | 2: cmd,HD/US | none | 1: ST3 | **CONFIRMED (JWSDOS), §2** |
+| 15 | SENSE DRIVE STATUS | `0x04` | 2: cmd,HD/US | none | 1: ST3 | **CONFIRMED (JWSDOS + JWSFormat.bin), built** |
+
+**Result-phase note (2026-07-24):** milestone 19 assumed the ROM never reads READ/WRITE DATA's
+result phase. Re-reading `docs/Monitor Documented Disassembly/Disk.asm` while building the full
+set found the opposite — the disk-complete interrupt handler (`read_IO_status`) calls
+`read_status_bytes` with **B=7**, draining exactly the 7-byte result block built here. The formal
+result phase backfilled onto every command (§6 step 3) turned out to be required for fidelity,
+not just a nicety — anything driving the chip directly (tests, `P2000.UI`) must now drain it
+before the next command, exactly as the real ROM already does.
 
 Parameter glossary (datasheet verbatim): **EOT** = final sector # on a cylinder. **GPL** = Gap-3
 length. **DTL** = data length when N=0 (else sector length is 128×2^N). **SC** = sectors/
@@ -233,9 +251,9 @@ Step Rate Time / Head Unload Time / Head Load Time / Non-DMA mode.
 
 ---
 
-## 5. The three most-involved unimplemented commands
+## 5. The three most-involved commands — ALL BUILT (milestone 19a, 2026-07-24)
 
-### FORMAT A TRACK (`0x0D`) — build this one first, see §6
+### FORMAT A TRACK (`0x0D`) — built first, per this section's own plan; see §6
 Command phase is only 6 bytes (no C/H/R/EOT/DTL — nothing to target, there's no existing
 data). Once execution starts, the FDC does **not** know sector addresses in advance — for
 each of the **SC** sectors on the track, the host must push **4 bytes** through the data
@@ -267,7 +285,7 @@ datasheet's own note that ND applies to "READ DATA, WRITE DELETED DATA, or SCAN 
 
 ---
 
-## 6. Structural approach — extend `Upd765` to the MAME/openMSX 3-phase shape
+## 6. Structural approach — extend `Upd765` to the MAME/openMSX 3-phase shape — BUILT
 
 Milestone 19's `Upd765` already has real per-drive state (`_cylinder[]`, motor, selected
 drive) and a working semi-DMA byte-poll mechanism (`0x8D`/`0x90` bit0) — this milestone
@@ -314,11 +332,11 @@ instead:
    result byte → bit 6 test) against both a write-protected and writable mounted `DskImage`,
    confirming the ROM-level gate actually denies/allows the write — same fixture-driven
    pattern as the existing `Spel1.dsk`/`jwssytem.dsk` integration tests.
-3. **Format A Track — flag, don't force:** build the synthetic protocol test now (§6); if the
-   owner later sources JWSDOS's or PDOS's actual FORMAT utility, add the real end-to-end test
-   then (drive the real utility → Format A Track issued with real bytes → resulting `DskImage`
-   readable). Don't invent a fake "format utility" caller just to have an integration test —
-   that would test this project's own assumptions against itself, not real software.
+3. **Format A Track — done, both prongs.** The owner did source the real formatter
+   (`JWSFormat.bin`/`docs/jwsformat.asm`, 2026-07-24) — `Upd765Tests.cs` has both the synthetic
+   protocol test against the general shape AND a real integration test replaying
+   JWSFormat.bin's exact confirmed command bytes and 4-bytes-per-sector execution loop against a
+   `DskImage` fixture, asserting the resulting sectors land correctly formatted.
 
 ---
 

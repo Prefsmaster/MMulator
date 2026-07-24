@@ -1323,6 +1323,78 @@ marked synced. Do NOT edit the reference doc from this project.
   §17, and `P2000T-reference.md` §5d — all three done this pass) — implementation still
   outstanding.
 
+### 2026-07-24 — Milestone 19a IMPLEMENTED: full 15-command µPD765 set + opcode-identity correction for the real ROM's "READ DATA" byte
+- **Trigger:** the Format A Track confirmation above unblocked the milestone; picked up in full
+  (generalized FSM + all 9 remaining commands + backfilled result phase + tests), not staged.
+- **Opcode-identity finding — the byte milestone 19 confirmed and labelled "READ DATA" (`0x42`)
+  is actually READ A TRACK, not READ DATA.** Derived from already-established project facts, not
+  new disassembly: WRITE DATA's confirmed real byte (`0x45 = 0x05|0x40`) already proves the MF
+  bit (bit 6) is set platform-wide (settling the FM-vs-MFM open item flagged in reference doc
+  §5d — MFM is confirmed). Given that, `0x42` can only decode as `0x02|0x40` (READ A TRACK's base
+  opcode per the datasheet's own numbering) — it can never equal `0x06|0x40 = 0x46` (READ DATA's).
+  **Behaviourally invisible in every known real usage** (R is always `1` in the confirmed bytes,
+  and READ A TRACK's "ignore R, always start at sector 1" is byte-identical to "R=1, respected"),
+  so nothing that previously worked changes — `getdos`'s two-track load and both real disk-image
+  fixtures still pass unchanged. A genuine, separate READ DATA (`0x06`) is now modeled as one of
+  the 7 commands with no known real P2000 caller. Full derivation in `Upd765`'s class doc comment.
+- **Built — full 15-command Command/Execution/Result FSM** (`Upd765`, per
+  `docs/FDC-implementation.md` §6): dispatch now keys on the command byte's masked base opcode
+  (bits 4-0), not a literal per-caller byte, generalizing milestone 19's own "match on real bytes"
+  rule to the whole command space. All 9 previously-unimplemented commands added: READ DATA
+  (0x06), READ DELETED DATA (0x0C), WRITE DELETED DATA (0x09), READ A TRACK (0x02, reclassified
+  from 0x42 above), READ ID (0x0A), FORMAT A TRACK (0x0D, confirmed bytes from the entry above),
+  SCAN EQUAL/LOW-OR-EQUAL/HIGH-OR-EQUAL (0x11/0x19/0x1D), SENSE DRIVE STATUS (0x04, already
+  confirmed real usage since 2026-07-23 but not yet wired into dispatch until now).
+- **Result phase backfilled onto every command, including retroactively onto Read/Write Data —
+  and this turned out to be REQUIRED, not just chip-fidelity nicety.** Milestone 19's own doc
+  comment claimed "the ROM driver never reads it." Re-reading `docs/Monitor Documented
+  Disassembly/Disk.asm` while wiring this up found the opposite: the disk-complete interrupt
+  handler (`disk_IO_interrupt` → `read_IO_status`) calls `read_status_bytes` with **B=7** — the
+  ROM has always drained exactly 7 result bytes after a completed READ A TRACK. Under milestone
+  19's no-result-phase model this silently read back open-bus `0xFF`×7 into a buffer nothing else
+  consulted, so it happened to work; now it reads the real ST0-ST2/C/H/R/N block. **Consequence
+  for anything driving the chip directly (tests, `P2000.UI`):** the chip now stays busy
+  (`ReadStatus()` non-`0x80`) until those 7 bytes are drained — a command byte written to
+  `WriteData()` while a result is still pending is silently dropped (same `Phase.Idle`-only gate
+  RESET already had). Real ROM code already does this drain; test code driving the chip directly
+  now must too — updated `Upd765Tests.cs`, `MultiDriveFloppyTests.cs` (both drained 0 bytes before
+  chaining a second command), and `P2000.UI.Tests`' `DiskDriveVmTests.HeadAndSector_...` (switched
+  from the reclassified `0x42` to real READ DATA `0x46` to keep testing "R is honoured").
+- **Minor correctness fix along the way:** `CommitSectorWrites` (formerly inlined in
+  `CompleteTransfer`) previously hardcoded the destination sector as `1 + s` instead of
+  `_transferStartSector + s` — invisible before now (every real caller starts at sector 1) but
+  wrong for a WRITE DATA/WRITE DELETED DATA starting at any other R. Fixed as part of the
+  generalization, not a separate pass.
+- **Modeling decisions for the 7 commands with no known real P2000 caller** (full reasoning in
+  `Upd765`'s doc comments, kept here for the reference-doc sync): READ DELETED DATA always
+  reports ST2 CM=1 + ST0 abnormal termination (this project's `DskImage` has no per-sector
+  deleted-DAM marker, so every sector it ever encounters is the "wrong mark type" a real chip
+  would report); WRITE DELETED DATA writes normally (content correctness over untracked DAM
+  metadata); READ ID reports the tracked cylinder/HD-byte head/sector 1/N=1 (no per-sector ID-mark
+  model to scan, same reasoning as Format's don't-care CHRN); SCAN EQUAL/LOW/HIGH implement the
+  full SH/SN algorithm from `docs/FDC-implementation.md` §5 against the mounted disk's real bytes.
+- **`.state` bumped v6→v7** (`MachineStateFile`): the FDC block's result buffer grew 2→7 bytes and
+  gained `_transferKind`/`_formatFillByte`/`_formatSectorSize` fields — a v6 file's FDC block is a
+  different shape entirely, not just missing new fields.
+- **Tests:** `Upd765Tests.cs` — 3 existing 0x42 tests renamed/re-commented to READ A TRACK (no
+  assertion changes needed beyond draining the new result phase), +1 covering R being ignored;
+  +3 Sense Drive Status (WP/writable/T0+TS bits); +1 Read ID; +1 true Read Data (proves R IS
+  honoured, unlike Read A Track); +1 Read Deleted Data (CM+abnormal termination); +1 Write
+  Deleted Data; +4 Scan (Equal match/mismatch, Low, High); +2 Format A Track (synthetic shape +
+  a real integration test replaying JWSFormat.bin's exact confirmed command bytes and 4-bytes-
+  per-sector execution loop, asserting the resulting `DskImage` sectors are D-filled).
+  `MultiDriveFloppyTests.cs`/`P2000.UI.Tests` updated per the result-phase-drain note above. Full
+  `P2000.Machine.Tests`: 482/482 green; `P2000.UI.Tests`: 149/149 green.
+- **Applies to:** `src/P2000.Machine/Devices/Fdc/Upd765.cs` (full rewrite),
+  `src/P2000.Machine/State/MachineStateFile.cs` (v7 bump), `docs/FDC-implementation.md` (command
+  table + opcode-identity note), `tests/P2000.Machine.Tests/Devices/Fdc/Upd765Tests.cs`,
+  `tests/P2000.Machine.Tests/Devices/Fdc/MultiDriveFloppyTests.cs`,
+  `tests/P2000.UI.Tests/ViewModels/DiskDriveVmTests.cs`.
+- **Synced:** no yet — the opcode-identity correction (READ A TRACK not READ DATA for the real
+  ROM byte) needs to land in reference doc §5d's command-bytes table alongside the existing
+  MF-bit/FM-vs-MFM resolution it settles; the result-phase-drain finding (`read_IO_status`
+  B=7) is worth a line in §5d too since it corrects milestone 19's own "never reads it" claim.
+
 ### 2026-07-23 — New milestone flagged (not yet implemented): FDC full 15-command set, plus two real findings from a direct source read
 - **Trigger — owner:** don't stop the FDC at "passes the current boot/run test" — implement all
   15 commands the real µPD765/8272A supports, learning from prior emulator implementations of

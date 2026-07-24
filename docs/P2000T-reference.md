@@ -2801,6 +2801,15 @@ physical P2000T hardware verification session — supersedes the "still to confi
   a direct machine-level `SetKey`→VRAM read (or real hardware) before trusting it, the same
   lesson that caught the original mis-transcription of the (8,4) key as an accent mark when it
   actually renders **¼ (unshifted) / ¾ (shifted)** — a fraction glyph pair, not any accent.
+- **Port 0x06 bit 7, shifted, is ¨ (umlaut/diaeresis dead key), not `"` — CONFIRMED** (re-photo
+  of the physical keycap shows two dots, not a double-quote glyph). The P2000's only literal `"`
+  is **Port 0x07 bit 7**. The matrix POSITION for the umlaut key was never wrong, only its
+  documented character.
+- **Matrix (5,0) — CONFIRMED function pair, corrected from an earlier mislabel:** unshifted =
+  **clear line + home cursor** (to the leftmost column of the current line; icon is a vertical
+  bar/right-arrow/left-arrow/vertical bar glyph, not "centre-tab" as first transcribed), shifted
+  = **envelope icon = clear screen**. The earlier draft had the envelope as the unshifted
+  function; it's actually the shifted one.
 
 ### Still to confirm (minor)
 - Whether ports 1–9 float or read 0xFF while scanning is ON (assumed 0xFF above).

@@ -1,0 +1,2011 @@
+# P2000.Machine — Findings Log Archive
+
+Full historical findings-log entries archived from `CLAUDE.md` (P2000.Machine project) §17,
+during the 2026-07-24 sync-and-trim pass. Every entry here was verified against
+`P2000T-reference.md` before archiving — either already synced, confirmed correctly
+implementation-only (nothing to sync), or synced as part of this same pass. See the live
+project CLAUDE.md §17 for entries still open or from the last couple of active days, plus a
+pointer back here for full history.
+
+This file is a complete, unedited historical record — for posterity/audit, not day-to-day
+reference. Nothing here should be treated as a currently-open task; check the live CLAUDE.md
+§17 and the project's own milestone list (§13) for what's still outstanding.
+
+---
+
+### 2026-07-24 — CONFIRMED: Format A Track's real P2000 command bytes + execution mechanism (owner-supplied disassembly of the standalone JWSFormat.bin formatter)
+- **Trigger — owner:** delivered `docs/jwsformat.asm`, a personally-produced disassembly of
+  `JWSFormat.bin` (the standalone formatter utility flagged as a separate application on
+  2026-07-23), following through on "I will provide more information, and hopefully a
+  disassembly, later."
+- **Supersedes the 2026-07-23 entry below's "NOT confirmed as JWSDOS's format mechanism" finding**
+  — that was correct as far as it went (format isn't in `jwsdos5.0.asm`'s resident DOS), and is
+  now completed by this separate formatter's source.
+- **Exact confirmed FORMAT A TRACK command bytes, byte-for-byte match to the general-datasheet
+  shape already modeled in `docs/FDC-implementation.md` §4** (nothing about the 6-byte command
+  phase needed to change — only its status, modeled → confirmed): `06 4D <HD/US> 01 10h 32h 00h`
+  — length 6, opcode `0x0D`\|MF(bit6), HD/US set at runtime, N=1 (256 B/sector), SC=16 sectors/
+  cylinder (matches confirmed disk geometry), GPL=0x32 (gap-3, 50 decimal), D=0x00 fill byte.
+- **Execution phase confirmed exactly as predicted — reuses the existing Write Data semi-DMA
+  byte-poll mechanism, no new transfer plumbing needed in `Upd765`:** per sector (×SC=16), the
+  host feeds 4 bytes (Cylinder, Head, Record, N) via `outi` to port `0x8D`, gated by the same
+  `0x90` bit0 "byte ready" poll used elsewhere.
+- **Bonus finding — Cylinder off-by-one, reinforces the existing ID-verification-leniency
+  conclusion (reference doc §5d, `Disk.asm`):** `jwsformat.asm` writes `track_index + 1` into
+  each track's format-data Cylinder byte, NOT the real 0-based physical track used for SEEK.
+  Combined with `Disk.asm`'s own READ/WRITE DATA driver reusing one stale Cylinder byte across
+  two different physical tracks and still succeeding, this is now **two independent real-software
+  data points** that P2000 software never relies on strict ID-field Cylinder verification.
+  Recommendation carried into milestone 19a's scope: `Upd765` should not gate READ/WRITE/FORMAT
+  success on an exact C-byte match (moot anyway for this project's formula-addressed `DskImage`).
+- **Two more confirmations from the same source:**
+  - HD/US byte bit 2 = side/head select, confirmed exactly against the datasheet's
+    `0 0 0 0 0 HD US1 US0` layout (`get_disk_side`'s `set 2,a` for side 2 of a drive).
+  - User-facing drive numbers 1-4 map to internal drive indices **1, 2, 3, 0**
+    (`get_drive_choice` + `and 003h`: '1'→1, '2'→2, '3'→3, '4'→0) — relevant if `P2000.UI`'s
+    drive-tab numbering (§14) ever needs to match real P2000 software's own convention.
+  - **Sense Drive Status independently reconfirmed by a SECOND real program:**
+    `JWSFormat.bin`'s own `check_write_protect` sends the identical `02 04 <drive>` shape and
+    tests the identical ST3 bit 6, from a completely separate codebase than `jwsdos5.0.asm`'s
+    `check_write_enable`.
+- **Applies to:** `docs/FDC-implementation.md` §2 (full rewrite of the Format A Track paragraph),
+  §13.19a above (Format A Track bullet rewritten from "not confirmed" to "fully confirmed" +
+  test-strategy bullet updated to add a real integration test), reference doc §5d (Format A
+  Track confirmed bytes + ID-verification-leniency reinforcement + HD/US bit2 + drive-number
+  mapping, all added).
+- **Synced:** yes (2026-07-24, into `docs/FDC-implementation.md` §2, this project's own §13.19a/
+  §17, and `P2000T-reference.md` §5d — all three done this pass) — implementation still
+  outstanding.
+
+### 2026-07-23 — New milestone flagged (not yet implemented): FDC full 15-command set, plus two real findings from a direct source read
+- **Trigger — owner:** don't stop the FDC at "passes the current boot/run test" — implement all
+  15 commands the real µPD765/8272A supports, learning from prior emulator implementations of
+  the same chip family the way this project already did for SAA5050 (MAME/jsbeeb) and MDCR.
+- **Research done (design-doc maintainer pass, web research + a direct grep of this project's
+  own `docs/jwsdos5.0.asm`):** full writeup now in new companion doc `docs/FDC-implementation.md`
+  (mirrors the SAA5050/MDCR implementation-guide pattern). Summary of the two things that
+  actually changed what's "confirmed" vs. "assumed" for THIS platform specifically (as opposed
+  to generic chip-datasheet facts, which the new doc also has in full):
+  - **SENSE DRIVE STATUS is real, confirmed usage, not just a datasheet command.** Direct read
+    of `jwsdos5.0.asm`'s `check_write_enable` routine: sends `02 04 <drive>`, reads 1 result
+    byte, tests bit 6 for write-protect — exact match to the standard ST3 layout. First sourced
+    confirmation this chip's status-bit semantics apply unmodified here. Synced into reference
+    doc §5d.
+  - **FORMAT A TRACK is NOT confirmed as JWSDOS's format mechanism — checked specifically and
+    not found.** The owner expected this was "undoubtedly" used by JWSDOS/PDOS format
+    utilities; `jwsdos5.0.asm`'s resident DOS command table (LOAD/SAVE/RUN/ZOEK/WIS/VP/SYS) has
+    no format command at all, and `VP` (checked directly on suspicion it might be a Dutch
+    "voorbereiden"/prepare command) turned out to be an unrelated load-with-relocation variant.
+    Either the real formatter is a separate utility program not in this disassembly, or it
+    works some other way — genuinely open, not resolved. Build Format A Track from the general
+    datasheet regardless (it's real, useful chip behavior and the priority within the new
+    milestone per the owner's request) but don't claim P2000-specific confirmation that isn't
+    there. Revisit if the owner sources the actual format-utility code.
+  - Also corrected a small pre-existing inaccuracy: this project's own docs said "the complete
+    16-command µPD765 set" in one place — that number came from eyeballing MAME's C++ enum,
+    which includes enhanced-later-chip-only commands beyond the real base-chip 15. Corrected to
+    15 in reference doc §5d, with the enhanced-chip entries explicitly named as out of scope.
+- **New milestone added:** project CLAUDE.md §13.19a (fast-follow to M19) — full writeup there
+  and in `docs/FDC-implementation.md`. Not yet implemented.
+- **Applies to:** `docs/FDC-implementation.md` (new), reference doc §5d (Sense Drive Status
+  confirmation + 15-command correction) / `src/P2000.Machine/Devices/Fdc/Upd765.cs` (future
+  implementation target).
+- **Synced:** yes (2026-07-23, into P2000T-reference.md §5d) — implementation outstanding.
+
+### 2026-07-23 — IMPLEMENTED: Upd765 live current-sector tracking (closes the flag below) + a real seek-status bug fix found along the way
+- **Implements the flag immediately below** (owner authorization): `Upd765.TransferStatus`
+  gained a `Sector` field. Two new fields, `_transferStartSector`/`_transferSectorSize`, are
+  set in `DispatchReadWrite` from the command's own R/N bytes (already read locally, just not
+  retained); `CurrentTransfer.Sector` computes `_transferStartSector + _transferIndex /
+  _transferSectorSize` (guarded against `_transferSectorSize == 0`) — advances live as bytes
+  move through the semi-DMA loop, not pinned to the starting sector for the whole transfer.
+- **Found (real bug, not introduced by this change but surfaced while touching the same
+  struct):** `BeginSeek` never set `_transferDrive` — `CurrentTransfer.Drive` during a SEEK
+  reported whichever drive last did a READ/WRITE DATA transfer (or 0, if none ever had), not
+  the drive actually being sought. The host status surface (`P2000.UI` milestone 14's
+  `DiskDriveVm`) would have lit up the wrong drive's activity indicator during a seek on a
+  different drive. Fixed: `BeginSeek` now sets `_transferDrive = drive`.
+- **Scope call — Head/Sector during a SEEK stay a known, accepted cosmetic imprecision, NOT
+  fixed to be command-type-aware:** a SEEK is also `Phase.ExecutionPhase` but has no head/
+  sector of its own; `CurrentTransfer.Head`/`.Sector` during a seek show whatever the LAST
+  real READ/WRITE DATA transfer's values were (stale, not meaningful) rather than something
+  seek-specific. Building real per-command-type status (and Format/Scan's own shapes) is
+  milestone 19a's job (full command-phase generalization), not a one-off patch here — see the
+  entry further below.
+- **`.state` bumped v5→v6, MinVersion 5→6 (reject v5) — this time the byte layout itself
+  changed, not just the config JSON:** the two new int32 fields are written/read mid-stream in
+  `Upd765.SaveState`/`LoadState`, between the existing transfer-drive and byte-ready fields. A
+  v5 file's FDC block is 8 bytes shorter than v6 expects — reading it under the new layout
+  would misalign every field after that point, not just silently drop the new ones.
+- **Tests:** `Upd765Tests` (+3): existing `CurrentTransfer_DuringReadData...` test extended
+  with a `Sector` assertion; new `CurrentTransfer_MultiSectorTransfer_SectorAdvancesAsBytesMove`
+  (Turbo policy, isolates the arithmetic from timing); new
+  `CurrentTransfer_DuringSeek_ReportsTheSeekingDrive_NotAStaleOne` (regression guard for the
+  bug fix — completes a transfer on drive 0 first, then seeks drive 2, confirms `Drive` reports
+  2 not stale 0). `MachineStateFileTests` (+1): `Load_VersionFive_Throws`. Full
+  `P2000.Machine.Tests`: 468/468 green (was 465).
+- **Applies to:** `src/P2000.Machine/Devices/Fdc/Upd765.cs` (`TransferStatus.Sector`,
+  `_transferStartSector`/`_transferSectorSize`, `BeginSeek` fix, `SaveState`/`LoadState`),
+  `src/P2000.Machine/State/MachineStateFile.cs` (v6 bump),
+  `tests/P2000.Machine.Tests/Devices/Fdc/Upd765Tests.cs`,
+  `tests/P2000.Machine.Tests/State/MachineStateFileTests.cs` — consumed by
+  `src/P2000.UI/ViewModels/DiskDriveVm.cs` (`HeadText`/`SectorText`, `P2000.UI/CLAUDE.md` §18).
+- **Synced:** no (implementation-only; the sector-tracking DECISION itself was already synced
+  via the flag entry below when it was authorized).
+
+### 2026-07-23 — Flag (not yet implemented): Upd765 needs a live current-sector value during a transfer
+- **Trigger — owner, resolving what `P2000.UI` milestone 14 scoped out** ("sector" flagged as
+  not persisted by `Upd765` outside an active transfer's own command bytes, so it was left off
+  the live status row rather than guessed): *"that is officially not fed back from the drive,
+  so only the starting sector of a multi sector read is known, however, we could plug into the
+  internals of our FDC emulator and find out from there, I suppose?"*
+- **Decision (this entry IS the authorization to implement):** yes — extend
+  `Upd765`'s transfer-status tracking (the same `TransferStatus`/`CurrentTransfer` surface M14
+  already added for `Head`) with a running **current sector** value, derived from state the
+  chip already implicitly has during a semi-DMA transfer: the command's starting sector (R, from
+  the 9-byte parameter block) plus however many bytes have moved through the `0x8D`/`INI`
+  byte-loop so far. `current_sector = R + floor(bytes_transferred / bytes_per_sector)`,
+  wrapping at EOT per normal CHS sector-increment rules — this is exposing already-tracked
+  internal state, not adding new state, same category as the `MotorOn`/`GetCylinder`/
+  `CurrentTransfer` accessors M14 already added. For a single-sector command this collapses to
+  just R (the "at least the starting sector is knowable" case); for a real multi-sector run it
+  should visibly advance as the transfer progresses.
+  - **Idle (no command in flight): no sector value** — matches the parallel head-value decision
+    (`P2000.UI` CLAUDE.md §14 "Live status row" — owner, 2026-07-23): both head and sector show
+    "–" when nothing is happening, since neither is a real persistent register on idle
+    hardware; both show the REAL value once something is.
+- **Applies to:** `src/P2000.Machine/Devices/Fdc/Upd765.cs` (`TransferStatus`/
+  `CurrentTransfer` — add current-sector tracking) — consumed by `P2000.UI/CLAUDE.md` §14's
+  live status row (`DiskDriveVm`).
+- **Synced:** no (implementation-only accessor addition — no new hardware fact; "sector isn't a
+  real fed-back register on idle hardware" was already true and unchanged).
+
+### 2026-07-23 — Flag (not yet implemented): floppy+RAM board is an atomic package, not board+separate-RAM-tier
+- **Trigger — owner's request:** add UI to let the user add the Philips memory/CTC/FDC
+  extension board (and its memory) to their machine. In discussion, the owner clarified the
+  intended shape directly: *"I would make the Philips extension board an 'atomic unit'.
+  Homebrew or 3rd party memory card: that one should be configurable regarding # of banks."*
+- **Found (design-doc pass — this over-constrains the wrong axis today):**
+  `Machine`'s constructor (added during M19, §17 2026-07-22 entry) currently throws unless
+  `Board == InternalBoard.FloppyRam` implies `RamVariant == RamVariant.T102` exactly — i.e. it
+  validates board-vs-RAM-tier as two independently-set fields that happen to be cross-checked,
+  rather than modeling RAM capacity as something that BELONGS to whichever board is chosen.
+  That's the wrong shape for what's being asked now, even though it happened to enforce the
+  right real-world outcome (floppy+RAM ⇒ T/102) as a side effect of a stricter equality check.
+- **Decision (this entry IS the authorization to implement):**
+  - **Floppy+RAM is atomic.** Selecting it is ONE choice — FDC + CTC + the one confirmed real
+    RAM capacity (T/102, 80 KB) all appear together, same as plugging in one physical card.
+    **No separate memory-size control exists for this board** — there was never a smaller or
+    larger "official" version to pick between, so don't build a dial with only one legal
+    position; just auto-set the capacity and show it as read-only/implied, the same way there's
+    no separate CTC checkbox next to it.
+  - **RAM-only board is the configurable axis.** It models a homebrew/3rd-party RAM-expansion
+    card — no single official product (reference doc's own existing note: "homebrew RAM cards
+    decode more bits for more banks"). THIS is where a bank-count control belongs. T/54 is a
+    reasonable default value for it, not a second hardcoded "official tier."
+  - **`MachineConfig` shape implication:** `RamVariant` as a flat, independently-set enum
+    crossed against `Board` is the wrong representation of this. Prefer something closer to:
+    `Board` (None/RamOnly/FloppyRam) where `Board == FloppyRam` implies a fixed, non-configurable
+    capacity (no user input needed/possible), and `Board == RamOnly` carries its own bank-count
+    value that IS user-set (bounded to some sane range — exact real-world bank-count ranges for
+    homebrew cards are not sourced; pick a reasonable bound and flag it as unverified rather than
+    inventing false precision). `Board == None` is the fixed T/38 baseline, not a "variant."
+    Whether this is best expressed as reshaping `RamVariant` itself or replacing it with a
+    board-scoped capacity field is an implementation-level call — the constraint that matters is
+    the one above (no dial on FloppyRam, a real dial on RamOnly), not the exact C# shape.
+  - **Machine.cs validation should relax accordingly:** instead of "FloppyRam requires
+    RamVariant==T102 exactly" (a coincidentally-correct equality check), the real invariant is
+    "FloppyRam always HAS T102-equivalent capacity, by construction, not by user choice" — there
+    should be no code path where FloppyRam could be paired with a different capacity to reject
+    in the first place, because the UI/config layer should never offer that combination. If the
+    equality check stays as a defensive assertion after this refactor, that's fine — just not as
+    the primary mechanism enforcing the rule.
+  - **Config-window UI implication (mirrors into `P2000.UI/CLAUDE.md` §7 + a milestone-14-
+    adjacent UI task, not yet scoped as its own numbered milestone here):** checking
+    "floppy+RAM" in the board selector should immediately imply FDC+CTC+RAM together with no
+    further memory choice shown; checking "RAM-only" should reveal a capacity/bank-count
+    control; checking "none" hides both.
+  - **Drive-config retention on board removal — DECIDED (owner, 2026-07-23):** switching the
+    board away from Floppy+RAM should PRESERVE the configured `FloppyDrives` list (not clear
+    it) — the machine layer simply doesn't mount any of it while `Board != FloppyRam`; switching
+    back to Floppy+RAM should restore the drives exactly as configured. This is a config-
+    retention concern (don't null out `MachineConfig.FloppyDrives` just because the board
+    changed), not a new validation rule.
+- **Not resolved here — needs a real number before the RAM-only dial can ship:** what bank-count
+  range is plausible/authentic for a homebrew card (the current T/54 tier implies at least one
+  real reference point, but the useful UPPER bound for "3rd-party card" is unsourced) — pick a
+  reasonable placeholder and flag it, don't block the atomic/floppy+RAM half of this work on it.
+- **Applies to:** reference doc §3a (Config axes — "Board/RAM coupling model", updated same
+  date) / `src/P2000.Machine/Machine.cs` (constructor validation), `MachineConfig.cs`
+  (`RamVariant`/`Board` shape) — `src/P2000.UI/CLAUDE.md` §7 (Config window axes, updated same
+  date), a future Config-window UI milestone (board selector + conditional capacity control).
+- **Synced:** yes (2026-07-23, into P2000T-reference.md §3a — the coupling model decision) —
+  implementation (both machine-layer validation relaxation and the config-window UI) still
+  outstanding.
+- **Status update (2026-07-23, after `P2000.UI` milestone 14 — see that project's CLAUDE.md
+  §14 write-up):** the UI-side "no dial on Floppy+RAM" half is effectively already true —
+  `ConfigWindowVm` auto-forces `RamVariant.T102` and disables the RAM selector the moment
+  Floppy+RAM is chosen, as a side effect of milestone 14's new board selector, not because this
+  entry was specifically implemented. **Still outstanding:** (a) the RAM-only board still only
+  offers the same three fixed named tiers (T/38 · T/54 · T/102) rather than a genuine
+  bank-count dial for homebrew/3rd-party cards — the actual "configurable axis" half of this
+  decision; (b) `Machine.cs`'s validation is still the coincidental equality check
+  (`FloppyRam` requires `RamVariant == T102` exactly), not restructured to make the invalid
+  combination unrepresentable by construction; (c) whether drive-config is preserved (not
+  cleared) when the board is switched away from Floppy+RAM was not confirmed one way or the
+  other by the milestone-14 write-up — needs checking before this entry is considered done.
+
+### 2026-07-23 — CHANGED (owner request): blanking margin is now dark grey, not pure black
+- **Trigger:** owner reported the Full-Field crop's blanking margins render as full black,
+  making the boundary against an all-black active picture (background colour 0 is also pure
+  black — `Saa5050Palette.ColorTable`) invisible. Requested a very dark grey instead, purely
+  for visual debugging — NOT a hardware-accuracy claim; real hardware's blanking signal is
+  genuinely black.
+- **Fix:** added `Video.BlankingColor` (`internal const uint`, `0xFF202020` — BGRA8888, opaque,
+  RGB (32,32,32); channel order is irrelevant for a pure grey). `Video`'s framebuffer is now
+  filled with this (`Array.Fill`) instead of zeroed (`Array.Clear`) at both construction
+  (`CreateBlankedFramebuffer()`) and `Reset()`. Nothing else changes — the active window still
+  overwrites its own pixels every fetch regardless of what the margin holds, so there's no
+  added per-field cost, and `CorruptLastFetch`'s contention-corruption blanking (a distinct,
+  already-documented "black/suppression" concept — reference doc §4) is deliberately left as
+  pure black, unaffected by this change.
+- **Tests:** `VideoTests` (+1): a freshly-constructed machine's margin pixel is
+  `Video.BlankingColor`, not `0`. Updated 2 pre-existing tests that asserted an untouched pixel
+  is exactly `0u` (`FirstField_IsEven...`'s odd-row check, `Reset_ClearsTheFramebuffer...`) to
+  expect `Video.BlankingColor` instead — genuine behavior changes, not incidental breakage.
+  `MachineTests.Reset_ClearsTheVideoFramebuffer` renamed to
+  `Reset_FillsTheVideoFramebufferWithTheBlankingColor` and updated the same way. Full
+  `P2000.Machine.Tests`: 459/459 green (was 458). `P2000.UI.Tests` not re-run this pass — the
+  owner's own `P2000.UI` instance was running locally and holding a file lock on
+  `P2000.Machine.dll`; no `P2000.UI` source changed, so no regression expected, but flag to
+  re-run once free. **The owner's running instance predates this fix — needs a relaunch to
+  show the new margin colour** (same caveat as the 2026-07-21 pre-roll fix entry above).
+- **Applies to:** `src/P2000.Machine/Devices/Video.cs` (`BlankingColor`,
+  `CreateBlankedFramebuffer`, `Reset`), `tests/P2000.Machine.Tests/Devices/VideoTests.cs`,
+  `tests/P2000.Machine.Tests/MachineTests.cs`.
+- **Synced:** no (a deliberate debug/UX choice, explicitly not a hardware fact — nothing to
+  correct in the reference doc, which correctly still says real hardware's blanking is black).
+
+### 2026-07-23 — FIXED: RamSeed never serialized in .cfg/.state (gap flagged during M20/20a)
+- **Bug:** `MachineConfigFile`'s `ConfigDto`/`ToDto`/`FromDto` never included
+  `MachineConfig.RamSeed` (`ulong?`) — only `Model`/`Board`/`RamVariant`/`BankCount`/
+  `MonitorRomPath`/`Slot1CartridgePath`/`FloppyDrives` round-tripped. A `.cfg` or `.state`
+  saved with an explicit `RamSeed` silently lost it on load (fell back to a fresh random seed
+  via `EmulationRunner`, or `PageTable.DefaultRamSeed` elsewhere) — a real, silent correctness
+  gap against `RamSeed`'s own doc comment, which describes it as exactly the kind of override a
+  saved config should be able to pin (e.g. to reproduce a specific bug report that names its
+  seed).
+- **Fix:** added `RamSeed` to `ConfigDto` and wired it through `ToDto`/`FromDto` in
+  `src/P2000.Machine/State/MachineConfigFile.cs`. `MachineStateFile.cs` needed NO change —
+  it only ever serializes the config via `MachineConfigFile.Serialize`, so the fix is entirely
+  upstream of it.
+- **No version bump (`.cfg` or `.state`), and this is a deliberate call, not an oversight:**
+  the field is purely additive and nullable. An old file with no `ramSeed` key still
+  deserializes to `null` — IDENTICAL to today's (buggy) behaviour, so no old file's meaning
+  changes. This differs from the M20 `FloppyDrives` bump (which renamed/reshaped an EXISTING
+  field, so an old file's disk-mount intent would have silently changed under the new DTO) —
+  that was a real semantic break; this is a new field with no prior semantics to break. Matches
+  this file's own established precedent: `BankCount`/`MonitorRomPath`/`Slot1CartridgePath`/
+  `FloppyDrives` were all added to this same DTO over time without bumping
+  `MachineConfigFile.CurrentVersion` (still `1`).
+- **Tests:** `MachineConfigFileTests` (+2): explicit `RamSeed` round-trips; absent `RamSeed`
+  still defaults to `null`. `MachineStateFileTests` (+1): a full `.state` save/reload preserves
+  an explicit `RamSeed` via the embedded config. Full `P2000.Machine.Tests`: 458/458 green (was
+  455); `P2000.UI.Tests`: 99/99, unaffected (no call site changed).
+- **Applies to:** `src/P2000.Machine/State/MachineConfigFile.cs` (`ConfigDto.RamSeed`,
+  `ToDto`/`FromDto`), `tests/P2000.Machine.Tests/State/MachineConfigFileTests.cs`,
+  `tests/P2000.Machine.Tests/State/MachineStateFileTests.cs`.
+- **Synced:** no (implementation-only bug fix, no new hardware content).
+
+### 2026-07-23 — Milestones 20/20a IMPLEMENTED: multi-drive floppy config + cassette/disk dirty-tracking
+- **Assumed (per the milestone's own text):** the multi-drive generalization would require real
+  chip-layer (`Upd765`) changes — per-drive head/motor/state arrays.
+- **Found (the chip layer already modelled 4 drives — M19 built ahead of when M20 was
+  written):** `Upd765._drives` (`DskImage?[4]`) and `_cylinder` (`int[4]`) were already
+  per-drive arrays since milestone 19; only `_selectedDrive`/transfer state are singular, which
+  is correct (real hardware addresses one drive at a time). **The actual gap was entirely at the
+  config layer:** `MachineConfig.FloppyDiskImagePath` (singular, implicitly drive 1) and
+  `Machine`'s constructor only ever calling `MountDisk(1, ...)`. No `Upd765`/`DskImage` chip
+  logic changed for M20 itself beyond the two additive host-API members below.
+- **Built (M20):** `MachineConfig.FloppyDrives` (`IReadOnlyList<FloppyDriveConfig>`, replacing
+  `FloppyDiskImagePath`) — each entry: `DriveIndex` (0-3), `Enabled`, `Capacity`, `Sides`
+  (`DiskSides` enum), `ImagePath`. `Machine`'s constructor validates ≤4 drives, indices in 0-3,
+  no duplicates, then mounts every enabled entry with a non-null `ImagePath` at its own index
+  (no more hardcoded unit 1). `DskImage.GetBytes()` added for host Save/Save-as (byte-for-byte
+  copy, no bitstream encode needed for a raw sector dump) — write-protect and directory-browse
+  needed NO new API since `DskImage.WriteProtected`/`ReadDirectory()` are already per-instance
+  (reachable via `Upd765.GetDisk(drive)`), and create-blank needed none either
+  (`Upd765.MountDisk(drive, DskImage.CreateBlank(tracks, sides))` is already a one-liner) — kept
+  the API surface to exactly what wasn't already a one-liner, per root CLAUDE.md's
+  no-premature-abstraction rule.
+- **Built (M20a):** `IsDirty`/`MarkClean()` added to `DskImage` (set on a real `WriteSector`,
+  i.e. not write-protected; cleared by `MarkClean()`) and mirrored on `MiniTape`
+  (`IsDirty`/`MarkSaved()`, set on `Write`/`WriteBlockAtHead`, cleared at the end of
+  `LoadCasImage` and by `MarkSaved()`) with a same-named proxy pair added to `MdcrDevice`
+  (`IsDirty`/`MarkClean()`) mirroring its existing `IsWriteProtected`/`SetWriteProtected`
+  pattern. No new device/flag needed beyond these — checked first per the milestone's own
+  "verify before adding a second one" instruction; neither device had anything reusable.
+- **`.state` bumped v4→v5, MinVersion 4→5 (reject v4), per the milestone's explicit
+  instruction — even though the FDC device-state BLOCK's own byte layout is unchanged.** The
+  reason is the embedded config JSON, not the device stream: a v4 file's config JSON has
+  `floppyDiskImagePath` and no `floppyDrives` key; deserializing it under the new
+  `MachineConfigFile` DTO would silently default to an empty drive list rather than failing
+  loudly, so a v4 save's mounted disk would silently go unmounted on load with no error — exactly
+  the silent-misload class of bug the version-gate discipline exists to catch.
+- **Found (pre-existing gap, adjacent but out of this milestone's scope, left as-is):**
+  `MachineConfigFile`'s DTO never serialized `RamSeed` at all (only `Model`/`Board`/
+  `RamVariant`/`BankCount`/`MonitorRomPath`/`Slot1CartridgePath` round-tripped) — a `.cfg`/
+  `.state` load has always silently dropped an explicit `RamSeed`. Not fixed here (unrelated to
+  the disk axis this milestone touches); flagged for a separate follow-up.
+- **`P2000.UI` compile compatibility (not milestone 14 — that's still explicitly out of scope,
+  gated on `P2000.UI/CLAUDE.md` §14.14):** `EmulationRunner.Reconfigure`'s manual field-copy
+  (needed because `MachineConfig` has no `with` expression) updated
+  `FloppyDiskImagePath = config.FloppyDiskImagePath` → `FloppyDrives = config.FloppyDrives` —
+  the only call site outside `P2000.Machine` that referenced the removed field. `MakeConfig()`
+  never set it either way, so this is a pure rename with no behavior change; the actual
+  multi-drive UI (config axis, drive window, dirty-tracking eject warning) remains UI milestone
+  14/14a, unbuilt.
+- **Tests:** `MultiDriveFloppyTests.cs` (new) — config validation (0-4 drives accepted, >4/
+  duplicate-index/out-of-range-index all throw), per-drive mount-from-config at arbitrary
+  indices, disabled drives never mounted, an enabled drive with no `ImagePath` resolves to the
+  existing "absent drive" no-op (no new state), two-drive seek independence with no cross-talk,
+  per-drive geometry auto-detect, write-protect gating only the targeted drive, create-blank +
+  guest-write + Save round-trip, eject-without-save discarding in-memory changes. `DskImageTests`
+  (+9): create-blank exact byte size + no label at the auto-detect offsets, `IsDirty`/
+  `MarkClean` transitions, `GetBytes` round-trip + copy-not-reference. `MdcrDeviceTests` (+8):
+  the same `IsDirty`/`MarkClean` transitions mirrored for the cassette. `MachineConfigFileTests`
+  (+2): `FloppyDrives` round-trip (multiple drives, mixed `Enabled`/geometry/path) and the
+  empty-by-default case. `MachineStateFileTests` (+2): v4 rejected, a real multi-drive `.state`
+  round-trip (two drives seeked to different cylinders, restored, `SENSE INTERRUPT STATUS`
+  confirms drive 1's cylinder survived independent of drive 0's). Full `P2000.Machine.Tests`
+  suite: 455/455 green (was 416); `P2000.UI.Tests`: 99/99 green, unaffected.
+- **Applies to:** project CLAUDE.md §13 milestones 20/20a /
+  `src/P2000.Machine/MachineConfig.cs` (`DiskSides`, `FloppyDriveConfig`, `FloppyDrives`),
+  `src/P2000.Machine/Machine.cs` (validation + per-drive mount loop),
+  `src/P2000.Machine/Devices/Fdc/DskImage.cs` (`IsDirty`, `MarkClean`, `GetBytes`),
+  `src/P2000.Machine/Devices/Cassette/MiniTape.cs` (`IsDirty`, `MarkSaved`),
+  `src/P2000.Machine/Devices/Cassette/MdcrDevice.cs` (`IsDirty`, `MarkClean`),
+  `src/P2000.Machine/State/MachineConfigFile.cs` (DTO `FloppyDrives`),
+  `src/P2000.Machine/State/MachineStateFile.cs` (v5 bump),
+  `src/P2000.UI/Runner/EmulationRunner.cs` (field-copy rename only),
+  `tests/P2000.Machine.Tests/Boot/DiskBootTests.cs` (updated to `FloppyDrives`),
+  `tests/P2000.Machine.Tests/Devices/Fdc/MultiDriveFloppyTests.cs` (new),
+  `tests/P2000.Machine.Tests/Devices/Fdc/DskImageTests.cs`,
+  `tests/P2000.Machine.Tests/Devices/MdcrDeviceTests.cs`,
+  `tests/P2000.Machine.Tests/State/MachineConfigFileTests.cs`,
+  `tests/P2000.Machine.Tests/State/MachineStateFileTests.cs`.
+- **Synced:** no (implementation-only — no new hardware facts beyond what M20's own spec
+  already carried; the RamSeed serialization gap noted above is a pre-existing bug, not new
+  hardware content, and is flagged rather than fixed here).
+
+
+Append a dated entry here whenever implementation corrects, clarifies, or adds to the
+spec/reference doc (see §13). Format: date, milestone, what was assumed → what turned out true,
+and where it applies (file/port/section of the reference doc). Keep entries short and factual.
+The human periodically syncs these into the P2000T reference document, then may prune entries
+marked synced. Do NOT edit the reference doc from this project.
+
+<!-- Template:
+### YYYY-MM-DD — Milestone N: <short title>
+- **Assumed:** …
+- **Found:** …
+- **Applies to:** reference doc §… / <file/port>
+- **Synced:** yes (2026-07-05, into P2000T-reference.md + device guides)
+-->
+
+### 2026-07-22 — Milestone 19: real-ROM RUN-gate test now GREEN — 4 real bugs found and fixed via `docs/Monitor Documented Disassembly/`
+- **Trigger:** the owner pointed at `docs/Monitor Documented Disassembly/Startup.asm` +
+  `Disk.asm` — the actual monitor-ROM source the earlier FDC pass (below) didn't have access
+  to — asking why the real-ROM disk-boot test failed. It was fully diagnosable and IS now
+  fixed: all 4 `DiskBootTests` pass, `getdos` boots the real ROM against a real `Spel1.dsk` and
+  loads both DOS tracks byte-identical. Four independent real bugs, found by reading the
+  actual source and then confirming each hypothesis with a targeted diagnostic test (reflection
+  into private chip state, a disassembly trace of the live PC) rather than guessing further:
+  1. **SLOT1 header bit1 ("needs DOS") was inverted.** `Startup.asm`'s gate is `bit 1,a; jr
+     z,prep_status_display` — bit1=**1** triggers disk boot, bit1=**0** skips it (the opposite
+     of the earlier pass's assumption). `assets/BASIC.bin`'s real header byte (0x5E) already
+     has bit1=1 — no cartridge cloning/modification needed at all for the test; the earlier
+     "clone BASIC.bin and clear bit1" workaround was clearing the exact bit that mattered.
+  2. **READ/WRITE DATA must address the FDC's own tracked cylinder, not the command's own C
+     byte.** `Disk.asm`'s `read_track` copies its command template to RAM ONCE and never
+     updates the cylinder field between the two DOS-track reads (both are byte-identical) —
+     the actual cylinder differs only because a separate SEEK physically moved the head first.
+     Real µPD765 hardware reads/writes wherever the head IS; C is for ID-field verification,
+     not addressing. Fixed in `Upd765.DispatchReadWrite` (uses `_cylinder[drive]` now, not the
+     command byte) — confirmed correct by cross-checking both loaded tracks against the raw
+     `Spel1.dsk` bytes exactly.
+  3. **RESET (0x90 OUT bit2) only actually takes effect from `Phase.Idle`,** not "anytime
+     except ResultPhase" as first patched. TWO separate confirmed real-code sites write this
+     bit while a command is still active, in ordinary working code: `read_status_bytes` writes
+     RESET|MOTOR (0x0C) while a SENSE INTERRUPT STATUS result phase is still pending readout,
+     and `read_track` writes RESET|MOTOR|ENABLE (0x0D) to arm the transfer immediately AFTER
+     dispatching READ DATA (putting the chip in `ExecutionPhase`) — reproduced live: this
+     second case silently discarded an in-flight semi-DMA transfer, leaving the busy-poll loop
+     spinning on a permanently-idle MSR forever. Two independent real sites doing this in
+     working code is strong enough evidence the bit simply has no effect once a command is
+     already in flight.
+  4. **Turbo's "instant" SEEK/RECALIBRATE completion was a lost-wakeup race, found by tracing a
+     genuine CPU halt via the disassembler.** Firing `ResultReady` SYNCHRONOUSLY inside the
+     command dispatch meant the completion interrupt was accepted and fully serviced (IM2 →
+     ISR → RETI) at the very next instruction boundary — often still inside
+     `disk_send_command`'s own loop — before the ROM ever reached the `halt` it places right
+     after sending the command specifically to wait for that same completion
+     (`disk_recall`/`disk_do_search`, both: send command, THEN halt). By the time the ROM
+     halted, the one-shot interrupt was already gone, and nothing else could wake it (Lock
+     suppresses the video INT; ch3/keyboard isn't armed yet at this point in boot). Fixed by
+     giving Turbo a small-but-nonzero deferred delay (`Upd765.MinimumTurboSeekTStates = 200`,
+     via the same `Tick()`-driven mechanism Authentic already used) — long enough to safely
+     outlast the handful of T-states between dispatch and the ROM's own `halt`, but negligible
+     in wall-clock terms. Diagnosed by adding a temporary reflection-based scan of
+     `Cpu.AtInstructionBoundary` across millions of ticks (confirmed the CPU was genuinely
+     halted, not just off-sampled) plus a `Z80.Disassembler`-based PC trace (confirmed exactly
+     where — `disk_recall`'s own `halt` instruction) — this combination (boundary-state
+     sampling + real disassembly, not print-statement guessing) is what made the race
+     diagnosable at all; recorded here as the technique to reach for first next time a boot
+     test hangs rather than times out cleanly.
+  5. **Separate bug, same investigation: `MdcrDevice`-style drive indexing was wrong —
+     `Machine.cs` mounted the disk image on FDC drive index 0, but the ROM's own disk commands
+     hardcode unit-select "01" throughout** (`Disk.asm`'s `disk_constants`: every "drive #"
+     byte is `0x01`; `disk_recall_cmd`'s own comment: "device # at disk_recall_device (default
+     1)") — it never addresses unit 0. The mounted image sat on a drive the ROM never read
+     from, so every READ DATA silently served a zero-filled transfer buffer (no exception,
+     since an unmounted-drive read is a documented no-op, not an error). Fixed by mounting on
+     drive index 1 in `Machine.cs`. This one was the most confusing to isolate precisely
+     because it produced NO error and NO hang — boot completed successfully and reached SLOT1,
+     just with all-zero data — only caught by directly comparing the loaded bytes against the
+     source file byte-for-byte (exactly what the milestone's own test list asked for) rather
+     than only checking "did boot complete."
+- **Working test order that got here (useful precedent for the next hang like this):**
+  (1) confirm the CPU is genuinely stuck, not just slow — sample `AtInstructionBoundary` across
+  a wide tick range, not a single snapshot; a real halt shows it permanently false, a slow-but-
+  live CPU shows it flipping constantly. (2) once confirmed stuck, disassemble the exact PC
+  (`Z80.Disassembler`, already in this solution) to name the routine, don't guess from address
+  arithmetic. (3) cross-reference that routine's real source in
+  `docs/Monitor Documented Disassembly/` line by line against the chip's actual port
+  read/write sequence. (4) once unstuck, verify the RESULT, not just that it completed — a
+  successful-looking boot can still be silently wrong (finding 5 above produced a completed
+  boot with zero data).
+- **Applies to:** `src/P2000.Machine/Devices/Fdc/Upd765.cs` (`DispatchReadWrite` cylinder fix,
+  `WriteControl`'s RESET guard, `MinimumTurboSeekTStates` + the `Tick()`-driven seek completion,
+  the `PendingAction.SeekSettle` case in `Tick()` now correctly setting `_phase = Idle`),
+  `src/P2000.Machine/Machine.cs` (`MountDisk(1, ...)`),
+  `tests/P2000.Machine.Tests/Boot/DiskBootTests.cs` (new — 4 tests, real ROM + real fixture),
+  `tests/P2000.Machine.Tests/Devices/Fdc/Upd765Tests.cs` (updated for the new deferred-Turbo
+  timing), `tests/P2000.Machine.Tests/Devices/Fdc/RealFixtureTests.cs` (added the SEEK-before-
+  READ sequencing the cylinder fix now requires),
+  `tests/P2000.Machine.Tests/Interrupts/FdcIntegrationTests.cs` (tick budget increased to
+  cover the new deferred completion).
+- **Synced:** yes (2026-07-21) — three of the four bugs were real hardware/ROM-behavior facts,
+  not just implementation lessons, and are now folded into `P2000T-reference.md` §5d: bit2
+  `RESET` only takes effect from `Phase.Idle`; the ROM always addresses drive/unit 1, never 0;
+  READ/WRITE DATA's C byte is for ID-field verification only, not addressing (actual head
+  position governs reads/writes). The SLOT1 header bit1 polarity fix required NO reference-doc
+  change — the doc's existing §5b text already had the correct polarity (bit1=1 triggers disk
+  boot). The Turbo lost-wakeup race and the drive-mounting bug remain implementation-only (no
+  hardware fact to record — pure emulation-timing/wiring bugs).
+
+### 2026-07-22 — Milestone 19 IMPLEMENTED: FDC (µPD765) + InternalExtensionBoard
+- **Assumed:** the handoff's own spec (§13.19) was fully ROM-confirmed for ports, the presence
+  probe, the 3-gate boot condition, and the exact command byte sequences — implemented as
+  documented, no corrections needed to those facts.
+- **Found (design decision, not a hardware finding):** refactored `Machine`'s previously-inline
+  `Z80Ctc` construction (milestone 17) into a new `InternalExtensionBoard : IDevice, IIoSlot`
+  object owning both `Z80Ctc` and the new `Upd765`, realizing `IIoSlot`'s own doc comment
+  ("the I/O-mapped side of internal-slot boards (CTC/FDC — deferred, §14)" — no longer
+  deferred). `Machine.Ctc`/`Machine.Fdc` stay as public properties (now computed from
+  `Machine.Board`) so no existing call site (tests, `P2000.UI`) needed to change beyond adding
+  `RamVariant = RamVariant.T102` to `FloppyRam`-board test fixtures (see next finding).
+- **Found (config-validation added, per the handoff's own flag):** `Machine`'s constructor now
+  throws `ArgumentException` if `Board == InternalBoard.FloppyRam` and `RamVariant !=
+  RamVariant.T102` — the ROM's own disk-boot gate treats "banked RAM populated" and "disk
+  drives exist" as the same fact (reference doc §5b `memsize==3`), so the combination is not
+  hardware-plausible. This broke 4 pre-existing M17 tests that built a `FloppyRam` machine with
+  the default `RamVariant.T38` (`CtcIntegrationTests.BuildFloppyRamMachine`,
+  `MachineStateFileTests.StateRoundTrip_CtcAndLock_ArePreserved`) — fixed by adding
+  `RamVariant = RamVariant.T102` to those fixtures, not by relaxing the check.
+- **Found (deliberate scope reduction, documented in `Upd765`'s own XML doc):** READ DATA/WRITE
+  DATA do not implement a formal 7-byte result phase (ST0/ST1/ST2/C/H/R/N) — `getdos` never
+  reads it (the FDC's result INT redirects the polling loop's return address instead, an ISR
+  technique per `docs/JWSDOS-format.md` §6, not a protocol requirement). `ResultReady` fires and
+  the chip returns straight to Idle. Revisit only if a future DOS/driver is found that actually
+  reads a READ/WRITE DATA result phase.
+- **Found (unsourced approximation, flagged honestly):** exact seek-settle and per-byte
+  semi-DMA transfer timing (`SeekTStatesPerTrack`/`HeadSettleTStates`/`ByteTransferTStates` in
+  `Upd765.cs`) are NOT datasheet/ROM-sourced values — no test or doc pins an exact duration,
+  only that Authentic must honour *some* non-zero delay and Turbo must be instant (reference
+  doc §5d "Two-level speed"). Chosen small enough that authentic-mode unit tests stay fast
+  (~100k ticks covers a from-scratch RECALIBRATE settle comfortably). Revisit if a real seek/
+  transfer-rate figure surfaces.
+- **Found (derived, not directly stated by `docs/JWSDOS-format.md`): raw `.dsk` layout is
+  side-major, cylinder-minor**, not per-cylinder side-interleaved. Worked out from the format
+  doc's own confirmed byte ranges (§2): "track 1"/"track 2" (`getdos`'s names for cylinders 0/1)
+  sit at raw `0x0000`/`0x1000`, and the side-1 active directory at raw `0x1800`-`0x1FFF`
+  (cylinder 1, sectors 9-16) has every entry's side byte equal to 0 — only consistent if
+  consecutive cylinders of the SAME side are contiguous in the file. `DskImage.SectorOffset`
+  implements this as `head * Tracks * BytesPerTrack + cylinder * BytesPerTrack + (sector-1) *
+  BytesPerSector`; a `DskImageTests` case pins the `(cylinder=1, head=0, sector=9) → raw 0x1800`
+  identity explicitly so a future contributor doesn't have to re-derive this. **Not yet verified
+  against a real `.dsk` file** (see below) — flag for whoever supplies `Spel1.dsk`/
+  `jwssytem.dsk` to confirm this layout reads the ACTUAL 18-entry directory correctly, not just
+  a synthetic one shaped to match the assumption.
+- **Fixtures arrived mid-implementation (owner supplied `Spel1.dsk`/`jws-sytem.dsk`/
+  `empty-jws.dsk`/`hires_demo.dsk` in `assets/Disks/`) — the derived layout above IS confirmed
+  correct against real data:** both DOS-track reads (cylinder 0 and cylinder 1, head 0) via a
+  real `Upd765` command sequence match `Spel1.dsk`'s raw bytes exactly; `ReadDirectory()` returns
+  precisely the confirmed 18 real active-directory entries in on-disk order and never surfaces
+  any of the 20 stale-cluster filenames; geometry auto-detect reports 40-track/double-sided;
+  `jws-sytem.dsk`'s all-zero track 2 browses as an empty directory, not an error. See
+  `tests/P2000.Machine.Tests/Devices/Fdc/RealFixtureTests.cs`.
+- **Found (doc discrepancy, real-data-confirmed, flagged for the human to reconcile in
+  `docs/JWSDOS-format.md` §2 — not fixed here since this file doesn't edit the reference docs):**
+  `docs/JWSDOS-format.md` §2 claims "both clusters [stale 0x1000 and active 0x1800] have every
+  entry's side-byte (offset 24) equal to 0." Direct byte inspection of the real `Spel1.dsk`
+  shows the OPPOSITE: the stale cluster's entries all have offset-24 = 0, but the ACTIVE
+  directory's 18 entries all have offset-24 = **1**. This doesn't affect anything this milestone
+  built (`DskImage.ReadDirectory()` reads the active region by fixed raw offset, not by filtering
+  on this byte, and the CHS layout derivation above was independently validated against real
+  reads/writes matching raw file bytes) — flagging purely as a correction the human should carry
+  into the reference doc's own pass over `JWSDOS-format.md`.
+- **Attempted, NOT completed at the time (superseded — see the 2026-07-22 "real-ROM RUN-gate
+  test now GREEN" entry above):** a first pass at a full real-ROM-driven RUN-gate boot test
+  built a `FloppyRam`/T102 machine with a needs-DOS SLOT1 cartridge and ticked it through the
+  real embedded monitor ROM, expecting `getdos` to run and load `Spel1.dsk`'s two DOS tracks
+  into bank 1 automatically. It did not, at the time — bank 1 stayed at its pre-load zero
+  content after boot settled into SLOT1, and two findings were logged as unresolved: an
+  "ACTIVE-LOW header bits" empirical observation (bit0=0 present, bit1=1 no-DOS-needed), and an
+  all-zero synthetic cartridge never being recognized as present at all. Once
+  `docs/Monitor Documented Disassembly/` (`Startup.asm`/`Disk.asm`) became available, both were
+  resolved properly: the header bit was in fact bit1=1 → boot from disk (this entry's own
+  "ACTIVE-LOW" framing had the polarity of that one bit backwards), and the "never recognized"
+  synthetic-cartridge mystery was sidestepped for good by testing against the real, unmodified
+  `assets/BASIC.bin` rather than a hand-built image. The actual reason `getdos` still loaded
+  nothing (even once the gate opened) turned out to be four separate real bugs in `Upd765`/
+  `Machine.cs`, not a gate-condition problem at all — see the entry above for the full list.
+  This bullet is kept for history; treat the entry above as authoritative.
+- **Applies to:** reference doc §5d (FDC ports/commands/presence probe — implemented as
+  documented) / `src/P2000.Machine/Devices/Fdc/Upd765.cs` (new),
+  `src/P2000.Machine/Devices/Fdc/DskImage.cs` (new),
+  `src/P2000.Machine/Devices/InternalExtensionBoard.cs` (new, refactors the M17 CTC wiring),
+  `src/P2000.Machine/Machine.cs` (`Board`/`Ctc`/`Fdc` properties, config validation, wiring),
+  `src/P2000.Machine/MachineConfig.cs` (`FloppyDiskImagePath`),
+  `src/P2000.Machine/State/MachineStateFile.cs` (bumped to v4),
+  `tests/P2000.Machine.Tests/Devices/Fdc/Upd765Tests.cs` (new),
+  `tests/P2000.Machine.Tests/Devices/Fdc/DskImageTests.cs` (new),
+  `tests/P2000.Machine.Tests/Devices/Fdc/RealFixtureTests.cs` (new, real `assets/Disks/*.dsk`
+  fixtures), `tests/P2000.Machine.Tests/Interrupts/FdcIntegrationTests.cs` (new).
+- **Synced:** yes (2026-07-22) — most hardware facts were already in the reference doc; the two
+  items that belonged in `docs/JWSDOS-format.md` (the offset-24/side-byte discrepancy and the
+  confirmed side-major/cylinder-minor `.dsk` raw layout formula) are now folded into that file
+  directly (§2, §4, §7, §8), once it was supplied. The side-byte item surfaced a real open
+  tension in that doc's own narrative (the active directory reads side-byte=1, not the 0 this
+  doc's earlier text assumed) — flagged there, not resolved, since it needs `jwsdos5.0.asm`
+  access this pass didn't have.
+
+### 2026-07-22 — Flag (not yet implemented): machine renders the FULL FIELD, not just the active window
+- **Trigger — owner's request:** *"I think that we should have the Machine render 'full
+  fields', so all 313 odd/312 even lines but outputting black for the 49 lines preceding, and
+  24 trailing, as well as a black leading part of each line, and a black trailing part. The UI
+  then should have an option to show 'Full-Field' or Graphics window only. On a real P2000 and
+  TV-setup, also only part of the screen contains the active video..."*
+- **Note on "313 odd/312 even":** the owner's phrasing recalls the standard PAL broadcast
+  convention (interlaced fields alternate 313/312 lines to total 625/frame). Per the
+  2026-07-21 correction (this file §3, reference doc §4a), the P2000T itself does NOT
+  interlace — the manual gives a single **313** for "a field," not an alternating pair — so
+  this build uses **313 for every field**, not an alternating 313/312. Flagging the
+  terminology gap rather than silently picking one; if the owner specifically wants genuine
+  313/312 alternation modelled (e.g. for a future composite-sync-accurate output), that's a
+  bigger, separate ask than what's specified below — the geometry here assumes uniform 313.
+- **Numbers used below, and where they came from:** reference doc §4a "Full raster geometry"
+  (new section, 2026-07-22) derives the complete raster from the manual's own figures plus the
+  owner's 49/24 vertical split (§4, corrected same day) and a newly-derived 15/40/9 horizontal
+  leading/active/trailing char-time split (from the manual's "character times 15-55" marker,
+  read with the same half-open convention as the vertical split). The owner's message quotes
+  49 leading / 24 trailing **vertically** — matches exactly. Horizontal leading/trailing
+  (15 µs / 9 µs) was this pass's own derivation, not previously stated by the owner — **since
+  corrected again same day, see below.**
+- **Owner review round 1 (before implementation — "comment first before making changes"):**
+  raised two concerns, addressed before any code was touched:
+  1. **Don't revert the dual even/odd field rendering.** The owner clarified the current
+     implementation already computes distinct even/odd field passes, and the existing 4-way
+     display-mode system depends on that. **RESOLVED — see the WITHDRAWN note above** (this
+     file, 2026-07-21 entry): the speculative "collapse to one field always complete" question
+     is retracted; nothing about `Video`'s per-field computation changes; only the default mode
+     selection does (already covered by the separate 2026-07-21 flag).
+  2. **1024 px width is too wide.** The owner's model (no scope available to confirm the real
+     signal directly): the chip cuts off immediately after char-time 64, and the **start of the
+     next line** (char-times 0–5, 6 char-times — 5-vs-6 ambiguous, manual not fully explicit)
+     is genuine **horizontal retrace — the chip emits nothing at all there, not black, nothing.**
+     Trailing blank is left intact (retrace is a leading-edge phenomenon on the FOLLOWING line,
+     not a trailing one on this line). **RESOLVED — numbers below corrected accordingly**
+     (leading blank 15→9 char-times, width 1024→928).
+- **Full geometry, CORRECTED 2026-07-22 for the retrace exclusion (reference doc §4a has the
+  derivation):**
+  - Full field: **928 × 626 px** (was 640×480 active-only; briefly 1024×626 before the retrace
+    correction above — 928 is current).
+  - Horizontal: 144 px leading blank (9 char-times, retrace's 6 char-times/96 px excluded
+    entirely — not rendered, not even black) + 640 px active + 144 px trailing blank (9
+    char-times, unchanged) = 928.
+  - Vertical: 98 px pre-roll blank + 480 px active + 48 px post-roll blank = 626 (vertical
+    retrace not addressed yet — owner's request so far is horizontal-only; flag for later if
+    wanted).
+  - Active "graphics window" crop rectangle: fixed at **(144, 98)**, size 640×480, every field
+    — horizontally symmetric (144 px both sides) as a side effect of the 6-char-time retrace
+    assumption, not independently confirmed.
+- **Design shape (continuing the 2026-07-21 ownership correction — same principle, applied one
+  level further):** the **machine** always produces the complete 928×626 raster, including
+  flat-black blanking (no fetch occurs there — §4 — so nothing to render, no contention
+  possible, cheap). The **UI** gets a new, second, ORTHOGONAL toggle — **Full-Field vs
+  Graphics-window** — independent of the existing 4-way display-mode toggle (interlaced/
+  progressive/even-only/odd-only): one axis picks the field SOURCE, the other picks how much
+  of the resulting raster to CROP for display. Default: **Graphics-window** (today's familiar
+  640×480 view, no behaviour change for existing users) — **Full-Field** is opt-in
+  authenticity/debug viewing, matching the owner's own framing ("on a real P2000 and TV-setup,
+  also only part of the screen contains the active video" — i.e. Full-Field shows what a real
+  TV's overscan normally hides). See reference doc §3a for the UI-facing spec and CLAUDE_UI.md
+  §8 for the implementation-facing one.
+- **Downstream sweep needed — NOT done in this pass, concrete list for Claude Code:** this
+  file and `P2000.UI/CLAUDE.md` reference "640×480" as THE framebuffer size in many places
+  beyond the primary definition (now corrected, this file §3). Known spots to reconcile,
+  found by searching both files for "640" — not exhaustive, re-search before starting:
+  - This file §3: the observer/ownership prose after the primary definition (persistent-buffer
+    description, "complete image every field" — just updated above), §3b observer
+    surfaces, `RunField()`/snapshot descriptions if any assume the old size.
+  - `P2000.UI/CLAUDE.md` §3.1 "Framebuffer handoff" (states "one persistent 640×480 `uint[]`
+    BGRA buffer" — needs to become 928×626, with the UI's blit path choosing the crop).
+  - `P2000.UI/CLAUDE.md` §8 "Display / rendering" — blit code (`WriteableBitmap` sizing),
+    PAL-aspect-ratio math (already noted in reference doc §4a as extensible to the full
+    buffer, but the UI code doing the math needs updating), the milestone-6 finding's
+    `CorruptionOverlay` coordinate space (overlay indices were relative to the 640×480 active
+    buffer — now need a +144/+98 offset if the overlay is to be drawn against the full-field
+    buffer, or the overlay could stay active-window-sized and get offset only at draw time —
+    Claude Code's call).
+  - Tests: any golden/integration test asserting exact framebuffer dimensions, pixel offsets,
+    or `WriteableBitmap` size (both `P2000.Machine.Tests` and UI-side tests).
+  - **Explicitly UNAFFECTED, no change needed:** the contention model (§4) — still only the
+    active window's fetch slots are ever contention-eligible, blanking is categorically
+    fetch-free regardless of buffer size; the 4-way display-mode logic (odd-only/interlaced/
+    etc.) — orthogonal to this, composes with it rather than being changed by it.
+- **Applies to:** reference doc §3a (Full-Field vs Graphics-window toggle), §4a (Full raster
+  geometry) / `src/P2000.Machine/Devices/Video.cs`, `src/P2000.Machine/Devices/Saa5050/
+  Saa5050Generator.cs`, `src/P2000.UI/Rendering/DisplayMode.cs`, `src/P2000.UI/Rendering/
+  DisplayControl.cs`, `src/P2000.UI/ViewModels/DisplayWindowVm.cs`.
+- **Synced:** yes (2026-07-22, into P2000T-reference.md §3a/§4a) — implementation still
+  outstanding.
+
+### 2026-07-22 — FIXED (real bug, owner-reported from a live screenshot): pre-roll fix desynced Saa5050Generator's scanline counter
+- **Owner report, from an actual screenshot of the running app (Graphics-window/default crop):**
+  "the graphics view offset is wrong, and... the lowest scanline of a character row is swapped
+  with the top." Visible in the screenshot as garbled top-of-screen text (a reverse-video title
+  banner) while text further down looked fine.
+- **Root cause — a real bug in the 49-line pre-roll fix directly below this entry, not a
+  pre-existing issue:** `Video.OnLineComplete()` called `Saa5050Generator.EndLine()`
+  unconditionally for every raw line completion. `EndLine()` increments
+  `_scanLineCounter` (mod 10) — the "which of the 10 scanlines within the current character row"
+  index `RenderField` uses to pick a glyph row. Before the pre-roll fix, `IsActiveLine` was
+  `Line < 240`, so the pre-roll didn't exist and this was harmless. After adding the 49-line
+  pre-roll (this file's own IMPLEMENTED entry below), `LineComplete` now fires 49 times BEFORE
+  the first real scanline of the field ever renders — 49 unconditional `EndLine()` calls leave
+  the counter at 49 mod 10 = **9**, not 0, so the field's first active scanline renders using
+  glyph row 9 (near the character cell's bottom) instead of row 0 (the top) — for every
+  character, every field.
+- **Found (why the shipped test suite didn't catch this — a real coverage gap, not bad luck):**
+  the existing pixel-based tests (`FirstField_IsEven_AndRendersOnlyEvenRows` etc.) compare
+  against `ExpectedCellRow(row: 0)`/`(row: 1)`. SAA5050 fonts pad most glyphs' top and bottom
+  scanlines with blank pixels, so "row 0" and the WRONG "row 9-shifted" output happened to
+  render IDENTICALLY (both blank) for the specific test characters ('@', space) — masking
+  exactly this class of off-by-N scanline error. Confirmed empirically: temporarily reverting
+  the fix below left all pre-existing `VideoTests`/`VideoFetchUnitTests`/`ContentionTests`
+  green, while a NEW direct-invariant test (reflection into `_scanLineCounter`, not pixels)
+  failed with the expected `9`, not `0`.
+- **Fix:** `OnLineComplete()` now only calls `EndLine()` when the just-completed line was
+  active (`_fetchUnit.IsActiveLine`, checked at the moment `LineComplete` fires — `VideoFetchUnit
+  .Tick()` raises it BEFORE updating `Line` to the new value, so this correctly reflects the
+  line that just finished, not the one about to start). Pre-roll and post-roll lines now advance
+  nothing in the generator; `_scanLineCounter` starts each field's active window at exactly 0.
+- **New permanent regression test** (`VideoTests.FirstActiveFetch_ScanLineCounterIsZero_
+  NotDesyncedByThePreRoll`): a direct reflection-based check of the actual invariant (counter
+  == 0 at the field's first active `ColumnFetch`), specifically because the pixel-based tests
+  are blind to this bug class for the reason above — documented inline in the test itself so a
+  future reader doesn't mistake it for over-engineering.
+- **Lesson for next time (recorded, not just fixed):** when a fetch-scheduling change adds
+  ticks/events BEFORE the first "real" event of a cycle (here: pre-roll lines before the first
+  active line), audit every OTHER piece of state that advances on that same event for silent
+  desync — `EndLine()`'s counter was exactly this kind of hidden coupling, invisible from
+  `VideoFetchUnit`/`Video` alone without reading `Saa5050Generator`'s own internals.
+- **Not yet done: still no live visual confirmation from this side** (computer-use still can't
+  attach to the owner's already-running dev-launched window — same tooling limitation as the
+  entry below). The owner's own running instance predates this fix; needs a relaunch to show
+  the corrected rendering. Fix confidence rests on the direct-invariant regression test above,
+  not a screenshot.
+- **Applies to:** `src/P2000.Machine/Devices/Video.cs` (`OnLineComplete`),
+  `tests/P2000.Machine.Tests/Devices/VideoTests.cs` (new regression test).
+- **Synced:** yes (2026-07-21, implementation-only — no reference-doc action needed; the pre-roll
+  design fact this bug fixes against was already synced separately).
+
+### 2026-07-22 — IMPLEMENTED: full-field framebuffer + 49-line pre-roll fetch fix (closes the flag above)
+- **Full-field resize:** `Video.Width`/`Height` changed 640×480 → 928×626; added
+  `ActiveOffsetX=144`/`ActiveOffsetY=98`/`ActiveWidth=640`/`ActiveHeight=480` constants (the
+  fixed crop rectangle). `OnColumnFetch`/`CorruptLastFetch` now compute the pixel-write offset
+  as `ActiveOffsetY + activeRelativeLine*2 + parity` / `ActiveOffsetX + column*16` instead of
+  `line*2+parity` / `column*16` directly — blanking pixels are simply never written, staying
+  flat black from the existing `Array.Clear` in `Reset()` (no extra fill loop needed, confirming
+  the flag's own prediction).
+- **Also fixed the SEPARATE 2026-07-19 `VideoFetchUnit` bug in the same pass** (confirmed real,
+  not just hypothesized, by reading the actual source before changing anything): added
+  `VideoFetchUnit.VerticalBlankLines = 49` and changed `IsActiveLine` from `Line < ActiveLines`
+  (fetching from field-T-state 0) to `Line >= VerticalBlankLines && Line < VerticalBlankLines +
+  ActiveLines` — gating fetch scheduling to lines 49-288 (240 active), leaving lines 0-48
+  (pre-roll) and 289-312 (post-roll) fetch-free. This is the fix for the reported Ghosthunt
+  top-of-screen glitch. `Video.cs`'s charRow/pixel-row math now subtracts
+  `VideoFetchUnit.VerticalBlankLines` from `Line` before use.
+- **Found (pre-existing quirk, NOT introduced or fixed by this pass, flagging for awareness):**
+  `TStatesPerField` (50,000) does not divide evenly by `TStatesPerLine` (160) into exactly 313
+  lines (313×160 = 50,080 ≠ 50,000) — the field's last raw line only gets 80 T-states instead
+  of 160 before wrapping. This predates both fixes above (Line was always computed as
+  `_fieldTState / TStatesPerLine`); nothing here changes it, and no test depends on the field
+  containing exactly 313 full-width lines. Worth a look if exact 313-line fidelity is ever
+  wanted.
+- **Test updates (existing tests corrected, not just new ones added):** `VideoFetchUnitTests.cs`
+  — tests written against the old "active window starts at line 0" assumption now advance past
+  the 49-line pre-roll first (`AdvanceToActiveWindowStart` helper); `Tick_VblankLines_NeverFetch`
+  split into `Tick_PreRollLines_NeverFetch`/`Tick_PostRollLines_NeverFetch` since vblank is no
+  longer a single contiguous tail. `VideoTests.cs` — every hardcoded pixel-offset assertion (`0`,
+  `Video.Width`) now goes through `ActiveOrigin`/`OddRowOrigin` constants computed from the new
+  offset fields, instead of assuming the active window starts at framebuffer offset 0.
+  `ContentionTests.cs` — added `ContentionDuringPreRollVblank_NeverCorrupts`, hammering VRAM for
+  exactly the pre-roll's T-state budget and confirming zero corruption (the contention
+  stress-test case the handoff asked for, confined to the fixed window).
+- **UI side (`P2000.UI`):** added `DisplayCrop` enum (`GraphicsWindow` default / `FullField`) and
+  a `DisplayControl.Crop` property that reallocates the backing `WriteableBitmap` to the current
+  crop's size. Line-doubling (Even/OddOnly modes) still operates on the FULL buffer unconditionally
+  — cropping happens only at the final blit (`CopyToWriteableBitmap`), which copies either the
+  whole buffer or just the `(ActiveOffsetX, ActiveOffsetY)`-`(ActiveWidth, ActiveHeight)`
+  sub-rectangle depending on `Crop`. `DrawCorruptionOverlay` computes the active window's own
+  origin as a sub-rect of `_destRect` (offset by `ActiveOffsetX/Y` scaled to destRect units only
+  when `Crop == FullField`; zero offset in `GraphicsWindow` since the whole destRect already IS
+  the active window) — implements the "offset at draw time" option the handoff left as an
+  implementation-detail choice, rather than storing a full-buffer-sized overlay. PAL aspect
+  correction is forced OFF (native-pixel-geometry letterbox using the crop's own true aspect
+  ratio) whenever `Crop == FullField`, regardless of the `PalAspect` toggle's own value — the
+  menu item's `IsEnabled` is bound to a `CanTogglePalAspect` computed property so it visibly
+  greys out rather than silently doing nothing.
+- **`DisplayMode` default flipped Interlaced → OddOnly** in BOTH places that had their own
+  default (`DisplayControl.Mode` and `DisplayWindowVm._displayMode`) — confirmed both needed the
+  change independently (they're separate fields, not one shared source), per the 2026-07-21
+  flag below. The underlying per-field even/odd computation was NOT touched, per the WITHDRAWN
+  note's explicit instruction.
+- **Not done this pass (tooling limitation, not a scope decision):** could not get computer-use
+  to attach to an ad-hoc `dotnet run`-launched window (it only resolves against
+  Start-Menu-registered/already-tracked apps, not arbitrary dev processes) to take a live
+  screenshot confirming the visual result. Verified via the full `P2000.Machine.Tests` (401) +
+  `P2000.UI.Tests` (97) suites instead — every existing pixel-offset/dimension assertion was
+  found and updated, not just newly-added ones, which is the strongest signal available without
+  eyes on the actual rendered window. Whoever next touches this area should do a real visual
+  pass (Graphics-window looks unchanged, Full-Field shows margins + correct picture position,
+  Odd-only is the fresh-launch default, overlay lines up in both crop modes).
+- **Applies to:** `src/P2000.Machine/Devices/Video.cs`,
+  `src/P2000.Machine/Contention/VideoFetchUnit.cs`,
+  `tests/P2000.Machine.Tests/Devices/VideoTests.cs`,
+  `tests/P2000.Machine.Tests/Contention/VideoFetchUnitTests.cs`,
+  `tests/P2000.Machine.Tests/Contention/ContentionTests.cs`,
+  `src/P2000.UI/Rendering/DisplayCrop.cs` (new), `src/P2000.UI/Rendering/DisplayControl.cs`,
+  `src/P2000.UI/ViewModels/DisplayWindowVm.cs`, `src/P2000.UI/Views/DisplayWindow.axaml(.cs)`,
+  `src/P2000.UI/Runner/EmulationRunner.cs` (stale doc comments only — buffer allocation was
+  already parametric on `Video.Width`/`Height`, needed no code change),
+  `tests/P2000.UI.Tests/ViewModels/DisplayWindowVmTests.cs` (new).
+- **Synced:** yes (2026-07-21, implementation-only — confirmed no reference-doc action needed;
+  the full-field geometry and pre-roll design facts were already synced into the reference doc
+  before this pass).
+
+### 2026-07-21 — Flag (not yet implemented): RAM should power up non-zero, not all-zero
+- **Trigger — owner's report (real hardware test):** *"When starting up, the display shows
+  'garbage' imagery briefly then it gets cleared by the monitor ROM. This means that the
+  (video) RAM of a P2000 is not all zero's at startup, but contains random bytes. Would be
+  nice to mimic this in the emulator as well."*
+- **Hardware basis (general engineering fact, not manual-sourced — no datasheet specifies an
+  "official" power-on pattern):** volatile SRAM/DRAM content at power-on is unpredictable, not
+  zero. Reference doc §5b now documents this (new section, "RAM power-on content is NOT zero"),
+  cross-referenced against the existing CONFIRMED boot sequence — step 3's monitor-ROM screen
+  write is what clears the garbage, matching the owner's "briefly shown, then cleared" report.
+- **CRITICAL constraint — this MUST respect Locked decision §2.2 ("No `DateTime`/threads/
+  randomness in emulation code"):** do NOT fill RAM with `System.Random` or any nondeterministic
+  source. Use a **fixed-seed deterministic pseudo-random fill** (e.g. a small LCG/xorshift
+  seeded with a compile-time constant, or any reproducible non-zero pattern) — same output
+  every run, so `SaveState`/`LoadState`, golden tests, and replay determinism are unaffected.
+  This mirrors the project's own precedent for "looks random but must stay reproducible" needs
+  (the milestone-9 cassette blank-tape "deterministic pseudo-noise" decision) — though note
+  that specific instance was later reverted (2026-07-14 finding, this file) because real ROM
+  behaviour needed literal silence, not noise, for a *blank* tape specifically; that's a
+  different, tape-specific hardware requirement and does NOT apply here — there's no known
+  "RAM must actually be X" requirement, just "must not be a suspiciously clean zero." Worth
+  reading that entry anyway before implementing, as a reminder to double check ROM/boot-code
+  assumptions don't silently depend on RAM starting at zero (e.g. the RAM-sizing probe, stack
+  usage before init) before flipping the default.
+- **REFINED (2026-07-21, owner follow-up) — how to get TRUE randomness without touching the
+  locked rule:** the owner asked, correctly, whether starting from a fixed/last-used hardware
+  CONFIG and using true randomness for the initial RAM fill would actually violate determinism
+  — **it would not, and there's a clean way to get both.** The owner's own reasoning holds:
+  once the machine is running, everything downstream is already deterministic (single-threaded
+  tick loop, no other randomness source); and `SaveState`/`LoadState` captures the **concrete
+  resulting bytes**, not a formula that produced them — reloading a saved state reproduces the
+  exact machine regardless of how the original RAM content came to be. So reproducibility of a
+  saved session was never actually at risk.
+  - **The one place it WOULD matter: automated tests/CI that construct `new Machine()` directly**
+    (not through a UI boot flow) and expect the same outcome on every run (e.g. the milestone-7
+    boot integration tests below — "reaches cassette-wait loop... in well under 5M T-states").
+    A truly random fill risks rare, hard-to-reproduce flakiness there if any boot-code path is
+    even incidentally sensitive to pre-init RAM content (stack scratch, an uninitialized
+    variable read before write, etc.) — low probability, but the kind of bug that's painful to
+    chase precisely because it wouldn't reproduce on demand.
+  - **Resolution — keep the entropy source OUTSIDE the core, let the core stay a pure function
+    of an explicit seed:** give the RAM-fill routine an optional seed input (e.g.
+    `Reset(ulong? ramSeed = null)` or a `MachineConfig`-adjacent construction parameter) —
+    `null`/omitted → **fixed deterministic default seed** (what every test and any caller that
+    doesn't care gets, keeping CI fully reproducible and Locked decision §2.2 satisfied to the
+    letter: the core itself never calls a nondeterministic API). An **explicit seed** →
+    deterministic-with-that-seed (useful for reproducing a specific bug report that mentions
+    its seed). **`P2000.UI` is free to generate a fresh true-random seed itself** (ordinary
+    `System.Random`/OS entropy, living in the UI project, which is NOT under the "no randomness
+    in emulation code" constraint — that rule scopes to the core) and pass it in at each cold
+    boot / app launch — giving the interactive app genuinely unpredictable garbage every real
+    session while the machine layer remains, by construction, a deterministic function of
+    (config, seed, input events). This is the same shape as the existing `MonitorRomPath`-style
+    optional-override pattern already used elsewhere in this file (null → built-in default,
+    explicit value → override) — not a new architectural idiom.
+  - **The "last-saved HW configuration" part of the owner's proposal is a separate, smaller UI
+    idea** (auto-boot into whatever `.cfg` topology was last used, rather than always bare-by-
+    default) — worth having, but orthogonal to the seed mechanism above: the seed can be
+    injected at ANY cold-boot moment regardless of which config that boot uses (bare-default, a
+    manually loaded `.cfg`, or a hypothetical auto-restored last-used one). Not yet a documented
+    feature — currently `.cfg` load/save is manual via the config window (this file §7/§11,
+    P2000.UI CLAUDE.md §7). Flag as a nice-to-have, not required for the RAM fix.
+- **MAINTAINER NOTE (2026-07-21, design-doc pass): this section had silently reverted to an
+  earlier "flag, not resolved" state, dropping RESOLVED content that the reference doc already
+  reflects — restored below per the divergence-caution discipline (diff against the last known
+  copy, re-apply what a partial merge dropped, flag it).** The restored text below matches
+  `P2000T-reference.md` §5b exactly; nothing is newly decided here, it was just missing from this
+  copy of the log.
+- **RESOLVED (2026-07-23, owner decision): all RAM, not VRAM-only.** *"All memory contains
+  garbage at startup; it is all Dynamic ram."* Settles the scope question this file had left
+  open (VRAM-only vs all-RAM) — every populated RAM region (base RAM, banked window, VRAM) gets
+  the non-zero cold-boot fill, not just the visibly-observed VRAM.
+  - **Expansion-card RAM is explicitly OUT of this blanket rule — it's each device's own call:**
+    *"Maybe some memory on expansion cards behaves differently, but then we can make that a
+    responsibility of that 'device.'"* This maps directly onto the existing `IDevice` pattern
+    (§4: every device implements its own `Reset()`) — the base-machine RAM fill described here
+    is `PageTable`'s default behaviour, not a machine-wide mandate. A future RAM-bearing
+    expansion device (RAM-only board, PTC-96K, floppy+RAM board's RAM axis, §14/§20) is free to
+    implement `Reset()` differently if a hardware reason ever surfaces — build it the same way
+    (non-zero garbage fill) until/unless a specific card's hardware says otherwise.
+  - **CONCRETE example, not hypothetical (owner-supplied, 2026-07-23; slot placement CORRECTED
+    2026-07-23):** the **M2200 multi-function board** has a **real-time clock with a small
+    battery-backed memory** for time, date, and alarms. **Plugs into the internal extension
+    slot family (reference doc §5c "Daisy-chaining on the M"), NOT SLOT2** — an earlier version
+    of this note mis-placed it on SLOT2; corrected per the owner citing the Field Service
+    Manual's §3.8.1/§3.8.11 connector pinouts directly. On a T it plugs straight into the
+    internal slot; on an M it plugs into the video board's own downstream connector (the M
+    genuinely daisy-chains: CPU board → video board → further extension board — a real finding
+    in its own right, not just a correction). That memory is non-volatile BY DESIGN — the whole
+    point of the battery is to survive power loss with its contents intact — so it must NOT get
+    the garbage-at-cold-boot treatment; a future RTC device's `Reset()` should preserve/restore
+    it across power cycles instead (analogous to a PC's CMOS RTC). This slot family and SLOT2
+    are both deferred (§14) — this is captured for when that work starts, not an active item
+    now. Replaces the earlier placeholder "(battery-backed SRAM, different chip technology,
+    etc.)" example with a sourced, real one. **Superseded by fuller detail as of 2026-07-21 — see
+    `docs/M2200-implementation.md` (new) and reference doc §5c for the full confirmed M2200 port
+    map (RTC, RAM disk, Serial/SIO, Centronics, plus its FDC/bank-switch ports shared with the
+    plain floppy+RAM board).**
+- **RESOLVED (2026-07-23, owner-supplied period P2000 newsletter): warm reset must NOT clear
+  RAM. CONFIRMED, decided, and already instructed directly to Claude Code — this file is
+  catching up to that instruction, not originating it.** The adjacent finding below (originally
+  flagged 2026-07-21 as "owner's call, do not assume in scope") is now resolved in favor of the
+  fix: real hardware's warm/soft reset leaves RAM contents exactly as they were, matching the
+  general Z80-RESET-doesn't-touch-memory-chips reasoning already laid out below, now backed by
+  a period-accurate primary-ish source rather than just general engineering inference.
+  - **New fact from the same source, not previously known — worth capturing even though the
+    owner has already actioned the main point:** *holding* the warm reset button too long can
+    **damage/erase memory**, because P2000 RAM is **Dynamic RAM (DRAM)** and holding RESET
+    **disables refresh** — DRAM cells leak their charge without periodic refresh, so a
+    held-too-long reset causes real bit-rot, not just a stuck CPU. This is useful confirmation
+    that the RAM in question is genuinely DRAM (strengthens the general "volatile memory
+    doesn't power up to zero" reasoning in the 2026-07-21 entry above and reference doc §5b,
+    which had hedged "SRAM/DRAM").
+  - **Optional follow-on feature, NOT required, flag only:** modeling "hold warm reset too long
+    → progressive RAM decay" would be a neat, sourced authenticity feature (e.g. a held-reset
+    duration threshold after which some RAM bytes start reverting to garbage) but is pure
+    trivia/polish, not a correctness fix like the "don't clear on warm reset" point above. Not
+    scoping or designing this further unless asked — flagging the sourced fact so it's not lost,
+    not proposing an implementation.
+  - Original reasoning, still valid, now confirmed rather than inferred: this file's own
+    2026-07-07 milestone-15 finding (below) states `PageTable.ClearRam()` runs on a full reset
+    and calls this "intentional... a reset is a full state wipe" — that "both warm and cold
+    reset zero RAM" behavior is what's being corrected. A warm reset that still zeroed RAM would
+    have produced a third behavior matching neither real warm-reset (untouched) nor real
+    cold-boot (garbage), the least authentic of the three.
+- **Applies to:** reference doc §5b (new "RAM power-on content is NOT zero" section) /
+  `src/P2000.Machine/Memory/PageTable.cs` (`ClearRam()`, constructor/`Reset()` fill, new
+  optional seed parameter), `src/P2000.Machine/Machine.cs` (`Reset(ulong? ramSeed)` or
+  equivalent, warm vs cold reset dispatch), `src/P2000.UI/` (wherever cold reset / machine
+  construction is triggered — the true-random seed source).
+- **Status:** fully decided, nothing left open on the design side. **Implementation landed
+  2026-07-22 — see the "IMPLEMENTED: RAM power-on non-zero fill + warm-reset RAM preservation"
+  entry below; this is no longer outstanding.**
+- **Synced:** yes (2026-07-21, into P2000T-reference.md §5b; warm-reset + all-RAM-scope
+  resolutions 2026-07-23; M2200 detail superseded 2026-07-21 into `docs/M2200-implementation.md`)
+  — implementation complete as of 2026-07-22, nothing further to fold into the reference doc from
+  this entry.
+
+### 2026-07-22 — IMPLEMENTED: RAM power-on non-zero fill + warm-reset RAM preservation (closes the flag above)
+- **Scope decisions taken (owner's call, both per the plan's recommended options):** ALL
+  populated RAM fills, not just VRAM (base RAM, expansion RAM, banked window, plus VRAM);
+  warm reset now leaves RAM completely untouched (only `Reset()`'s existing devices-only walk
+  runs) — only cold reset (construction or `ColdResetCommand`) refills it.
+- **`PageTable.FillRam(ulong seed)`** replaces `ClearRam()` outright (not kept alongside it —
+  nothing else called `ClearRam`, confirmed by grep before removing). Fills `_videoRam`,
+  `_baseRam`, `_expansionRam` (if fitted), each populated bank, then resets `_bankIndex = 0` —
+  same shape `ClearRam()` had, `Array.Clear` calls replaced with a small self-contained
+  xorshift64* PRNG seeded from the seed and threaded through each region in turn (so different
+  regions get different-looking, not repeating, content from one seed). `PageTable.DefaultRamSeed`
+  is a fixed public constant — what a bare `new Machine()`/any test gets.
+- **Found (edge case guarded, not just assumed away):** xorshift64* has a fixed point at seed=0
+  (state stays 0 forever, producing an all-zero "fill" — silently defeating the whole feature
+  for that one seed value). `FillRam` substitutes `DefaultRamSeed` internally whenever the
+  caller-supplied seed is exactly 0, so `FillRam(0)` still produces real garbage. Covered by a
+  dedicated test (`FillRam_SeedZero_StillProducesNonZeroContent`).
+- **Seed resolution chain, three levels (mirrors the `MonitorRomPath` null-means-default
+  convention, as specified):** `ColdResetCommand.RamSeed` (per-command override) →
+  `MachineConfig.RamSeed` (per-machine/config override) → `PageTable.DefaultRamSeed` (fixed
+  fallback). `Machine`'s constructor calls `Memory.FillRam(Config.RamSeed ??
+  PageTable.DefaultRamSeed)` — covers the previously-missing case where a bare `new Machine()`
+  silently zero-started with no fill at all (confirmed during exploration: the constructor never
+  called `ClearRam()` either, so this is a genuine behavior addition, not just a rename).
+  `ColdResetCommand` gained an optional `ulong? RamSeed` parameter (record positional, default
+  `null`); the `DrainCommandQueue` case resolves `coldReset.RamSeed ?? Config.RamSeed ??
+  PageTable.DefaultRamSeed`.
+- **`MachineConfig.RamSeed`** (`ulong?`, `init`, default `null`) added alongside
+  `MonitorRomPath`/`Slot1CartridgePath`/`FloppyDiskImagePath` as the fourth null-means-default
+  override on that file.
+- **`P2000.UI` wiring (the actual entropy source — outside the core, per locked decision §2.2):**
+  `EmulationRunner.NewRandomRamSeed()` (`Random.Shared.NextBytes` over 8 bytes) is called (a)
+  in `MakeConfig()` for the app-launch machine, (b) in `Reconfigure(config)` whenever the
+  caller's config doesn't already pin a seed (a topology change is a real cold start too) — note
+  `MachineConfig` is a plain class with `init`-only properties, not a `record`, so injecting the
+  seed needs an explicit field-by-field reconstruction, not a `with` expression, and (c) in
+  `DisplayWindowVm.ColdReset()`, attached to the enqueued `ColdResetCommand` fresh on EVERY
+  user-triggered cold reset (not just once at launch) — matches "at each real cold boot," so
+  repeated cold resets show genuinely different garbage each time, not the same one repeated.
+- **Test updates (existing test corrected, not just new ones added):**
+  `CommandQueueTests.ColdResetCommand_ResetsRegistersAndClearsRam` renamed to
+  `...AndRefillsRamDeterministically` — the old `Assert.Equal(0x00, ...)` literally cannot pass
+  anymore; replaced with "sentinel is gone" + "reproducible against a second same-seeded
+  machine" (not a hardcoded expected byte, which would be fragile against the PRNG's own
+  internals). New tests: `PageTableTests` (FillRam non-zero/deterministic/seed-sensitivity/
+  seed-zero-guard/bank-index-reset, 5 tests), `MachineTests` (constructor fill, cross-machine
+  determinism, `MachineConfig.RamSeed` override, `ColdResetCommand.RamSeed` overriding the
+  config seed, 4 tests), `EmulationRunnerStateTests` (`Reconfigure` gets a fresh random seed
+  when none given / preserves an explicit one, 2 tests, `P2000.UI.Tests`).
+- **Applies to:** `src/P2000.Machine/Memory/PageTable.cs` (`FillRam`, `DefaultRamSeed`,
+  `FillWithPseudoRandom`), `src/P2000.Machine/Machine.cs` (constructor fill,
+  `ColdResetCommand` handling), `src/P2000.Machine/MachineConfig.cs` (`RamSeed`),
+  `src/P2000.Machine/Debug/MachineCommand.cs` (`ColdResetCommand(ulong? RamSeed = null)`),
+  `src/P2000.UI/Runner/EmulationRunner.cs` (`NewRandomRamSeed`, `MakeConfig`, `Reconfigure`),
+  `src/P2000.UI/ViewModels/DisplayWindowVm.cs` (`ColdReset`),
+  `tests/P2000.Machine.Tests/Memory/PageTableTests.cs`,
+  `tests/P2000.Machine.Tests/MachineTests.cs`,
+  `tests/P2000.Machine.Tests/Debug/CommandQueueTests.cs`,
+  `tests/P2000.UI.Tests/Runner/EmulationRunnerStateTests.cs`.
+- **Synced:** yes (2026-07-21, implementation-only — the RAM-power-on hardware fact and the
+  seed-mechanism design were already synced into the reference doc; this entry also closes out
+  the "implementation still outstanding" status on that earlier finding, see the MAINTAINER NOTE
+  above).
+
+### 2026-07-19 — Flag (not yet verified against source): VideoFetchUnit vertical/field-position offset
+- **Trigger:** owner reported Ghosthunt display glitches concentrated in the **top ~15%
+  of the screen**, and asked whether contention modelling accounts for the video chip
+  only fetching VRAM during the active display window within a field, not across the
+  whole field.
+- **New sourced fact (owner-supplied P2000TM Field Service manual, "T-VERSION VIDEO
+  GENERATION"):** T-version field = **313 scanlines**; active/displayable window =
+  **scanlines 49–289 (240 lines)**. This means **48 lines (~7,680 T-states) of vertical
+  blank precede the active window**, and ~24–25 lines (~3,840–4,000 T-states) follow it
+  — an asymmetric split, not an even ~36/36. Full detail and T-state math now in
+  reference doc §4 ("Display-start offset") and §4a ("Vertical structure").
+- **Explicit correction from the owner, must not be lost in any fix:** *"assuming that
+  all 50000 cycles are used during the 640×480 area is wrong"* — only ~38,400 of the
+  50,000 T-states/field are inside the active window; the rest must be contention-free
+  regardless of CPU RAM activity during those T-states.
+- **Leading hypothesis (UNVERIFIED — this project's CLAUDE.md instance has not read
+  `VideoFetchUnit.cs`, per the design-doc-maintainer role; needs checking against the
+  real source, not assumed):** if `VideoFetchUnit`'s fetch/contention-eligible window
+  currently starts at field-T-state 0 rather than being offset by ~7,680 T-states
+  (48 lines) into the field, it would incorrectly treat real hardware's pre-roll
+  vertical-blank T-states as fetch-eligible — producing spurious contention/glitches
+  concentrated at the top of the frame. 48/313 ≈ 15.3%, closely matching the reported
+  "top 15%" symptom, which is why this is the leading hypothesis, but **verify against
+  the actual implementation before changing anything** — neither of the two existing
+  milestone-10 findings entries (2026-07-05, 2026-07-06 below) address vertical
+  raster position at all, so this is genuinely unaddressed ground, not a re-litigation
+  of settled work.
+- **If confirmed:** the fix is presumably to gate fetch-slot scheduling (and therefore
+  contention eligibility) so it only runs during field-T-states corresponding to
+  scanlines 49–289 (i.e., skip/no-op the first ~7,680 T-states and the last
+  ~3,840–4,000 T-states of each field), rather than across the full 50,000. Confirm the
+  exact current start/end behaviour first — this note does not assume the bug exists.
+- **RESOLVED (2026-07-21, owner clarification):** the manual's *"no interlacing is
+  used"* statement for the T-version is CONFIRMED correct and the owner agrees — the
+  P2000T has no real even/odd field pairing into a frame; every field is an
+  independent 313-line refresh. This corrected §3 above ("Fields vs frames").
+  **Ownership correction (also 2026-07-21):** the display-mode DEFAULT is a
+  **P2000.UI-owned setting**, not a machine one (§3's own pre-existing milestone-5
+  finding already scoped this correctly — see §3's "Ownership correction" note); the
+  owner's decision to default to Odd-only (line-doubled single field) instead of
+  Interlaced/comb belongs in `src/P2000.UI/CLAUDE.md` §8 and reference doc §3a, both
+  updated. This file (`src/P2000.Machine/CLAUDE.md`) only carries the underlying
+  hardware-timing correction, not the UI default.
+- **RESOLVED (2026-07-21):** `docs/SAA5050-implementation.md` — the owner supplied the
+  actual file content; it now has a local working copy (`SAA5050-implementation.md`,
+  de facto canonical as of this pass) and has been updated in parallel with the same
+  interlacing correction (§5 "Fields, frames, and CRS").
+- **NEW flag, unverified, machine-layer (2026-07-21) — distinct from the UI default
+  question above:** whether `Video`'s raw per-field buffer-composition ("each field
+  writes only its own alternating half-lines into a persistent buffer") still holds
+  now that no true interlace exists — see §3's "Separate, machine-level question" note
+  for detail. This is about what data the machine hands to the UI each field, not
+  which of the 4 modes the UI defaults to presenting.
+- **Applies to:** reference doc §4 (Display-start offset) and §4a (Vertical structure) /
+  `src/P2000.Machine/Contention/VideoFetchUnit.cs`, possibly `src/P2000.Machine/Devices/Video.cs`.
+- **Synced:** yes (2026-07-19, into P2000T-reference.md §4/§4a) — implementation-side
+  verification and any resulting fix still outstanding.
+
+### 2026-07-02 — Milestone 2: page table
+- **Assumed:** nothing to confirm on the ROM/RAM/expansion/open-bus shape — those are all
+  CONFIRMED hardware (reference doc §5) and implemented as documented.
+- **Found (documented default for an unconfirmed item):** the 0x94 bank register's
+  power-on/reset value is reference doc open item #2 ("which bank is the normal top-of-RAM
+  that non-banking software sees"), left unconfirmed there. Implemented as bank 0 by
+  construction (`PageTable._bankIndex` defaults to 0) — the least-surprising default, and
+  harmless for faithful T/102 behaviour since the real firmware always writes 0-5 itself
+  before depending on banking. Revisit if a disassembly/schematic confirms otherwise.
+- **Found (scope decision, not a hardware finding):** `RamVariant` implements only T38/T54/
+  T102. PTC-96K is deliberately NOT modelled — reference doc open item #4 (how its 16 KB +
+  64 KB expansions combine, and whether the extra 64 KB rides port 0x94 or a separate
+  scheme) is unconfirmed, and PTC-96K is a floppyboard-only variant, so it has no confirmed
+  shape to build against while floppy support is deferred (project CLAUDE.md §14). Add it
+  once floppy support is undertaken and the addressing scheme is confirmed.
+- **Applies to:** reference doc §5 (memory map, RAM variants, bank switching, open items
+  #2 and #4) / `src/P2000.Machine/Memory/PageTable.cs`, `src/P2000.Machine/MachineConfig.cs`.
+- **Synced:** yes (2026-07-05, into P2000T-reference.md + device guides)
+
+### 2026-07-03 — Milestone 4: port dispatch, CPoutLatch, CprinReader
+- **Assumed:** the CPOUT/CPRIN bit maps and shared-port fan-out/combine model (reference doc
+  §5f) were CONFIRMED hardware and implemented as documented.
+- **Found (design decision, not a hardware finding):** `PortDispatch` combines multiple read
+  sources on one port by bitwise OR, on the assumption each source only ever sets the bits it
+  owns and leaves the rest 0. This works cleanly for CPRIN (cassette bits vs. future printer
+  bits are disjoint) but would silently corrupt a port where two sources legitimately
+  disagree on the same bit — there is no such port today, but a future shared port must keep
+  its sources bit-disjoint or this combine strategy needs revisiting.
+- **Found (scope decision, not a hardware finding):** `CprinReader` currently owns ALL of
+  CIP/BET/WEN/RDC/RDA directly (settable properties) rather than combining a separate
+  cassette-device read source, because the cassette device is milestone 9. PRI/READY/STRAP
+  read as 0 (inactive) since the printer is deferred entirely (§14) and has no confirmed
+  hardware shape yet. When the cassette device lands, decide whether it registers its own
+  `PortDispatch` read source for 0x20 (letting `CprinReader` shrink to printer-only bits) or
+  keeps feeding these same properties — either is compatible with the fan-out/combine model.
+- **Found (doc self-correction applied):** the reference doc's illustrative CPRIN read
+  sketch (§5f) has a confusing/self-contradictory comment on the WEN bit ("WEN=0 writable ->
+  so set when NOT protected?"). Implemented literally per the doc's own bit TABLE instead:
+  bit 3 = 1 means write-protected, bit 3 = 0 means writable (`CprinReader.WriteProtected`
+  sets the bit when `true`). The doc itself flags the sketch as illustrative, not
+  authoritative — no correction needed there, just noting which reading was implemented.
+- **Applies to:** reference doc §5f (CPOUT/CPRIN bit maps, shared-port fan-out/combine) /
+  `src/P2000.Machine/Io/PortDispatch.cs`, `src/P2000.Machine/Io/CPoutLatch.cs`,
+  `src/P2000.Machine/Io/CprinReader.cs`, `src/P2000.Machine/Machine.cs`.
+- **Synced:** yes (2026-07-05, into P2000T-reference.md + device guides)
+
+### 2026-07-03 — Milestone 5: video device (SAA5050 + fetch timing)
+- **Assumed:** the framebuffer would be 480×480 (12 px/char-column) per this file's §3 as
+  first written.
+- **Found (spec correction, confirmed by tracing the reference renderers bit-for-bit):** the
+  hard-won C#/jsbeeb renderer blends adjacent glyph columns into **16 output pixel lanes per
+  character**, not a plain 6×2=12 doubling - verified by decoding the `MakeHiresGlyphs`
+  multiplier constants bit-by-bit (each of the 12 raw column bits spreads across 3-4 output
+  bits with deliberate overlap between neighbours, the anti-aliasing mechanism itself). This
+  makes the real framebuffer **640×480**, not 480×480. §3 was corrected before implementation
+  started (both by me and, in parallel, by the human editing the same section) rather than
+  silently re-deriving the smoothing math to fit 12 lanes.
+- **Found (hardware confirmation, resolves an implementation-doc ambiguity):** the reference
+  doc §5 explicitly confirms the 160-255 trick as "inverted (**swapped** fg/bg) colours", not
+  a per-channel complement. This matches the C# port's `PERender` variant (swap the palette
+  shift positions, `invert ? 2:5 / 5:2`) rather than MAME's `color ^= 0x07` (a channel
+  complement, mathematically different unless fg/bg happen to be exact complements). Built
+  the swap model; MAME's own comment header flags it disagrees with jsbeeb's rounding anyway,
+  so it was already the weaker semantics reference for this quirk.
+- **Found (untested-in-the-wild quirk, ported deliberately):** `PERender`'s `previousLineData`
+  cache — double-height's bottom half re-shows the TOP row's byte at each column instead of
+  whatever is actually in that column's own VRAM row — was carried into `BeginCell`. This is
+  easy to miss (the non-PE `Render()` path in the same reference file does NOT have it) and
+  would silently break any double-height text whose authoring tool doesn't duplicate the top
+  row's bytes into the row below.
+- **Found (unconfirmed CPU-facing control, scoped decision):** the reference doc confirms the
+  panning MECHANISM (screen buffer is 80 cols × 24 rows, viewport pans by an upper-left X
+  0-40) but not which port/register the CPU writes to set it. Exposed as a plain settable
+  `Video.PanX` property for now, same pattern as `CprinReader`'s properties ahead of the
+  cassette device (milestone 4 finding) - wire it to the real control once found.
+- **Found (fetch-slot timing, acknowledged approximation):** the SAA5020's real per-slot bus
+  occupancy is confirmed-unconfirmed (reference doc §4a). `VideoFetchUnit` schedules the 40
+  column fetches at `floor(column × 2.5)` T-states within the 100 T-state active window -
+  evenly spaced integer slots, the best available approximation until a logic-analyzer
+  capture pins the real waveform. Swappable without touching `Video`/`Saa5050Generator`.
+- **Found (scope decision, not a hardware finding):** framebuffer pixel contents are NOT
+  included in `Video.SaveState` - only the fetch-unit counters and generator attribute state
+  are, which is sufficient for validation gate §12.5 ("subsequent frames" must match; a
+  mid-render buffer snapshot is not required for that guarantee) and keeps state files small.
+- **Applies to:** reference doc §5/§5f (VRAM layout, panning, 160-255 trick), §4a (fetch
+  timing) / `docs/SAA5050-implementation.md` (whole device guide) /
+  `src/P2000.Machine/Devices/Video.cs`, `src/P2000.Machine/Devices/Saa5050/*.cs`,
+  `src/P2000.Machine/Contention/VideoFetchUnit.cs`.
+- **Synced:** yes (2026-07-05, into P2000T-reference.md + device guides)
+
+### 2026-07-04 — Milestone 8: keyboard device
+- **Assumed:** the 10×8 matrix, KBIEN protocol, and port range (0x00–0x09) were all
+  CONFIRMED hardware (reference doc §5f) and implemented as documented.
+- **Found (design decision):** the keyboard reads KBIEN live from `CPoutLatch.Kbien` on
+  every port read (a direct reference, not an event subscription) — simpler and equally
+  correct since KBIEN is sampled only when the CPU does an `IN` instruction, well within
+  the same T-state pass.
+- **Found (ghosting model):** in a diode-less key matrix, pressing three corners of a
+  matrix rectangle causes a phantom fourth keypress. The mechanism: pressing (R,C0),
+  (R2,C0), and (R2,C1) lets current loop R → C0 → R2 → C1, pulling C1 low when scanning
+  row R even though (R,C1) is not physically pressed. The P2000T keyboard has no
+  anti-ghosting diodes, so this phantom behaviour is authentic and some software depends
+  on specific multi-key combinations that only register because of it. Implemented
+  explicitly in `IsColumnLow` via an O(R×C) search per column rather than an electrical
+  circuit simulation — same result for all 3-corner cases, fast enough at 10×8.
+- **Found (open-item, to confirm):** the exact row/column layout for SHIFT, CODE, and the
+  function/cursor keys in the 10×8 matrix is still "to confirm" (reference doc §5f). The
+  device is ready to accept key presses at any crosspoint; the mapping table is a UI
+  concern (milestone UI). The existing test suite uses numeric row/col indices.
+- **Applies to:** reference doc §5f (keyboard scan protocol, KBIEN, matrix, ghosting) /
+  `src/P2000.Machine/Devices/Keyboard.cs`, `src/P2000.Machine/Machine.cs`.
+- **Synced:** yes (2026-07-05, into P2000T-reference.md + device guides)
+
+### 2026-07-04 — Milestone 7: BOOT — embedded monitor ROM + SLOT1 cartridge
+- **Assumed:** the monitor ROM auto-load and SLOT1 cartridge load were both straightforward
+  — no hardware surprises, all confirmed from reference doc §5b boot sequence.
+- **Found (design decision, not a hardware finding):** `PageTable` auto-loads the embedded
+  monitor ROM in its constructor rather than requiring callers to call `LoadRom()` — the
+  existing `LoadRom()` method is kept for test fixtures that inject synthetic ROM code.
+  Existing tests that assumed ROM reads 0x00 before `LoadRom()` were updated to reflect
+  the new "ROM is always populated at construction" contract.
+- **Found (design decision):** SLOT1 is allocated as a fixed 16 KB `byte[]` regardless of
+  the cartridge image's actual size; bytes beyond the image length read as open-bus (0xFF)
+  via zero-fill. This means an 8 KB CARS1-only cartridge naturally leaves CARS2 open-bus,
+  which is correct hardware behaviour for a partial-slot cartridge.
+- **Found (boot outcome confirmed):** both boot outcomes pass with the real ROMs:
+  (a) bare machine reaches the cassette-wait loop (VRAM non-zero, PC stays in ROM) in
+  well under 5M T-states; (b) with BASIC.bin in SLOT1 the CPU jumps into the BASIC
+  cartridge range (PC ≥ 0x1000) in well under 5M T-states. These are now regression-
+  gated integration tests.
+- **Applies to:** reference doc §5 (memory map, SLOT1, monitor ROM embed), §5b (boot
+  sequence) / `src/P2000.Machine/Memory/PageTable.cs`, `src/P2000.Machine/MachineConfig.cs`,
+  `src/P2000.Machine/P2000.Machine.csproj`.
+- **Synced:** yes (2026-07-05, into P2000T-reference.md + device guides)
+
+### 2026-07-03 — Milestone 6: interrupt aggregator (video 50 Hz → IM1 RST 0x0038)
+- **Assumed:** nothing to confirm on the IM1/RST-38 vector or the wired-OR structure —
+  those are CONFIRMED hardware (reference doc §5e/§8) and implemented as documented.
+- **Found (design decision, not a hardware finding):** `InterruptAggregator.Acknowledge()`
+  returns 0xFF (passive pull-up) regardless of source — for IM1 the CPU ignores the bus
+  byte entirely, so any value is correct; 0xFF reflects a real undriven bus rather than
+  inventing a fictitious RST-38 byte. When a future IM2 source registers, `Acknowledge`
+  will need a priority/daisy-chain scheme to pick the winning vector — flagged in the seam
+  comment but deliberately not pre-built (root CLAUDE.md: no hypothetical abstractions).
+- **Found (design decision, not a hardware finding):** INT is kept as a continuous level in
+  `_pins` (assert while `IntPending`, deassert otherwise) rather than a one-tick pulse.
+  The CPU samples it only at instruction boundaries when IFF1=1, so a multi-tick assertion
+  is harmless and avoids a race window where a single-tick pulse could be missed if the CPU
+  is mid-instruction when it fires.
+- **Found (int-ack detection):** M1+IORQ (without RD/WR) is the int-ack signature per the
+  Z80 core's Interrupts.cs comment and pin table. Added as the first branch inside the
+  `IORQ` block in `Machine.Tick()` — before the plain IORQ+RD read path — so a future
+  normal IORQ read can never be mistaken for an int-ack.
+- **Applies to:** reference doc §5e (interrupt sources, wired-OR INT), §8 (video 50 Hz →
+  IM1 RST 0x0038) / `src/P2000.Machine/Interrupts/InterruptAggregator.cs`,
+  `src/P2000.Machine/Machine.cs`.
+- **Synced:** yes (2026-07-05, into P2000T-reference.md + device guides)
+
+### 2026-07-03 — Milestone 5 (rework): fields vs frames, single persistent buffer
+- **Assumed:** the machine's 50 Hz video cycle was a progressive FRAME - the original
+  implementation rendered BOTH the even and odd sub-scanline rows for every physical scanline
+  within a single 50,000-T-state pass, double-buffered, swapping a completed 640×480 image to
+  a front buffer once per pass.
+- **Found (spec correction, this file's §3):** the P2000T is genuinely INTERLACED at 50
+  FIELDS/sec, not 50 progressive frames/sec - a field pass renders ONLY its own parity of
+  output rows (even field → even rows, odd field → odd rows) with CRS held constant for the
+  whole pass, into a SINGLE PERSISTENT buffer with NO inter-field clear (reproducing the
+  authentic interlace "comb" on fast motion). Reworked accordingly:
+  - `VideoFetchUnit.TStatesPerFrame`/`FrameComplete` renamed to `TStatesPerField`/
+    `FieldComplete` (the 50,000-T-state/240-active-line cycle IS a field; two make a frame).
+  - `Saa5050Generator.BeginFrame` renamed to `BeginField`; `RenderField` is now called ONCE
+    per cell per pass (not twice) - the field-wide `oddField` parity comes from `Video`, not
+    from looping both values internally.
+  - `Video` dropped the back/front swap for one persistent `_framebuffer` array, added
+    `IsOddField`, and toggles field parity at each `FieldComplete`.
+  - `Video.FrameComplete` added (`docs/SAA5050-implementation.md` §5: "FrameComplete
+    (odd-field only)") - fires once every TWO fields, after the odd one, for a future
+    progressive/composited display consumer; `FieldComplete` (every field, 50 Hz) is what
+    milestone 6's interrupt aggregator and a future CTC channel-3 clock must use instead.
+  - Buffer height was already 480 (24×20), NOT the 500 (25-row, BBC-heritage) the doc warned
+    against - no fix needed there.
+- **Found (reference-doc terminology, flagged for sync, not corrected here):** reference doc
+  §4a calls the 50,000-T-state/50 Hz cycle a "Frame." Per this file's §3 (now confirmed), that
+  cycle is actually a FIELD - a P2000T frame is two fields (25 Hz for a complete interlaced
+  image). Worth a wording pass in the reference doc's §4a when synced.
+- **Found (scope decision, unchanged from the first milestone 5 pass):** the four
+  display-mode options (interlaced/comb default, progressive, even-only, odd-only) in this
+  file's §3 are explicitly UI-presentation concerns ("the toggle only affects UI presentation")
+  - `Video` only produces the default interlaced/comb buffer plus the two events a UI layer
+    would need to build any of the four; no mode-switch was added to the machine layer.
+- **Applies to:** this file §3 (framebuffer contract), `docs/SAA5050-implementation.md` §5
+  (fields/frames/CRS) / `src/P2000.Machine/Devices/Video.cs`,
+  `src/P2000.Machine/Devices/Saa5050/Saa5050Generator.cs`,
+  `src/P2000.Machine/Contention/VideoFetchUnit.cs`.
+- **Synced:** yes (2026-07-05, into P2000T-reference.md + device guides)
+
+### 2026-07-04 — Milestone 9: MDCR cassette device (authentic phase-bitstream path)
+- **Assumed:** `CprinReader` would keep owning CIP/BET/WEN/RDC/RDA until the cassette device
+  landed (milestone 4 finding noted both options were compatible with the fan-out/combine model).
+- **Found (design decision):** `MdcrDevice` registers its own read source on port 0x20 for
+  bits 3–7, and `CprinReader` was shrunk to printer-only (bits 0–2, currently returning 0x00).
+  The OR-combine produces identical observable behaviour. This keeps each device owning the bits
+  it drives rather than one class acting as a bridge for another.
+- **Found (.cas encoding structure — CORRECTED):** per `docs/MDCR-implementation.md §6`, the
+  per-block tape layout is: BOB GAP (6160 phases) → MARK (empty WriteData) → HEADER (32 bytes
+  from .cas record offset 0x30) → DATA (WriteData of 1024 bytes from .cas record offset 0x100)
+  → EOB GAP (1856 phases). The 32-byte block header IS encoded on tape — the ROM's ZOEK
+  directory scan reads headers from the bitstream, and CLOAD-by-name matches against them. An
+  earlier pass skipped the header (treated it as host-side metadata only); that was wrong and
+  has been corrected in `LoadCasImage` (header WriteData added between MARK and DATA).
+- **Found (WEN active sense — RESOLVED):** implemented as bit SET = write-protected, which is
+  correct. Confirmed from the owner's monitor-ROM disassembly (`Symbols.asm`: `WEN equ 0x08`;
+  `Cassette.asm:47`: "bit 3 = WEN (1=protected, 0=can write)"; `cas_status` decodes CIP|WEN as
+  00=loaded+writable / 01=loaded+protected / 11=no-cassette). Our code (`if (_tape.IsProtected)
+  _status |= WenBit`) is correct. The old owner code had set WEN=1 for writable (inverted) — our
+  implementation fixed that.
+- **Found (reverse-direction bit mapping — UNVERIFIED):** `MdcrDevice.BitToStatus()` contains
+  the owner's unverified reverse-motor branch: when running in REVERSE, toggles RDA (data)
+  instead of RDC (clock). Implemented behind the `ReverseDataBitMapping` bool flag (default
+  true = current behaviour) as instructed. Confirm once read-while-reversing is observable on
+  the RUN test; then set the flag's default and log outcome here.
+- **Found (bare-machine port 0x20 default):** with no tape, status = CIP(0x10) | BET(0x20) =
+  0x30. WEN is NOT set when no tape is present (treat as don't-care; ROM's write-protect check
+  presumably runs only when CIP is clear). This preserves the pre-milestone-9 observed value
+  (0x30 in `Tick_InFrom0x20_ReturnsCassetteStatus_BareMachineDefault`).
+- **Found (tape at BOT on insert):** after `LoadCasImage` the tape is rewound to position 0
+  (BOT). IsAtEnd is true at BOT → BET bit is CLEAR immediately after insert. The ROM should
+  spin the motor forward briefly before attempting to read; verify against the real ROM's CLOAD
+  startup sequence in the RUN test.
+- **Found (SaveState design decision):** state snapshots save tape position (Position + Side)
+  only, not the full 1 MB phase array. The .cas image must be remounted after LoadState. This
+  matches the precedent from PageTable (embedded ROM not saved in state). If a recorded/blank
+  tape scenario needs full-array save, add an opt-in serialization path later.
+- **Applies to:** reference doc §5b (MDCR, CIP live, auto-load 'P' file), §5f (CPRIN/CPOUT
+  bit maps, WEN active sense) / `docs/MDCR-implementation.md` (full device spec) /
+  `src/P2000.Machine/Devices/Cassette/MiniTape.cs`,
+  `src/P2000.Machine/Devices/Cassette/MdcrDevice.cs`,
+  `src/P2000.Machine/Io/CprinReader.cs`, `src/P2000.Machine/Machine.cs`.
+- **Synced:** yes (2026-07-05, into P2000T-reference.md + device guides)
+
+### 2026-07-05 — Milestone 10: contention model
+- **Assumed:** contention scope is "any CPU DRAM access" — ROM (0x0000–0x0FFF) and SLOT1
+  (0x1000–0x4FFF) are separate ROM/EPROM chips that do NOT share the DRAM address bus, so
+  Z80 MREQ to those addresses cannot collide with a SAA5020 display fetch. DRAM starts at
+  VRAM (0x5000).
+- **Found (design decision, later corrected):** `IsDramAddress(addr)` was initially `addr >= 0x5000`,
+  covering VRAM + all RAM. Corrected 2026-07-06: only VRAM is shared with the SAA5020 — see
+  correction entry below.
+- **Found (corruption timing):** `CorruptLastFetch()` overwrites the 16 already-rendered
+  framebuffer pixels for the fetched cell (step 4 of the tick loop, after bus service). The
+  fetch fires BEFORE the CPU step (step 1 via `VideoFetchUnit.Tick()`), rendering happens
+  inline in `OnColumnFetch()`, then step 4 blanks the pixels if the CPU contested the slot.
+  `LastFetchLine` is captured before `VideoFetchUnit.Tick()` updates `Line`, avoiding an
+  off-by-one if the line changes in the same tick (it can't in practice: last fetch slot is
+  LineTState 97, line boundary at 159 — they never coincide).
+- **Found (default corruption mode):** blank/black cell (16 pixels zeroed). Mode is
+  swappable once a logic-analyzer/RGBS capture distinguishes bleed vs suppression vs
+  contention-to-garbage (reference doc §4 open item).
+- **Found (debug overlay):** a flat 40×24 bool array on `Video` (index = charRow × 40 + col)
+  is set when a cell is corrupted; cleared AFTER `FieldComplete` fires so consumers can
+  inspect it from the FieldComplete handler. Cleared by `Reset()` too.
+- **Applies to:** reference doc §4 (bus contention model, Z80 priority, corruption scope,
+  default mode) / `src/P2000.Machine/Contention/VideoFetchUnit.cs`,
+  `src/P2000.Machine/Devices/Video.cs`, `src/P2000.Machine/Memory/PageTable.cs`,
+  `src/P2000.Machine/Machine.cs`, `tests/P2000.Machine.Tests/Contention/ContentionTests.cs`.
+- **Synced:** yes (2026-07-07, into reference doc §4 — corruption default + overlay; window superseded by the correction below)
+
+### 2026-07-06 — Milestone 10 correction: contention address window
+- **Assumed (wrong):** `IsDramAddress` used `addr >= 0x5000` — any CPU MREQ to VRAM or RAM
+  could cause contention.
+- **Corrected (per updated reference doc §4):** only the VRAM chip is shared with the SAA5020.
+  Base RAM (0x6000+), expansion RAM, and the banked window are separate DRAM chips that the
+  SAA5020 never addresses. The contention window is strictly:
+  - P2000T: 0x5000–0x57FF (2 KB VRAM chip)
+  - P2000M: 0x5000–0x5FFF (4 KB VRAM chip)
+- **Change:** `IsDramAddress` (static, wrong) → `IsVideoRamAddress(addr)` (instance method,
+  uses `_videoRamEnd` set per model in the PageTable constructor). Machine.cs updated to call
+  `Memory.IsVideoRamAddress(...)`. Contention tests updated: hammering loops point to 0x5000
+  instead of 0x6000; `IsDramAddress_*` tests replaced with `IsVideoRamAddress_*` tests
+  including T-model boundary (0x57FF → true, 0x5800 → false) and P2000M window (0x5FFF → true,
+  0x6000 → false).
+- **Applies to:** reference doc §4 (contention window) / `src/P2000.Machine/Memory/PageTable.cs`,
+  `src/P2000.Machine/Machine.cs`, `tests/P2000.Machine.Tests/Contention/ContentionTests.cs`.
+- **Synced:** yes (2026-07-07, into reference doc §4 — VRAM-only window, T + M)
+
+### 2026-07-05 — Milestone 9a: MDCR cassette WRITE / CSAVE path
+- **Assumed (earlier):** the bitstream → .cas serializer was missing; realtime write path was
+  already present in `ProcessPhase()`.
+- **Found (realtime write already complete):** `MdcrDevice.ProcessPhase()` captures `WDA` phases
+  to tape when `WCD=1` — identical format to `LoadCasImage`'s `WriteByte` encoding (bit=1 →
+  (T,F), bit=0 → (F,T)), so the ROM's CSAVE output round-trips correctly through `Save()`.
+- **Found (bitstream → .cas decoder — direct phase-pair approach):** `MiniTape.Save()` uses
+  direct phase-pair reading (first phase of each 2-phase pair = the bit value; second = !bit),
+  no PLL simulation needed. Gap alignment: the 0xAA frame lead byte starts with bit0=0 → phase0=F,
+  which blends into the all-false gap. After skipping the gap, step back by 1 to re-align to
+  phase0 of bit0 of 0xAA. This is reliable for both `LoadCasImage`-encoded and CSAVE-written tapes.
+- **Found (TimingPolicy — infrastructure added):** `TimingPolicy` enum (Authentic/Turbo) added.
+  Authentic gates the 209-cycle phase engine; Turbo bypasses it. Actual turbo ROM trap addresses
+  (`cas_Write`/`write_block`) are still deferred — needs confirmed addresses from the ROM
+  disassembly (`Cassette.asm`). Log the addresses here once sourced.
+- **Applies to:** `src/P2000.Machine/Devices/Cassette/MiniTape.cs` (`Save`, `TryDecodeFrame`,
+  `ReadByte`), `src/P2000.Machine/Devices/Cassette/MdcrDevice.cs` (`Policy`, `SaveTape`),
+  `src/P2000.Machine/Devices/Cassette/TimingPolicy.cs` (new).
+- **Synced:** yes (2026-07-05)
+
+### 2026-07-07 — Milestone 4 (P2000.UI): MDCR tape block structure + byte order (CLOAD fix)
+Two bugs were masking CLOAD success; both confirmed by tracing `Cassette.asm` line by line.
+
+- **Assumed (wrong — prior session):** byte encoding was MSB-first, based on misreading `rla`
+  in the CRC path as the byte assembler. `rla` is used ONLY for one-bit-at-a-time CRC/parity
+  processing (`xor a; rlc l; rla` extracts one RDA bit into A for the CRC loop).
+- **Confirmed (byte order is LSB-first):** the actual byte assembler is `rr d` (Cassette.asm
+  lines 1136–1140): eight iterations of `rrc l; exx; rr d` rotate one bit at a time into D'
+  via carry — rotate-RIGHT means the first received bit lands in bit7 after shift, i.e. the
+  FIRST bit received ends up at bit0 after 8 iterations → LSB-first. `WriteByte` must send
+  bit0 first. 0xAA (10101010) is the correct sync byte (confirmed from Cassette.asm line 852
+  comment and from `fetch_checksum_postamble` write side: `ld d,0xaa`).
+- **Assumed (wrong — prior session):** `LoadCasImage` wrote THREE separate `WriteData` frames:
+  MARK, HEADER (32 B), DATA (1024 B), with no gaps between them.
+- **Confirmed (correct tape block structure):** per `cas_block_read` (lines 804–918) and
+  `read_mark` / `load_block`: the ROM calls `search_marker` → `wait_70ms` → `load_block`.
+  `search_marker` validates the MARK via `read_until_timeout` (reads until per-bit timeout
+  ~5 ms); it counts `paddingbytes = bytes_read - 3` and retries if `paddingbytes != 0`. With
+  no gap after MARK, `read_until_timeout` reads into the HEADER frame → `paddingbytes != 0`
+  → `search_marker_loop` retries → eventually times out with 'N' or 'M' error.
+- **Fix:** `LoadCasImage` now writes:
+  `MARK (0xAA | 0x00 | 0x00 | 0xAA)` + `MarkDataGap (~81 ms silence)` +
+  `DATA BLOCK (0xAA | header(32B) | data(1024B) | CRC(2B) | 0xAA)`.
+  Header and data share ONE combined frame with ONE CRC — confirmed from `load_block` lines
+  912–918 (`0xAA | header(32B) | data(1024B) | CRC(2B) | 0xAA`). The `MarkDataGap` must be
+  ≥ 70 ms so the DATA BLOCK's preamble starts after `wait_70ms` completes; using 970 phases
+  (~81 ms at 2.5 MHz).
+- **MARK validation mechanism:** `read_until_timeout` uses a per-bit timeout of 256 × 51
+  T-states (~5 ms). In the silence gap, all-false phases → PLL loses lock → RDC stops toggling
+  → `wait_next_bit` times out → `read_until_timeout` exits. The gap must be long enough that
+  the PLL loses lock cleanly before `wait_70ms` completes and `load_block` begins.
+- **Save() updated** to match: skip gap → TryDecodeFrame(0) for MARK → skip MarkDataGap →
+  TryDecodeFrame(1056) for combined HEADER+DATA → split `combined[0..31]` / `combined[32..]`.
+- **Applies to:** `docs/MDCR-implementation.md` §6 (tape block structure, byte order) /
+  `src/P2000.Machine/Devices/Cassette/MiniTape.cs` (`LoadCasImage`, `Save`, `WriteByte`,
+  `ReadByte`, `WriteData`, `UpdateChecksum`, `TryDecodeFrame`).
+- **Synced:** yes (2026-07-09, into reference doc §5b — block structure + byte order marked CONFIRMED; NOTE: `docs/MDCR-implementation.md` §6 is this finding's primary home — apply the detailed layout there too, which this pass could not edit)
+
+### 2026-07-05 — Milestone 11: config + state serialization
+- **Assumed:** `MachineConfig` fields are JSON-serializable with `System.Text.Json` in-box;
+  enum values can be serialized as strings by applying `JsonStringEnumConverter`.
+- **Found (enum casing — corrected during implementation):** `JsonStringEnumConverter`
+  accepts an optional naming policy. Passing `JsonNamingPolicy.CamelCase` serializes
+  `RamVariant.T54` → `"t54"` and `MachineModel.P2000T` → `"p2000T"` — unreadable for a
+  human-editable config file. The converter must be constructed WITHOUT a naming policy
+  (`new JsonStringEnumConverter()`) so enum values retain their declared names (`"T54"`,
+  `"P2000T"`). Property NAMES are still camelCase via the top-level `PropertyNamingPolicy`.
+- **Found (ROM not in state — determinism test implication):** ROM bytes are not saved in
+  `.state` files (by design: the ROM is read-only, embedded, config-determined — same as the
+  PageTable findings above). A determinism test that injects a synthetic ROM via `LoadRom`,
+  saves state, and then loads must re-inject the synthetic ROM into the restored machine, or
+  the restored machine runs the real embedded monitor ROM from the saved PC, diverging.
+  Resolution: the determinism test uses the real monitor ROM end-to-end (no synthetic ROM),
+  which is present in both machines by construction. The monitor ROM enters a stable
+  CIP-polling loop after one field; both original and restored machines execute identical
+  code from identical state and produce matching PC/SP/VRAM after one additional field.
+- **Found (HALT + AtInstructionBoundary):** `Z80.Core.AtInstructionBoundary` returns false
+  when the CPU is halted (`!_halted` is part of the expression). Using HALT as a synthetic
+  ROM terminator causes `SaveAndReload`'s `while (!AtInstructionBoundary)` loop to spin
+  forever. Resolution: test synthetic ROMs that need to stop use `JR -2` (0x18 0xFE) for
+  an infinite spin that still returns to an instruction boundary between iterations.
+- **Found (`.state` binary layout):** "P2ST" magic (4 bytes) + version int32 (LE) +
+  config-JSON byte-length int32 (LE) + config JSON UTF-8 + distributed device state stream.
+  `StreamStateWriter`/`StreamStateReader` wrap `BinaryWriter`/`BinaryReader` with UTF-8
+  encoding. Restore = `new Machine(config)` (full reset) then `machine.LoadState(reader)`.
+- **Found (`AtInstructionBoundary` save semantics):** state is saved only at instruction
+  boundaries (the public `AtInstructionBoundary` property on Z80.Core). At those points all
+  of Z80.Core's private fields (`_phase`, `_tstate`, `_prefix`) are at their known reset-
+  compatible defaults (Fetch / 0 / None), so the serialized CPU struct is self-consistent
+  without saving any private fields.
+- **Applies to:** reference doc §3a (config vs state serialization, versioning) /
+  `src/P2000.Machine/State/MachineConfigFile.cs`, `src/P2000.Machine/State/MachineStateFile.cs`,
+  `src/P2000.Machine/State/StreamStateWriter.cs`, `src/P2000.Machine/State/StreamStateReader.cs`,
+  `tests/P2000.Machine.Tests/State/MachineConfigFileTests.cs`,
+  `tests/P2000.Machine.Tests/State/MachineStateFileTests.cs`.
+- **Synced:** yes (2026-07-05)
+
+### 2026-07-06 — Milestone 12: slot model formalized
+- **Assumed:** SLOT1 loading would stay inside PageTable (raw `byte[]? _slot1`) and the typed
+  slot interfaces could wrap around it without changing the constructor.
+- **Found (design decision):** moved SLOT1 ROM loading OUT of PageTable entirely into Machine.
+  PageTable now accepts `IMemorySlot? cartridge` as a constructor parameter (default null).
+  Machine constructs `Slot1Cartridge` from `config.Slot1CartridgePath` and passes it in.
+  This makes SLOT1 a first-class typed object (`machine.Slot1`) rather than a hidden raw array,
+  which is the whole point of formalizing the slot model.
+- **Found (open-bus fix for short images):** the old PageTable code zero-filled the 16 KB
+  `_slot1` array, meaning bytes beyond the image length read as 0x00 rather than 0xFF
+  (open-bus). `Slot1Cartridge` fixes this: it only allocates `_imageLength` bytes and returns
+  `PageTable.OpenBus` (0xFF) for addresses beyond the image. Correct behavior: an unprogrammed
+  EPROM reads 0xFF; the old code was wrong but harmless in practice since BASIC.bin is exactly
+  16 KB.
+- **Found (IIoSlot has no unregister):** Reset-to-apply (locked decision §2.3) means a slot
+  card's port listeners are registered once at machine-assembly time and live for the machine's
+  lifetime; there is no runtime slot-swap. `IIoSlot.RegisterPorts` is the only seam needed —
+  no `UnregisterPorts` method required or added.
+- **Found (NMI aggregator seam — binary format change):** `InterruptAggregator.SaveState` now
+  writes two booleans (`_intPending`, `_nmiPending`) instead of one. This is a `.state` format
+  change — the version field in `MachineStateFile` must be bumped before releasing any
+  persisted state files. Bumping deferred to when the UI/file-save path lands (no external
+  `.state` files exist yet in the T-first build).
+- **Found (NMI test note — SP at reset):** the NMI vector test uses the default T38 machine
+  (SP=0x0000). NMI pushes the return address to 0xFFFF/0xFFFE (banked window, no banks →
+  writes discarded). The CPU still completes the NMI sequence and jumps to 0x0066 correctly
+  — the corrupt stack only matters on RETN, which the test avoids by using a `JR -2` spin.
+- **Applies to:** reference doc §5c (slot types, bus connections), §5e (NMI sources) /
+  `src/P2000.Machine/Slots/ISlotCard.cs`, `IMemorySlot.cs`, `IIoSlot.cs`, `INmiSource.cs`,
+  `Slot1Cartridge.cs`; `src/P2000.Machine/Memory/PageTable.cs`,
+  `src/P2000.Machine/Interrupts/InterruptAggregator.cs`, `src/P2000.Machine/Machine.cs`.
+- **Synced:** yes (2026-07-07, into reference doc §5c — typed slot/open-bus, §5e + §3a — NMI latch + .state version bump pending)
+
+### 2026-07-09 — Milestone 16: SoundDevice formalized + machine-level audio tests
+- **Assumed:** `LoadState` only needed to restore `_beeperState` (the single persisted field).
+- **Found:** `LoadState` must also clear `_transitions`. State is always captured at a field
+  boundary when `_transitions` is empty (just been cleared by `OnFieldComplete`). If any
+  CPOUT writes happened between LoadState and the next field boundary, stale transitions would
+  corrupt synthesis. `_transitions.Clear()` added to `LoadState`.
+- **Found (test helper — closure trap):** `SoundDevice` captures `Func<int> getFieldTState` at
+  construction. The lambda must close over the same local variable that the test helper mutates;
+  returning a setter `Action<int>` from `CreateSink()` is the correct pattern. Passing `ref int`
+  to a separate RunField helper doesn't work because C# lambdas can't capture `ref` locals.
+- **Found (test helper — initial CPOUT byte):** `RunField`'s toggle logic XORs `cpoutByte`
+  against the beeper bit. If the latch already holds the beeper bit (e.g. after a previous
+  field), starting `cpoutByte` at 0 means the first "toggle" repeats the current state rather
+  than changing it → no transition recorded. `RunField` takes an `initialCpout` parameter to
+  match the latch's running state.
+- **Applies to:** project CLAUDE.md §13.16 / `src/P2000.Machine/Devices/SoundDevice.cs`
+  (LoadState fix), `tests/P2000.Machine.Tests/Devices/SoundDeviceTests.cs` (new, 13 tests).
+- **Synced:** yes (2026-07-09; SoundDevice seam + LoadState-clears-transitions synced to reference §5 Sound; test-helper items are implementation-only)
+
+### 2026-07-09 — UI Milestone 7: SoundDevice (1-bit beeper, machine layer)
+- **Assumed:** CPOUT bit 4 (0x10) is the BEEP line. Reference doc §7 confirms a "1-bit speaker"
+  on SLOT2 pin 13A but does NOT name the CPOUT bit; bits 4 and 5 are listed as "unused." This
+  assignment follows common P2000T emulator practice (including the canonical MAME driver) and
+  produces the audible boot beep. Revisit if a schematic or ROM disassembly confirms otherwise.
+- **Found (SoundDevice design):** subscribes to `CPoutLatch.Written`, records `(FieldTState,
+  State)` transitions per field. `OnFieldComplete()` synthesizes a 882-sample PCM block at
+  44 100 Hz (50 Hz → 882 samples) by walking recorded transitions; fires `event Action<short[]>?
+  SamplesReady` with a reusable buffer. One fixed buffer; callers must copy immediately.
+- **CORRECTED 2026-07-09 — BEEP is I/O port `0x50` bit 0, NOT CPOUT (0x10) bit 4.** The assumption above was wrong. `SoundDevice` must be **rewired to watch port `0x50` writes (bit 0)** instead of `CPoutLatch.Written`; reference doc §5 Sound + machine §6/§7 updated.
+- **Found (SaveState format change):** `Sound.SaveState(writer)` is inserted between
+  `Mdcr.SaveState` and `Interrupts.SaveState` in `Machine.SaveState/LoadState`. Any `.state`
+  files saved before this milestone are not forward-compatible.
+- **Applies to:** reference doc §5 Sound (CPOUT/BEEP bit, audio-output seam), §3a (.state version
+  bump) / `src/P2000.Machine/Devices/SoundDevice.cs` (new), `src/P2000.Machine/Machine.cs`.
+- **Synced:** yes (2026-07-09, into reference doc §5 Sound — BEEP bit + audio seam, §3a — bump folded in; formalized as machine milestone 16)
+
+### 2026-07-06 — Milestone 13: observer state-snapshot surface
+- **Assumed:** the snapshot needed a new FieldTState exposure — `VideoFetchUnit` and `Video`
+  had no public `FieldTState` property yet.
+- **Found (trivial additive change):** `VideoFetchUnit._fieldTState` was already the master
+  counter; adding `public int FieldTState => _fieldTState;` on `VideoFetchUnit` and a
+  forwarding property on `Video` was the entire change to existing code.
+- **Found (delegate for ReadMemory — one allocation):** `MachineSnapshot.ReadMemory` holds a
+  `Func<ushort, byte>` bound to `PageTable.Read`. Allocated once at `TakeSnapshot()` time;
+  every subsequent `ReadMemory(addr)` call is a direct delegate invoke with no extra
+  allocation. Accepted trade-off: trivial cost for a live, side-effect-free memory view that
+  needs no array copy.
+- **Found (RunToNextBoundary test helper — post-reset pitfall):** after `new Machine()`, the
+  CPU is at `AtInstructionBoundary=true` immediately (reset leaves the core in Fetch/T0/None).
+  A naïve "tick until boundary" helper that always ticks at least once skips past the first
+  instruction boundary. The helper must check `if (AtInstructionBoundary) return;` before
+  ticking.
+- **Found (short test ROM pitfall):** a test ROM shorter than the NOP's read window (e.g.
+  `new byte[] { 0x00 }`) leaves bytes at index 1+ as monitor-ROM content, causing unexpected
+  PC advance after one NOP. Tests that advance exactly one instruction use a full 4 KB ROM
+  with a `JR -2` loop at 0x0001 to keep PC in a known range.
+- **Applies to:** project CLAUDE.md §3b.1 /
+  `src/P2000.Machine/Contention/VideoFetchUnit.cs` (`FieldTState` property),
+  `src/P2000.Machine/Devices/Video.cs` (`FieldTState` property),
+  `src/P2000.Machine/Debug/MachineSnapshot.cs` (new),
+  `src/P2000.Machine/Machine.cs` (`TakeSnapshot()`),
+  `tests/P2000.Machine.Tests/Debug/MachineSnapshotTests.cs` (new).
+- **Synced:** yes (2026-07-07, into reference doc §3a — observer contract as built)
+
+### 2026-07-06 — Milestone 14: machine-owned breakpoint store
+- **Assumed:** the store would need a complex per-tick lookup structure (HashSet etc.) for
+  performance.
+- **Found (list scan is sufficient):** debugger breakpoints are few (typically 0–5); a linear
+  scan of a `List<Entry>` in the hot path is negligible at 2.5 MHz. The only real performance
+  contract is the `AnyArmed` fast path: when the list is empty the entire breakpoint block is
+  skipped with a single `Count == 0` check.
+- **Found (IsPaused + Resume() design):** the machine needs an explicit `IsPaused` flag so
+  repeated `Tick()` calls while paused are no-ops rather than re-firing the event on every
+  call. `Resume()` also clears `_breakPending` so a deferred mid-instruction hit doesn't
+  re-trigger after resuming.
+- **Found (exec bp fires before instruction — no advance):** exec bps return early from
+  `Tick()` before `Video.Tick()` and `Cpu.Step()` — the instruction at the bp address has NOT
+  executed yet; PC is correct for a "about to execute" debugger display.
+- **Found (mid-instruction bps deferred to next boundary):** mem/IO bps that fire mid-
+  instruction set `_breakPending`; the full tick completes, and the break is raised at the
+  START of the next instruction boundary tick before anything else advances.
+- **Found (int-ack excluded from IO bps):** M1+IORQ int-ack is NOT a user I/O access — IO bp
+  checks live only in the plain IORQ+RD/WR branches, not the M1+IORQ branch.
+- **Applies to:** project CLAUDE.md §3b.2 /
+  `src/P2000.Machine/Debug/BreakpointKind.cs` (new),
+  `src/P2000.Machine/Debug/BreakEvent.cs` (new),
+  `src/P2000.Machine/Debug/BreakpointStore.cs` (new),
+  `src/P2000.Machine/Machine.cs` (`Breakpoints`, `BreakHit`, `IsPaused`, `Resume()`, `Tick()`,
+  `Reset()`),
+  `tests/P2000.Machine.Tests/Debug/BreakpointStoreTests.cs` (new).
+- **Synced:** yes (2026-07-07, into reference doc §3a — breakpoint semantics as built)
+
+### 2026-07-07 — Milestone 15: command queue (§3b.3)
+- **Assumed:** drain could run first at each boundary, then check `_pauseAtNextBoundary`
+  immediately in the same tick.
+- **Found (ordering bug — corrected):** placing `DrainCommandQueue()` BEFORE the boundary
+  checks means `SingleStepCommand` sets `_pauseAtNextBoundary` and the check fires in the
+  SAME tick — the instruction never executes. Fix: checks A–D (including `_pauseAtNextBoundary`,
+  run-to-cycle, breakpoints) run BEFORE the drain. The drain sets state that is consumed on
+  the NEXT boundary. The drain must run even while paused (so `RunCommand` can un-pause), but
+  the un-pause takes effect on the following tick.
+- **Found (`PauseCommand` must `break`, not `return`):** using `return` in the drain switch
+  stopped processing subsequent commands in the same drain pass (e.g. a `SetPcCommand` queued
+  after `PauseCommand` was silently dropped). Changed to `break`; drain always exhausts the
+  queue.
+- **Found (T38 default machine — banked window is open-bus):** `RamVariant.T38` gives
+  `EffectiveBankCount = 0`. The banked window 0xE000–0xFFFF has no banks: writes are silently
+  discarded, reads return 0xFF. Reset leaves SP=0x0000; CALL wraps to 0xFFFF/0xFFFE (banked
+  window) — stack writes discarded, stack reads 0xFF → `RET` sets PC=0xFFFF. Step-over/step-out
+  tests must set `m.Cpu.Reg.SP = 0x8000` to use base RAM for the stack.
+- **Found (Z80 M1 fetch increments PC at T0):** after `Reset()` (PC=0) + one `Cpu.Step()`,
+  PC is already 1 — the fetch consumed the opcode byte and advanced PC before the instruction
+  is fully executed. Warm/cold reset tests assert `PC <= 1` rather than `PC == 0`.
+- **Found (WarmReset/ColdReset clear the queue):** after a reset the queue is cleared
+  (`_commandQueue.Clear()`) and drain returns immediately — subsequent commands in the same
+  flush (e.g. a stale `SetPcCommand` from before the reset) are dropped. This is intentional:
+  a reset is a full state wipe.
+- **Applies to:** project CLAUDE.md §3b.3 /
+  `src/P2000.Machine/Debug/MachineCommand.cs` (new — 19 command types),
+  `src/P2000.Machine/Memory/PageTable.cs` (`ClearRam()` added),
+  `src/P2000.Machine/Machine.cs` (`Enqueue`, `NonReplayableAction`, `DrainCommandQueue`,
+  `ApplyStepOver`, `ApplyStepOut`, `GetCallLikeLength`, `GetEdCallLikeLength`, updated
+  `Tick()` + `Reset()`),
+  `tests/P2000.Machine.Tests/Debug/CommandQueueTests.cs` (new — 26 tests).
+- **Synced:** yes (2026-07-07, into reference doc §3a — command queue + ordering rule as built)
+
+### 2026-07-11 — Milestone 17: Z80 CTC + IM2 daisy chain + Lock interlock
+- **Assumed:** the CTC ports/control-word bits/vector formula/Lock semantics were all
+  CONFIRMED hardware (reference doc §5d/§5e) and implemented as documented.
+- **Found (real integration bug — corrected):** `Machine.Tick()`'s int-ack branch called
+  `Interrupts.Acknowledge()` on EVERY T-state the int-ack M-cycle holds M1+IORQ asserted
+  (Z80.Core's ack M-cycle is 6T, with M1+IORQ together across 3 of them — T2/T3/T4). This was
+  harmless for the old stateless IM1 pull-up (`Acknowledge()` just returned a constant 0xFF,
+  idempotent), but a daisy-chain `Acknowledge()` has real side effects (clears pending, sets
+  in-service) — the second/third call within the SAME M-cycle saw the just-acknowledged
+  channel now blocked by its own in-service flag, fell through to the 0xFF pull-up, and
+  overwrote the correct vector byte on the data bus before the core's T4 sample. Net effect:
+  IM2 always vectored through address `(I<<8)|0xFE` instead of the real vector, landing in
+  whatever RAM happened to be there. Fixed by edge-detecting the FIRST T-state of a given ack
+  cycle (comparing pins captured before `Cpu.Step()` against after) and caching/re-driving the
+  same byte for the rest of the M-cycle. Worth flagging for `P2000.UI`/debugger code too if it
+  ever reads bus state mid-M-cycle.
+- **Found (confirms existing Z80.Core-documented behaviour, surprised test-writing):** a
+  maskable INT acceptance clears BOTH IFF1 and IFF2 (Z80.Core CLAUDE.md §5 ack-cycle T1), so a
+  bare `RETI` after a normal (non-nested) interrupt leaves interrupts DISABLED — the ISR must
+  `EI` before `RETI` (the standard idiom; reference doc §5e's `enable_interrupts = EI + RETI`
+  is not just style, it's load-bearing). A CTC test omitting the `EI` silently "worked" for a
+  single interrupt but left the second field's interrupt pending-forever un-acceptable.
+- **Found (test-writing gotcha, not a Machine bug):** on this core, returning via `RET`/`RETI`
+  to a `HALT` instruction's address does NOT resume the halted state — real Z80 (and this
+  core) only re-enters the halt loop by re-executing an actual `HALT` opcode; a return to
+  `HALT_addr+1` just continues linear execution. A multi-interrupt test parked on `HALT` will
+  fall through into whatever follows (zero-filled ROM reads as NOP; open-bus SLOT1 reads as
+  `0xFF` = `RST 38h`) and wander unpredictably. Use a tight `JR -2` spin loop instead (already
+  the established pattern in `InterruptAggregatorTests.RaiseNmi_VectorsToNmiHandler_At0x0066`)
+  for any test that must survive more than one interrupt cycle.
+- **Found (re-confirms milestone-15's T38-SP finding, now load-bearing for IM2 too):** the
+  default post-reset SP=0x0000 (T38 banked-window-open-bus finding, milestone 15 above) also
+  corrupts `RETI`'s pop when a CTC ISR pushes/pops a return address — any interrupt-driven CTC
+  test needs `LD SP,nn` into real RAM (e.g. `0x9FFE`) first.
+- **Design decision (not a hardware finding):** `DaisyChain` registrants are individual CTC
+  *channels* (ch0..ch3), not the chip as a whole — each channel gets its own
+  `IDaisyChainDevice` link, matching how the real chip's channels chain IEI→IEO internally
+  (reference doc §5d: "CTC channels register in priority order (ch0 > … > ch3)"). A future
+  SLOT2 card registers as a single chip-level link behind them.
+- **Design decision (documented default for the one open item, per the milestone's own
+  "resolvable during implementation" note):** Lock gates only the maskable video INT, not NMI
+  — the front-panel reset button and SLOT1 NMI have no logical tie to the internal-slot board.
+  Revisit if a schematic/service-manual capture confirms Lock also gates NMI.
+- **Applies to:** reference doc §5d/§5e (CTC ports/control word/vector formula/Lock — all
+  implemented as documented, no corrections needed there) /
+  `src/P2000.Machine/Devices/Ctc/Z80Ctc.cs`, `CtcChannel.cs` (new),
+  `src/P2000.Machine/Interrupts/DaisyChain.cs`, `IDaisyChainDevice.cs` (new),
+  `src/P2000.Machine/Interrupts/InterruptAggregator.cs` (Lock + daisy-chain gating),
+  `src/P2000.Machine/Machine.cs` (Ctc wiring, RETI snoop, int-ack edge-detection fix),
+  `src/P2000.Machine/State/MachineStateFile.cs` (bumped to v3),
+  `tests/P2000.Machine.Tests/Devices/Ctc/Z80CtcTests.cs` (new — 12),
+  `tests/P2000.Machine.Tests/Interrupts/DaisyChainTests.cs` (new — 6),
+  `tests/P2000.Machine.Tests/Interrupts/CtcIntegrationTests.cs` (new — 7),
+  `tests/P2000.Machine.Tests/State/MachineStateFileTests.cs` (+2: Ctc/Lock round-trip, v2 now rejected).
+- **Synced:** yes (2026-07-11 — into reference §5e: Lock-gates-maskable-INT-only RESOLVED,
+  per-channel daisy chain, int-ack-once-per-M-cycle, EI+RETI load-bearing; §3a .state v3.
+  RET/RETI-to-HALT, SP=0x0000, and the test-harness items are implementation-only.)
+
+### 2026-07-11 — Milestone 18: tape turbo — ROM-trap fast load/save
+- **Assumed:** the milestone's own spec named `cas_block_read`/`load_block` and
+  `cas_Write`/`write_block`/`cas_block_write` as candidate trap points, from before a
+  disassembly existed.
+- **Found (source obtained — owner-supplied commented disassembly, not a fresh disassembly
+  pass):** the owner provided `MonitorRom.sym` (full label→address symbol table) plus
+  commented `Cassette.asm`/`Startup.asm`. Confirmed addresses: `cas_Read`=0x0552,
+  `cas_Write`=0x057A, `cas_block_read`=0x0872, `load_block`=0x091C, `cas_block_write`=0x061F,
+  `write_block`=0x0594; RAM variables `transfer`=0x6030, `file_length`=0x6032,
+  `record_length`=0x6034, `des1`=0x6068, `des_length`=0x606A, `cassette_error`=0x6017.
+- **Design decision (trap point chosen, deviates from the milestone's own placeholder
+  names):** traps **`cas_Read`/`cas_Write`**, NOT the lower `cas_block_read`/`cas_block_write`.
+  Tracing the calling convention showed `cas_Read`/`cas_Write` own the ENTIRE multi-block
+  transfer loop themselves (their own `block_counter` loop calling `get_block_parameters` +
+  the block-level routine each iteration) and are entered with a clean, fully-defined RAM
+  contract already established by the "cassette" jump-table dispatcher
+  (`knowncascommand`/`do_cas_jump`) before jumping in — trapping one level higher means ONE
+  intercept per file transfer instead of one per block, and avoids needing to reverse-engineer
+  `cas_block_read`/`cas_block_write`'s internal replace-vs-append search logic at all (see
+  next finding).
+  - Both routines are entered via `jp (hl)` with the return address (`cas_command_return`)
+    already pushed by `do_cas_jump` — functionally identical to a `CALL`. The trap performs
+    the whole transfer in C#, writes `cassette_error`, and simulates the routine's own final
+    `RET` (pop PC off the real stack). It deliberately does NOT replicate
+    `cas_command_return`'s cleanup (motor off, `enablekey`, register restore) — that code runs
+    completely normally afterwards since the trap only ever intercepts execution AT the
+    cas_Read/cas_Write entry point, never past it.
+- **Found (block-count/valid-length math, transcribed from `get_length_blocks`/
+  `get_block_parameters`):** block count = ceil(file_length/1024) with a minimum of 1
+  (replicated as a repeated 16-bit subtract that stops on the first borrow, exactly matching
+  the ROM's own loop including its behaviour for file_length==0); each block's real
+  (non-padding) byte count = min(remaining, 1024), where `remaining` starts at `record_length`
+  and only the LAST block can be partial. The destination/source address always advances by
+  exactly 1024 bytes per block regardless of how many of those bytes are "real" — a partial
+  last block still consumes a full 1024-byte destination slot.
+- **Design decision (write semantics — replace vs append):** the real ROM's `cas_block_write`
+  distinguishes REPLACE (overwrite an existing block, found by searching forward for its
+  marker) from APPEND (write at the end of written data) via a physical forward tape search,
+  because real hardware doesn't know the head position without reading. The emulator always
+  KNOWS the exact head position, so the turbo trap skips that search entirely and just writes
+  the new MARK+DATA-BLOCK pair at wherever the head currently is — this reproduces the same
+  net effect (overwrite in place when parked over an existing block, append when parked on
+  blank tape) without needing to port the search/replace logic.
+- **Added (`MiniTape`):** `TryReadBlockAtHead`/`WriteBlockAtHead` — head-relative single-block
+  decode/encode, refactored out of the existing `Save()`/`LoadCasImage()` per-block logic
+  (`TryDecodeBlockAt`/`WriteBlockFrames` are now shared private helpers) so turbo and
+  authentic modes produce byte-identical on-tape encoding — confirmed by the read-side test
+  (turbo load vs. a real CPU-driven authentic load of the same `.cas`, byte-identical RAM) and
+  the write-side test (turbo-written tape decoded via the authentic `Save()` matches the
+  source bytes exactly).
+- **Found (test-writing pattern):** driving `cas_Read`/`cas_Write` directly (bypassing the
+  "cassette" jump-table dispatcher) needs `des_length` (0x606A) set to 0x20 in RAM — the real
+  dispatcher always sets it, but a test that jumps straight to `cas_Read` must set it manually
+  or the authentic engine's `load_block` skips the header segment entirely (`des_length==0`
+  short-circuits it). The turbo trap itself does NOT read `des_length` (treats header size as
+  the architecturally-fixed 32 bytes), so this only matters for the authentic comparison leg
+  of the test suite, not the trap's own correctness.
+- **Applies to:** project CLAUDE.md §13.18 (whole milestone) / `Cassette.asm`/`Startup.asm`/
+  `MonitorRom.sym` (owner-supplied, not in this repo) /
+  `src/P2000.Machine/Devices/Cassette/CassetteTurboTrap.cs` (new),
+  `src/P2000.Machine/Devices/Cassette/MiniTape.cs` (`TryReadBlockAtHead`, `WriteBlockAtHead`,
+  `TryDecodeBlockAt`, `WriteBlockFrames` refactor), `MdcrDevice.cs` (`TryReadBlockAtHead`,
+  `WriteBlockAtHead`, `IsWriteProtected`), `src/P2000.Machine/Machine.cs` (trap check in
+  `Tick()`), `tests/P2000.Machine.Tests/Devices/CassetteTurboTrapTests.cs` (new — 6 tests).
+- **Synced:** yes (2026-07-11 — into reference §5b: trap points cas_Read 0x0552 / cas_Write
+  0x057A, RAM-variable layout, block-count math, replace-vs-append, byte-identical guarantee.
+  The MiniTape refactor + des_length test-pattern are implementation-only.)
+
+### 2026-07-14 — Tape capacity: 42 blocks/side confirmed (BASIC manual), enforcement unconfirmed
+- **Found (new source — owner's BASIC manual):** capacity is stated as **42 blocks per side**.
+  Cross-checks exactly against the reference doc's existing ~42 KB/side figure: 42 × the
+  CONFIRMED 1024-byte block data payload = 43,008 bytes ≈ 42 KB. Two independent sources (ROM
+  disassembly's block-size math, the printed manual) now agree — no contradiction, a
+  confirmation.
+- **Open question raised, not resolved here (design-doc pass only, no code read):** does
+  `MiniTape` actually enforce this as a per-side capacity limit (tape-full / BET asserting at
+  the real 42-block boundary), or does it just run out whenever its buffer — described
+  elsewhere in this log as "the full 1 MB phase array" (see the milestone-9 `.state`-
+  serialization finding above) — physically ends? Phase math from the CONFIRMED block layout
+  (MARK 4 B + `MarkDataGap` 970 phases + combined HEADER+DATA frame 1060 B = 17,994 phases/
+  block) puts 42 blocks at ≈755,748 phases, comfortably inside a 1,000,000-phase buffer — so
+  the buffer is at least big enough, but nothing sourced ties `IsAtEnd`/BET's far-end trigger
+  to 42 blocks specifically (only BOT/position-0 is confirmed to assert BET). **Whoever next
+  touches `MiniTape`: check whether this is enforced, and if not, decide deliberately (enforce
+  the real limit vs. explicitly accept the simplification) rather than leaving it as an
+  accident of buffer sizing.**
+- **Applies to:** reference doc §5 (Storage) / §5b ("Tape capacity" — new subsection) /
+  `src/P2000.Machine/Devices/Cassette/MiniTape.cs` (capacity/`IsAtEnd` logic — not inspected
+  this pass).
+- **Synced:** yes (2026-07-14 — into P2000T-reference.md §5 Storage + §5b new "Tape capacity"
+  subsection).
+
+### 2026-07-14 — DECIDED (not yet implemented): MdcrDevice.InsertBlankTape()
+- **Reported by Claude Code, working UI milestone 13** (`P2000.UI/CLAUDE.md` §14.13 — cassette
+  deck "New (blank) tape"): `MdcrDevice` has no live mount entry point that doesn't require real
+  `.cas` bytes to parse. The existing method is **`MdcrDevice.InsertTape()`** (the first time
+  this exact symbol name has surfaced in either project's docs — previously only `MiniTape`'s
+  `LoadCasImage`/`Save` and `MdcrDevice.SaveTape` were on record); it always parses a `.cas`
+  byte stream via `MiniTape.LoadCasImage`. There is no equivalent for "mount an empty tape."
+  This is exactly the gap UI milestone 13's own spec flagged as "verify, don't assume" and told
+  Claude Code to report back rather than add unilaterally — working as intended.
+- **Decision (this entry IS the authorization to implement):** add
+  **`MdcrDevice.InsertBlankTape()`** — same shape as `InsertTape()`, skipping the parse step:
+  - Construct an empty `MiniTape` — zero blocks, head at BOT, **no backing file path** (so the
+    UI's "Save" vs. "Save as…" distinction, milestone 13, has an unbacked tape to detect).
+  - Flip CIP live exactly like `InsertTape()` does (same runtime-exception mount path, reference
+    doc §5b) — one CIP transition, indistinguishable to the ROM from any other insert.
+  - No changes to `MiniTape`'s read/write/CSAVE paths, `Save()`/serialization, or `MdcrDevice`'s
+    status-bit logic. Purely a second constructor-and-mount path into the same "tape mounted"
+    state `InsertTape()` already produces — not a new subsystem.
+  - Naming: `InsertBlankTape()` chosen over `MountBlank()` (UI milestone 13's placeholder name)
+    to match the real `InsertTape()` symbol now that it's known, rather than inventing a
+    parallel naming scheme.
+- **Not resolved here — small implementation calls left to Claude Code, log the outcome:**
+  whether `MiniTape` needs a new `CreateBlank()` static/constructor or whether `InsertBlankTape()`
+  builds the empty state inline; whether "no backing file path" is `null`, `string.Empty`, or a
+  dedicated flag/property the UI's Save-vs-Save-as check reads.
+- **Applies to:** `src/P2000.Machine/Devices/Cassette/MdcrDevice.cs` (new `InsertBlankTape()`),
+  `src/P2000.Machine/Devices/Cassette/MiniTape.cs` (blank-construction path) /
+  `src/P2000.UI/CLAUDE.md` §14.13 (the consumer) — reference doc §5b (host-side `.cas` API,
+  "create-blank" entry — no hardware content changes, this is software-architecture only).
+- **Synced:** no (internal API decision, not a hardware/reference-doc fact — stays local to this
+  file; §7's cassette bullet above still describes the pre-this-decision spec and is intentionally
+  left as historical intent, per this project's own convention — reality tracked here instead).
+
+### 2026-07-14 — IMPLEMENTED: MdcrDevice.InsertBlankTape() (closes the entry above)
+- **Resolved (no `MiniTape` change needed at all):** `MiniTape`'s existing parameterless
+  constructor already produces exactly the required blank state — position 0 (BOT), side 0,
+  unprotected, pseudo-noise-filled. `InsertBlankTape()` is therefore a two-line method:
+  `_tape = new MiniTape(); ResetPll(); UpdateStatusFromTape();` — no `CreateBlank()` static, no
+  new `MiniTape` field/flag. The "same shape as `InsertTape()`, skipping the parse step" framing
+  in the entry above turned out to be exact, not approximate.
+- **Resolved ("no backing file path" is a UI-only concept):** `MiniTape`/`MdcrDevice` have no
+  notion of a file path at all (they only model phases) — there was never a machine-layer flag
+  to design. The Save-vs-Save-as distinction lives entirely in `P2000.UI`'s `CassetteDeckVm`,
+  which now tracks the backing `IStorageFile?` itself (null after `InsertBlankTape()`, set after
+  a file-dialog/drag-drop mount or a prior Save-as). No machine-layer surface for this at all.
+- **Confirmed ("one CIP transition, not two" is structural, not something to special-case):**
+  because `InsertBlankTape()` reassigns `_tape` directly (old tape object → new tape object)
+  without ever setting it to `null` in between, CIP never passes through "absent" when swapping
+  a mounted tape for a blank one — this falls out of the existing field-swap shape for free, no
+  eject-then-insert logic was written or needed.
+- **Tests:** `tests/P2000.Machine.Tests/Devices/MdcrDeviceTests.cs` — CIP clears like
+  `InsertTape`; `HasTape` true; not write-protected (WEN clear); immediately writable via
+  `WriteBlockAtHead` (no format step); a full blank→write→`SaveTape()`→reload→`TryReadBlockAtHead`
+  round-trip is byte-identical; mounting blank over an already-mounted tape leaves CIP "present"
+  throughout (never observed absent).
+- **Applies to:** `src/P2000.Machine/Devices/Cassette/MdcrDevice.cs` (`InsertBlankTape`),
+  `tests/P2000.Machine.Tests/Devices/MdcrDeviceTests.cs` (+6 tests).
+- **Synced:** no (implementation-only, closes the internal API decision above — no
+  hardware/reference-doc content).
+
+### 2026-07-14 — DECIDED (not yet implemented): live write-protect control on MdcrDevice
+- **Reported by owner:** the cassette reads as always write-protected, with no UI to change
+  it — reported as a general symptom, not scoped to any one mount path.
+- **Does not match the `InsertBlankTape()` evidence above:** that entry's own tests confirm a
+  freshly-blanked tape is unprotected (WEN clear) and immediately writable. So either (a) the
+  **file-loaded path** (`InsertTape()` → `MiniTape.LoadCasImage`) sets or defaults `IsProtected`
+  differently than the blank path, or (b) nothing is actually stuck "protected" — there's just
+  no way to ever set it either way, and whatever a given constructor happens to default to is
+  all anyone can observe. **Not resolved here — Claude Code should check `InsertTape()`'s
+  `IsProtected` handling specifically (does it read/derive from anything, or just inherit
+  whatever `MiniTape`'s general default is?) before implementing the fix below**, same
+  "verify, don't assume" discipline as the `InsertBlankTape()` entry above.
+- **Decision (this entry IS the authorization to implement):**
+  - `IsProtected` defaults to `false` (writable) on **every** mount path — file-loaded and
+    blank alike. Matches reference doc §5b/§5f: write-protect is a **host-side, physical-tab
+    concept**, not derived from the `.cas` file (the format has no such flag) and not a
+    property of the loaded data. A found/mounted tape is writable until someone protects it,
+    same as a real cassette until its tab is snapped out.
+  - Add a live setter — `MdcrDevice.SetWriteProtected(bool)` or equivalent — host-side,
+    always-fast, independent of `TimingPolicy`, same category as the existing mount/eject/
+    create-blank/save-as surface.
+  - **Persistence — RESOLVED (owner proposal, 2026-07-14):** protect state DOES persist,
+    using previously-unspecified padding in the `.cas` **record container** — never the
+    on-tape phase encoding, so this has zero real-hardware/CRC/ROM-visibility impact (the ROM
+    only ever sees the phase bitstream extracted from the header/data fields, never the raw
+    `.cas` file). The 32-byte header sits at record offset `0x30`–`0x4F`; data starts at
+    `0x100`; that leaves 224 bytes genuinely unspecified (`0x00`–`0x2F` and `0x50`–`0xFF`) in
+    the first 256-byte record — confirmed by the owner against the already-sourced offsets
+    above. **Use record offset `0x50`** (the byte immediately after the header, in the later
+    gap rather than the earlier one before the header, which may be some other tool's reserved
+    space) — **bit 0**, matching WEN's own convention: `1` = protected, `0` = writable.
+    `LoadCasImage()` treats an **unset or absent bit as writable** for ANY file (new saves,
+    older saves, files from other `.cas`-producing tools that never touch this byte) — keeps
+    the "default writable" decision intact and makes this fully backward-compatible by
+    construction, since only files this emulator explicitly saved as protected will ever have
+    the bit set. `Save()` writes the live `IsProtected` value into that bit; the rest of the
+    byte and all other padding stay reserved/zero. **This is a minimal but real extension of
+    the `.cas` container** (a previously-unspecified byte now has emulator-assigned meaning) —
+    not a change to any documented field, but not literally "no format touch" either; flag
+    this honestly rather than claim zero impact. The one open risk is forward-compatibility
+    with other `.cas`-reading tools that might independently want this same space — accepted,
+    since `.cas` has no single upstream format authority here (this project + M2000 are the
+    closest thing to one).
+- **Applies to:** `src/P2000.Machine/Devices/Cassette/MdcrDevice.cs` (`InsertTape`'s current
+  `IsProtected` handling — to inspect; new `SetWriteProtected`), `MiniTape.cs` (`IsProtected`
+  default) / `src/P2000.UI/CLAUDE.md` §14.13a (the consumer — cassette deck write-protect
+  toggle) — reference doc §5b/§5f (host-side `.cas` API "write-protect" entry, WEN semantics —
+  no hardware content changes, this is software-architecture only).
+- **Synced:** no (internal API decision, not a hardware/reference-doc fact — stays local to
+  this file).
+
+### 2026-07-14 — IMPLEMENTED: live write-protect control on MdcrDevice (closes the entry above)
+- **Root cause confirmed (the "verify, don't assume" check the entry above asked for):**
+  `MdcrDevice.InsertTape(byte[] casImage, bool writeProtect = true)` took an external bool
+  parameter, and its ONLY caller — `CassetteDeckVm.MountBytes` — hardcoded
+  `writeProtect: true` on every file-loaded mount. So it was (b) from the entry above: nothing
+  was ever "stuck" protected by tape content — there was simply no way to ever mount a
+  file-loaded tape unprotected, because the one caller never asked for it. `InsertBlankTape()`
+  was unaffected because it never took the parameter at all. Confirms the previous entry's own
+  test evidence (blank tapes unprotected) was correct and the bug was entirely in the
+  file-loaded path + its single caller, exactly as suspected.
+- **API change (breaking, deliberate):** removed the `writeProtect` parameter from BOTH
+  `MdcrDevice.InsertTape(byte[])` and `MiniTape.LoadCasImage(byte[])` — protection is no longer
+  a caller-supplied flag, it's read from the file itself (see next bullet) or set live via the
+  new setters. All call sites updated (`CassetteDeckVm.MountBytes`,
+  `CassetteTurboTrapTests.NewMachineWithTape` — now calls `InsertTape` then
+  `SetWriteProtected(writeProtect)` explicitly, `MdcrDeviceTests`, `MiniTapeTests`).
+- **Implemented exactly as decided — persistence via record offset `0x50` bit 0:**
+  `MiniTape.LoadCasImage` reads `casImage[0x50] & 0x01` (only when `blocks > 0` and the array
+  is long enough — always true for any real record) to set `_protected[_side]`; unset/absent
+  → writable. `MiniTape.Save()` writes the live `_protected[_side]` value into that bit of the
+  first record (array is zero-initialized, so unprotected tapes need no write at all). Only
+  the FIRST record's offset 0x50 is read/written — a confirmed-by-test detail (a protect bit
+  set in a LATER record's would-be offset has no effect), since protection is a per-side
+  property, not per-block.
+- **New live setters (both layers), exactly as decided:** `MiniTape.SetProtected(bool)` (sets
+  `_protected[_side]` directly, no position/content change) and
+  `MdcrDevice.SetWriteProtected(bool)` (delegates to the tape, then calls the existing
+  `UpdateStatusFromTape()` — which was already side-effect-free for CIP/BET when only
+  protection changes, so no new logic was needed there to guarantee "toggling protect doesn't
+  touch CIP/BET," it fell out of reusing the existing recompute).
+- **UI wiring (`P2000.UI/CLAUDE.md` §14.13a):** `CassetteDeckVm.IsWriteProtected` is now a
+  live two-way toggle (`CheckBox` in the deck window) — its `OnIsWriteProtectedChanged` hook
+  pushes to `MdcrDevice.SetWriteProtected` whenever `HasTape`. `MountBytes` reads
+  `IsWriteProtected` back FROM the machine after `InsertTape` rather than assuming a value.
+- **Tests:** machine layer (`MdcrDeviceTests`, `MiniTapeTests`) — protect-byte-set → protected;
+  no protect byte → writable (the regression check); `SetProtected`/`SetWriteProtected` toggle
+  live without touching CIP/BET; a protected tape rejects `WriteBlockAtHead`; a full
+  blank→write→protect→`SaveTape()`→reload round-trip stays protected; `InsertBlankTape()`
+  still defaults writable (no prior saved state to read). UI layer (`CassetteDeckVmTests`) —
+  same regression check at the VM level, plus the live-toggle round trip via the real
+  `MdcrDevice` the VM drives.
+- **Applies to:** `src/P2000.Machine/Devices/Cassette/MdcrDevice.cs` (`InsertTape`,
+  `SetWriteProtected`), `MiniTape.cs` (`LoadCasImage`, `Save`, `SetProtected`,
+  `ProtectByteOffset`/`ProtectBit`), `tests/P2000.Machine.Tests/Devices/MdcrDeviceTests.cs`
+  (+6), `tests/P2000.Machine.Tests/Devices/MiniTapeTests.cs` (+3 new, several reworked),
+  `tests/P2000.Machine.Tests/Devices/CassetteTurboTrapTests.cs` (`NewMachineWithTape` helper) /
+  `src/P2000.UI/CLAUDE.md` §14.13a.
+- **Synced:** no (implementation-only, closes the internal API decision above — no
+  hardware/reference-doc content beyond what the decision entry already flagged as a
+  container-format extension).
+
+### 2026-07-14 — FIXED: blank tape is silence, not noise (live-app CSAVE bug: "Cassette fout N")
+- **Reported by owner (live app):** CSAVE consistently fails with `'N'` (program not found),
+  reproduced on multiple scenarios (adding a file to a tape, overwriting a file with itself,
+  overwriting with a different program) — same result every time.
+- **Owner-supplied key fact that cracked this:** BASIC has a "Tape init" command that preps a
+  tape by writing enough silence that the ROM's wait-for-first-marker times out. This is what a
+  real erased/blank cassette reads back as — no flux transitions — and it's what the emulator's
+  "blank tape" needed to match.
+- **Root cause confirmed by driving the real ROM entry points directly** (new
+  `tests/P2000.Machine.Tests/Devices/AuthenticCassetteWriteTests.cs`, bypassing BASIC's own
+  command parsing — same bootstrap pattern as `CassetteTurboTrapTests`): `MiniTape`'s blank-tape
+  fill was deterministic pseudo-noise (milestone 9 decision, "so the ROM's block search finds
+  garbage until real data"). `cas_Write` (0x057A) does its own internal forward scan/settle
+  check before writing — real leading silence (which `LoadCasImage` always writes via
+  `WriteGap(BotGap)`) satisfies it almost immediately; a `InsertBlankTape()` tape had NO such
+  gap, pure noise from position 0, so the scan never found the "nothing here" signal it needed
+  and ran to the physical end of the tape (traced: 227,813,658 ticks, matching one
+  `PhasesPerSide` sweep at 209 cycles/phase almost exactly) before giving up with error `'E'`
+  (removed/EOT) — not the reported `'N'`, but the same underlying mechanism.
+- **Fix:** `MiniTape`'s blank fill is now silence — literally nothing to do, since a
+  freshly-allocated `bool[]` already defaults to `false`. Removed the `seed`
+  parameter/`Random`-based fill entirely (no longer meaningful with no randomness). Updated
+  `MiniTapeTests` accordingly (`NewTape_SameSeed_SameContent`/`NewTape_DifferentSeeds_
+  DifferentContent` — tested a feature that no longer exists — replaced with
+  `NewTape_IsSilent_AcrossBothSides`; `Save_BlankTape_ReturnsNull`'s comment updated; a
+  `Write_WhenProtected_IsIgnored` assumption that position 1000 would differ after
+  `LoadCasImage` no longer held once both "before" and "after" landed in the same silent
+  leading gap — simplified to not depend on tape content changing at all).
+- **Found (real, valuable side-discovery — `cas_Write` does its own write+verify):** a
+  successful write onto a fresh blank tape left the head at phase position ~53,481 — roughly
+  TWICE one block's on-tape width (~26,010 phases: `BobGap`+MARK+`MarkDataGap`+DATA-BLOCK+
+  `EobGap`). This means `cas_Write` writes the block, then reads it back itself (an internal
+  verify) before returning — not just a write. Confirmed by writing `MiniTapeTests`/
+  `AuthenticCassetteWriteTests` round-trip tests: a same-machine cas_Read immediately after
+  cas_Write, from wherever the head ended up, correctly finds nothing (there's genuinely
+  nothing recorded past the just-verified block) — this is NOT a bug, it's exactly what real
+  tape would do; a real "read it back" check needs a rewind (eject/reinsert, or a fresh mount
+  of the saved `.cas`) first, which the fixed round-trip test now does.
+- **Found (test-harness bug, unrelated to the tape-content fix but blocking investigation of
+  it): reusing a `HALT`-based "done" sentinel across two `StartCassetteEntry` calls on the
+  same `Machine` hangs.** `HALT` sets the Z80 core's internal `_halted` flag, which (per
+  Z80.Core CLAUDE.md §6) only clears on a real NMI/INT — directly overwriting `Cpu.Reg.PC`
+  does NOT un-halt it, so a second bootstrap silently never runs. Fixed by using a `JR -2`
+  spin sentinel instead (the established pattern already used elsewhere per the milestone-17
+  finding above) — any test that calls a cassette ROM entry point more than once on the same
+  machine must use this, not `HALT`.
+- **Found (still open — NOT resolved by this fix, flagging honestly): reusing the SAME
+  machine for a `cas_Write` immediately followed by an unrelated `cas_Read` call (bypassing
+  BASIC's own "cassette" jump-table dispatcher) can leave some ROM working-RAM state that
+  confuses the read (observed: an immediate, ~600-tick failure with error `'M'`, not seen when
+  the read runs on a freshly-constructed machine with the same saved tape).** This may be an
+  artifact of skipping the real dispatcher's own setup/reset (which a live BASIC session
+  always goes through) rather than a genuine bug — not confirmed either way without ROM
+  source. Worth remembering if the owner's original "mounted, non-blank tape" CSAVE failure
+  persists after this fix in live testing: check whether real BASIC's CSAVE-then-CLOAD (same
+  running session, same machine) hits this same state, since my direct-entry-point tests
+  could not reproduce that exact original failure (every isolated scenario I could construct —
+  single existing block, the real 41-block asset, CLOAD-then-CSAVE-same-session — succeeded).
+- **Applies to:** `src/P2000.Machine/Devices/Cassette/MiniTape.cs` (constructor — removed
+  noise fill and `seed` parameter), `tests/P2000.Machine.Tests/Devices/MiniTapeTests.cs`
+  (constructor tests reworked), `tests/P2000.Machine.Tests/Devices/AuthenticCassetteWriteTests.cs`
+  (new — 6 tests exercising the real ROM entry points end to end).
+- **Synced:** yes (2026-07-14 — into P2000T-reference.md §5b, new bullet in the "MDCR is
+  DIGITAL" list: blank tape is silence not noise, with the `cas_Write` internal-scan root
+  cause and the pseudo-noise design superseded).
+
+### 2026-07-14 — Fix confirmed live; owner-supplied `Cassette.asm` corrects a claim in the entry above
+- **Owner confirmed in the live app:** the blank-tape-silence fix resolves the reported CSAVE
+  failure. Full round trip (CLOAD from a real tape → eject → insert blank → CSAVE → save
+  `.cas` → mount → CLOAD again) succeeded, as did a second CSAVE with a different name onto
+  the tape just loaded from. Replace (same name) and tape-full scenarios not yet tested.
+- **Owner supplied the actual monitor ROM cassette driver source (`Cassette.asm`) — this
+  corrects a claim in the entry above.** `cas_block_write`'s replace-vs-append choice is
+  driven entirely by two `cassette_status` RAM bits (`CST_NOMARK`, `CST_WCDON`) left over
+  from whatever cassette operation ran immediately before `cas_Write` — there is **no
+  filename comparison anywhere in this ROM driver**. The "search for a file by first letter,
+  check it fits the allocated block count" policy is BASIC's own save routine, layered on top
+  of this driver, which this project does not have source for.
+- **Correction to this entry's own `AuthenticCassetteWriteTests`:** every test there
+  constructs a fresh `Machine()`, so `cassette_status` starts at 0 (`CST_NOMARK` clear) —
+  per the ROM source, that makes `cas_block_write` try **replace** on its first call, not
+  append. So `AuthenticWrite_AppendOntoMountedTape_Succeeds`/
+  `AuthenticWrite_AppendOntoRealMultiBlockAsset_Succeeds` almost certainly exercised
+  "overwrite the first block found" rather than "append a new file" — they only asserted
+  `A==0` (ROM success code) and never checked *where* the write landed on the tape. The tests
+  still have real value (they prove the authentic write path completes successfully against
+  real, previously-recorded content instead of hanging/erroring), but their names overstate
+  what they verified — worth a rename/re-scoping pass if this area gets touched again,
+  rather than treating them as append-path regression coverage.
+- **Applies to:** `tests/P2000.Machine.Tests/Devices/AuthenticCassetteWriteTests.cs` (test
+  naming/scope caveat, not a code change) / `src/P2000.UI/CLAUDE.md` (parallel entry with the
+  live-app confirmation and the UI-side directory-refresh fix this same feedback prompted).
+- **Synced:** yes (2026-07-14 — turned out worth syncing despite the "BASIC-level policy, not
+  machine hardware" framing: the earlier reference doc phrasing ("physical forward tape search
+  for an existing block's marker") overstated what `Cassette.asm` itself does, which IS
+  hardware/ROM-driver truth worth correcting precisely. Synced into §5b's "Replace vs append"
+  bullet — the CST_NOMARK/CST_WCDON mechanism, no filename comparison in the driver, and the
+  BASIC-vs-driver layering. Also added the `cas_Write` write-then-verify fact as its own
+  CONFIRMED bullet in the same spot.).

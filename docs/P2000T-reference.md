@@ -146,9 +146,24 @@ Config changes that alter hardware topology **require a machine reset to take ef
   active at 0xE000–0xFFFF (see §5 memory map). Reset-to-apply. NB: driven by the
   **internal-slot board choice** below — T/38 = bare motherboard (fixed); larger configs come
   from a RAM-only or floppy+RAM extension board.
+  - **Board/RAM coupling model — DECIDED (owner, 2026-07-23), NOT YET IMPLEMENTED (Machine.cs
+    currently over-constrains this — see machine CLAUDE.md §17 flag of the same date):** the
+    two boards below are NOT symmetric with respect to RAM capacity. The **official Philips
+    floppy+RAM board is an ATOMIC package** — real hardware, one physical card, FDC + CTC +
+    a fixed amount of bank-switched RAM all soldered together. Selecting it in config is a
+    single choice: FDC/CTC/RAM all appear together, at the one confirmed real capacity
+    (T/102, 80 KB) — **there is no separate memory dial for this board**, because there was
+    never a smaller or larger "official" version to choose between. A **RAM-only board**, by
+    contrast, models a **homebrew/3rd-party memory-expansion card** — no single fixed real
+    product, since these varied (reference doc's own existing note: "homebrew RAM cards
+    decode more bits for more banks"). **This is the axis that should be user-configurable**
+    (a bank-count control), not the official floppy+RAM board. T/54 is a reasonable default
+    for that axis, not a second official product name to hardcode.
 - **Internal-slot board (three-way): none / RAM-only / floppy+RAM** (§5). Determines upper
   memory AND whether the FDC/CTC + disk exist. "More RAM" (RAM-only board) is separable from
-  "disk present" (floppy+RAM board). **T-scoped model — flag for whenever M support is
+  "disk present" (floppy+RAM board), but — per the coupling model above — only the RAM-only
+  path is meant to be a user-facing capacity dial; floppy+RAM is a single atomic selection.
+  **T-scoped model — flag for whenever M support is
   undertaken (currently deferred, §14):** the M's internal slot genuinely daisy-chains (video
   board, then a further extension board behind it — §5c "Daisy-chaining on the M", confirmed
   from the Field Service Manual's §3.8.1/§3.8.11 connector pinouts) rather than being a single
@@ -2184,6 +2199,20 @@ reconstructed MT/MF/SK bit-flag decomposition of the opcode:**
 | WRITE DATA | `0x45` | same shape, opcode `0x45` | data phase, semi-DMA (above) |
 | SENSE INTERRUPT STATUS | `0x08` | `08` | 2 result bytes (ST0 + PCN) |
 
+**A seventh command, CONFIRMED separately (2026-07-23, design-doc maintainer's own read of
+`docs/jwsdos5.0.asm`) — SENSE DRIVE STATUS, issued by JWSDOS's resident driver, not `getdos`
+itself:** `check_write_enable` (the routine JWSDOS's SAVE/format-adjacent paths call before
+writing) sends `02 04 <drive>` (length-prefixed: 2 command bytes, opcode `0x04`, drive/head
+byte), reads back exactly **one** result byte via `MON_DSK_read_status_bytes`, and tests
+**bit 6 for write-protect** (`bit 6,a` / `ret z` = writable, set = protected) — an exact match
+to the standard µPD765/8272A ST3 register layout (bit 6 = WP), not a P2000-specific variant.
+This is the first real, sourced confirmation that ST3's bit-6 semantics apply unmodified to
+this hardware, and the first evidence the plain FDC command set in active use on this platform
+is at least 7 commands, not just the 6 `getdos` itself issues. See
+`docs/FDC-implementation.md` for the full standardized µPD765/8272A 15-command set (this
+project's own command subset above is a proper subset of that, not the whole chip) and the
+new machine-layer milestone (project CLAUDE.md §13.19a) building full command-set fidelity.
+
 **Two confirmed µPD765 usage facts from real-ROM boot-test diagnosis (2026-07-22), both
 worth knowing beyond just "the FDC has 4 drives" (drive count corrected 2026-07-23, above):**
 - **The ROM driver hardcodes unit-select to drive 1, never drive 0.** `Disk.asm`'s
@@ -2205,7 +2234,10 @@ Byte positions structurally match the standard µPD765 9-byte READ/WRITE DATA pa
 (drive/unit, cylinder, head, sector, N, EOT, GPL, DTL) — confident in the values and
 positions; not independently re-deriving the datasheet's MT/MF/SK bit-field meaning of the
 opcode byte from memory. This is the **full command subset the ROM driver actually issues**,
-not the complete 16-command µPD765 set — resolves "Constants to source" item 3 below.
+not the complete **15**-command µPD765/8272A set (corrected 2026-07-23 — earlier text said 16;
+MAME's own `upd765.cpp` enum has additional entries beyond 15, but those are enhanced-FDC-
+generation-only commands not part of the base chip this hardware uses, per
+`docs/FDC-implementation.md` §0) — resolves "Constants to source" item 3 below.
 
 ### Fits as a slot device; presence check is free
 The FDC is the **internal-extension-slot** device (§5c) — populated in the M, addable to a

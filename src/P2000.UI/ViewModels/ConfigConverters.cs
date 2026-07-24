@@ -22,6 +22,42 @@ public sealed class RamVariantDescConverter : IValueConverter
         => throw new NotSupportedException();
 }
 
+/// <summary>Maps an <see cref="InternalBoard"/> value to a human-readable description string
+/// (project CLAUDE.md §14 milestone 14 config axis).</summary>
+public sealed class InternalBoardDescConverter : IValueConverter
+{
+    public static readonly InternalBoardDescConverter Instance = new();
+
+    public object? Convert(object? value, Type targetType, object? parameter, CultureInfo culture)
+        => value switch
+        {
+            InternalBoard.None      => "None (bare motherboard)",
+            InternalBoard.RamOnly   => "RAM-only expansion",
+            InternalBoard.FloppyRam => "Floppy + RAM (FDC/CTC, up to 4 drives)",
+            _ => value?.ToString()
+        };
+
+    public object? ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture)
+        => throw new NotSupportedException();
+}
+
+/// <summary>Maps a <see cref="DiskSides"/> value to a human-readable description string.</summary>
+public sealed class DiskSidesDescConverter : IValueConverter
+{
+    public static readonly DiskSidesDescConverter Instance = new();
+
+    public object? Convert(object? value, Type targetType, object? parameter, CultureInfo culture)
+        => value switch
+        {
+            DiskSides.Single => "SS (single-sided)",
+            DiskSides.Double => "DS (double-sided)",
+            _ => value?.ToString()
+        };
+
+    public object? ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture)
+        => throw new NotSupportedException();
+}
+
 /// <summary>Returns true when a string is non-null and non-empty (for status-message visibility).</summary>
 public sealed class NonEmptyStringToBoolConverter : IValueConverter
 {

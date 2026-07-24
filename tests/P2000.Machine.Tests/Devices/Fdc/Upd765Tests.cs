@@ -274,6 +274,161 @@ public class Upd765Tests
         foreach (var b in disk.ReadSector(0, 0, 1)) Assert.Equal(0x00, b);
     }
 
+    // ---- Host status surface (P2000.UI milestone 14) -------------------------------------------
+
+    [Fact]
+    public void MotorOn_ReflectsTheSharedControlLatchBit()
+    {
+        var fdc = new Upd765();
+        Assert.False(fdc.MotorOn);
+
+        fdc.WriteControl(0x08); // MOTOR bit
+        Assert.True(fdc.MotorOn);
+
+        fdc.WriteControl(0x00);
+        Assert.False(fdc.MotorOn);
+    }
+
+    [Fact]
+    public void GetCylinder_UnsoughtDrive_ReadsZero()
+    {
+        var fdc = new Upd765();
+        Assert.Equal(0, fdc.GetCylinder(0));
+        Assert.Equal(0, fdc.GetCylinder(3));
+    }
+
+    [Fact]
+    public void GetCylinder_AfterSeek_ReflectsThatDriveOnly()
+    {
+        var fdc = new Upd765 { Policy = TimingPolicy.Turbo };
+
+        fdc.WriteData(0x0F); // SEEK
+        fdc.WriteData(0x02); // unit 2
+        fdc.WriteData(0x09); // target cylinder 9
+        for (var i = 0; i < 300; i++) fdc.Tick();
+
+        Assert.Equal(9, fdc.GetCylinder(2));
+        Assert.Equal(0, fdc.GetCylinder(0)); // other drives unaffected
+    }
+
+    [Fact]
+    public void CurrentTransfer_Idle_IsNull()
+    {
+        var fdc = new Upd765();
+        Assert.Null(fdc.CurrentTransfer);
+    }
+
+    [Fact]
+    public void CurrentTransfer_DuringReadData_ReportsDriveHeadAndDirection()
+    {
+        var image = BuildSyntheticImage(tracks: 40, sides: 2);
+        var disk = new DskImage(image);
+        var fdc = new Upd765 { Policy = TimingPolicy.Authentic }; // stays in ExecutionPhase long enough to observe
+        fdc.MountDisk(1, disk);
+
+        fdc.WriteData(0x42); // READ DATA
+        fdc.WriteData(0x01); // unit 1
+        fdc.WriteData(0x00);
+        fdc.WriteData(0x00); // head 0
+        fdc.WriteData(0x01);
+        fdc.WriteData(0x01);
+        fdc.WriteData(0x01);
+        fdc.WriteData(0x00);
+        fdc.WriteData(0x00);
+
+        var status = fdc.CurrentTransfer;
+        Assert.NotNull(status);
+        Assert.Equal(1, status!.Value.Drive);
+        Assert.Equal(0, status.Value.Head);
+        Assert.False(status.Value.IsWrite);
+        Assert.Equal(1, status.Value.Sector); // R from the command block (sector 1, one sector requested)
+    }
+
+    /// <summary>Project CLAUDE.md §17, 2026-07-23 (owner decision): current sector is the REAL
+    /// live value during a multi-sector transfer — derived from R plus bytes moved through the
+    /// semi-DMA loop so far, not pinned to the starting sector for the whole transfer.</summary>
+    [Fact]
+    public void CurrentTransfer_MultiSectorTransfer_SectorAdvancesAsBytesMove()
+    {
+        var image = BuildSyntheticImage(tracks: 40, sides: 2);
+        var disk = new DskImage(image);
+        var fdc = new Upd765 { Policy = TimingPolicy.Turbo }; // synchronous byte-ready — isolates the sector arithmetic from timing
+        fdc.MountDisk(0, disk);
+
+        // READ DATA: unit=0, cylinder=0, head=0, start sector=1, N=1 (256B), EOT=3 (3 sectors).
+        fdc.WriteData(0x42);
+        fdc.WriteData(0x00);
+        fdc.WriteData(0x00);
+        fdc.WriteData(0x00);
+        fdc.WriteData(0x01);
+        fdc.WriteData(0x01);
+        fdc.WriteData(0x03);
+        fdc.WriteData(0x00);
+        fdc.WriteData(0x00);
+
+        Assert.Equal(1, fdc.CurrentTransfer!.Value.Sector); // no bytes moved yet — still R
+
+        for (var i = 0; i < 256; i++) fdc.ReadData(); // consume exactly one full sector's worth
+
+        Assert.Equal(2, fdc.CurrentTransfer!.Value.Sector); // advanced to the second sector
+    }
+
+    /// <summary>Real bug, fixed 2026-07-23: a SEEK on one drive previously left
+    /// <c>CurrentTransfer.Drive</c> reporting whichever drive last did a READ/WRITE DATA
+    /// transfer (or 0, if none ever had) — the host status surface would light up the wrong
+    /// drive's activity indicator during a seek on a different drive.</summary>
+    [Fact]
+    public void CurrentTransfer_DuringSeek_ReportsTheSeekingDrive_NotAStaleOne()
+    {
+        var image = BuildSyntheticImage(tracks: 40, sides: 2);
+        var disk0 = new DskImage(image);
+        var fdc = new Upd765 { Policy = TimingPolicy.Turbo };
+        fdc.MountDisk(0, disk0);
+
+        // A completed READ DATA on drive 0 first, so _transferDrive would be stale-0 if the
+        // bug were still present — use drive 2 for the seek so a bug (stale drive) is
+        // distinguishable from the fix.
+        fdc.WriteData(0x42);
+        fdc.WriteData(0x00);
+        fdc.WriteData(0x00);
+        fdc.WriteData(0x00);
+        fdc.WriteData(0x01);
+        fdc.WriteData(0x01);
+        fdc.WriteData(0x01);
+        fdc.WriteData(0x00);
+        fdc.WriteData(0x00);
+        for (var i = 0; i < 256; i++) fdc.ReadData(); // completes the transfer, _phase back to Idle
+
+        // Now SEEK drive 2 — CurrentTransfer.Drive must report 2, not the stale 0 from above.
+        fdc.WriteData(0x0F);
+        fdc.WriteData(0x02);
+        fdc.WriteData(0x05);
+
+        Assert.Equal(2, fdc.CurrentTransfer!.Value.Drive);
+    }
+
+    [Fact]
+    public void CurrentTransfer_AfterCompletion_IsNullAgain()
+    {
+        var image = BuildSyntheticImage(tracks: 40, sides: 2);
+        var disk = new DskImage(image);
+        var fdc = new Upd765 { Policy = TimingPolicy.Turbo };
+        fdc.MountDisk(0, disk);
+
+        fdc.WriteData(0x42);
+        fdc.WriteData(0x00);
+        fdc.WriteData(0x00);
+        fdc.WriteData(0x00);
+        fdc.WriteData(0x01);
+        fdc.WriteData(0x01);
+        fdc.WriteData(0x01);
+        fdc.WriteData(0x00);
+        fdc.WriteData(0x00);
+        for (var i = 0; i < 256; i++) fdc.ReadData();
+
+        Assert.Null(fdc.CurrentTransfer);
+    }
+
     // ---- Unknown opcode -----------------------------------------------------------------------
 
     [Fact]

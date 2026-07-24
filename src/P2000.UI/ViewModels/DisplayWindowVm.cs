@@ -29,6 +29,10 @@ public sealed partial class DisplayWindowVm : ObservableObject, IDisposable
     /// satellite deck window.</summary>
     public CassetteDeckVm CassetteVm { get; }
 
+    /// <summary>Disk drives ViewModel (project CLAUDE.md §14 milestone 14) — shared between the
+    /// main window (menu) and the satellite Disk Drives window.</summary>
+    public DiskDriveWindowVm DiskVm { get; }
+
     /// <summary>Debugger ViewModel — subscribes to BreakHit/FrameReady immediately so the
     /// register file and VRAM window stay current even when the window is not open.</summary>
     public DebuggerWindowVm DebuggerVm { get; }
@@ -44,6 +48,9 @@ public sealed partial class DisplayWindowVm : ObservableObject, IDisposable
 
     /// <summary>Raised when the user requests the cassette deck satellite window.</summary>
     public event Action? OpenDeckWindowRequested;
+
+    /// <summary>Raised when the user requests the Disk Drives satellite window.</summary>
+    public event Action? OpenDiskDriveWindowRequested;
 
     /// <summary>Raised when the user requests the config window.</summary>
     public event Action? OpenConfigWindowRequested;
@@ -110,6 +117,7 @@ public sealed partial class DisplayWindowVm : ObservableObject, IDisposable
     public DisplayWindowVm()
     {
         CassetteVm  = new CassetteDeckVm(Runner);
+        DiskVm      = new DiskDriveWindowVm(Runner);
         DebuggerVm  = new DebuggerWindowVm(Runner);
         KeyboardVm  = new KeyboardWindowVm(KeyTranslator);
         KeyTranslator.MatrixEvent += Runner.EnqueueKey;
@@ -205,6 +213,9 @@ public sealed partial class DisplayWindowVm : ObservableObject, IDisposable
 
     [RelayCommand]
     private void OpenCassetteDeck() => OpenDeckWindowRequested?.Invoke();
+
+    [RelayCommand]
+    private void OpenDiskDrives() => OpenDiskDriveWindowRequested?.Invoke();
 
     [RelayCommand]
     private void OpenConfig() => OpenConfigWindowRequested?.Invoke();
@@ -363,6 +374,7 @@ public sealed partial class DisplayWindowVm : ObservableObject, IDisposable
         Runner.FrameReady -= OnFrameReady;
         KeyTranslator.MatrixEvent -= Runner.EnqueueKey;
         CassetteVm.Detach();
+        DiskVm.Detach();
         DebuggerVm.Dispose();
         Runner.Dispose();
     }

@@ -888,6 +888,71 @@ is NO machine-layer runner milestone here — it's promoted in with the external
       above — assert the phantom filenames are absent from the returned listing, not just that
       the count is 18); `jwssytem.dsk`'s all-zero track 2 browses as an empty directory, not an
       error. → commit.
+19a. **FDC — full µPD765/8272A command set** (fast-follow to M19, mirrors the 9a/13a/20a
+    "milestone + a" pattern; owner decision, 2026-07-23 — see **`docs/FDC-implementation.md`
+    for the full device guide**, mirroring the SAA5050/MDCR implementation-guide pattern).
+    Milestone 19 deliberately scoped to "boot + run" — 6 commands the stock ROM/JWSDOS actually
+    issue (SPECIFY, RECALIBRATE, SEEK, READ DATA, WRITE DATA, SENSE INTERRUPT STATUS). This
+    milestone is chip fidelity for its own sake: implement the **full 15-command µPD765/8272A
+    set**, the same way `Z80.Core` targets the whole instruction set rather than just what one
+    ROM uses.
+    - **Reference implementations (researched 2026-07-23, see the implementation guide's §1
+      for full detail):** MAME `upd765.cpp`/`.h` (primary structural reference — 3-phase
+      Command/Execution/Result state machine, per-command handler dispatch; it's a shared
+      driver across the WHOLE µPD765 lineage including later enhanced chips, so filter out the
+      enhanced-only command entries — this hardware is the plain first-generation chip, 15
+      commands not 16-or-more); openMSX `TC8566AF.cc` (independent from-scratch second
+      opinion, same 15 commands); QEMU `hw/block/fdc.c` (**cautionary example** — has a
+      complete-looking 15-entry dispatch table but Read/Write Deleted Data and the Scan
+      commands are stubbed/incomplete on inspection — don't copy without checking handler
+      bodies); floooh/chips `upd765.h` (deliberately minimal 7-of-15, a useful "what a boot-only
+      subset looks like" comparison, not a target). NEC's own 1978 datasheet + 1979 app note
+      are the authoritative source for exact command-byte layout and status-bit meaning,
+      cross-checked against MAME's executable command-length logic.
+    - **A 7th command is ALREADY confirmed real-usage, not just modeled — SENSE DRIVE STATUS
+      (`0x04`), found 2026-07-23 by directly reading `docs/jwsdos5.0.asm`:** JWSDOS's own
+      `check_write_enable` routine sends `02 04 <drive>`, reads one result byte, and tests bit 6
+      for write-protect — an exact match to the standard ST3 register layout (bit 6 = WP). This
+      is the first sourced confirmation that this chip's status-bit semantics apply unmodified
+      on real P2000 hardware. Elevate this command from "generic datasheet only" to "confirmed"
+      alongside the existing 6 — see reference doc §5d for the citation, now added there.
+    - **FORMAT A TRACK — the owner's flagged priority within this milestone, but NOT confirmed
+      as JWSDOS's actual mechanism.** The owner expected format utilities would obviously use
+      it; `docs/jwsdos5.0.asm`'s resident "#" DOS command table was checked specifically and
+      contains only LOAD/SAVE/RUN/ZOEK/WIS/VP/SYS — no FORMAT command (VP was checked directly,
+      in case it was a Dutch "voorbereiden"/prepare command — it's actually a load-with-memory-
+      relocation variant, not a formatter). **CONFIRMED (owner, 2026-07-23): formatting genuinely
+      IS a separate application**, not a gap in this disassembly's coverage — the owner will
+      supply more information, and hopefully a disassembly of that formatter, in a future
+      session. Build Format A Track from the general datasheet (implementation guide §5/§6) in
+      the meantime — it's real chip behavior worth having and the most involved of the 9 missing
+      commands — but its real P2000-specific command-byte shape stays unsourced until that
+      formatter's source arrives, at which point this upgrades the same way Sense Drive Status
+      just did.
+    - **Structural approach:** extend the EXISTING `Upd765` object (real per-drive state,
+      working semi-DMA byte-poll mechanism) to a proper Command/Execution/Result phase state
+      machine per the implementation guide §6 — generalize the semi-DMA loop to run in either
+      direction (already does host→FDD for Write Data) and to the Format/Scan byte-count shapes;
+      **build a real 7-byte (ST0,ST1,ST2,C,H,R,N) result phase for every command, including
+      retroactively for READ/WRITE DATA** (M19 deliberately skipped a formal result phase there
+      since no known driver reads it — building Scan/Read-Track/Read-ID/Format properly needs
+      the same machinery anyway, so backfill it rather than keep two completion models). Do NOT
+      build the enhanced-chip-only commands MAME's source also has (`CONFIGURE`/`DUMP_REG`/
+      `LOCK`/`PERPENDICULAR`/`MOTOR_ONOFF`/`VERSION`/`SLEEP`/`ABORT`/`SPECIFY2`) — later silicon,
+      out of scope.
+    - **Test strategy (no portable FDC conformance suite exists to borrow — implementation
+      guide §7):** synthetic protocol tests per command against the datasheet-specified
+      command/execution/result shapes (the primary validation for the 8 commands with no known
+      real caller); a real integration test for Sense Drive Status against `check_write_enable`'s
+      actual sequence (write-protected vs. writable `DskImage` fixtures); Format A Track gets a
+      synthetic protocol test now, a real end-to-end test later IF a real formatter source
+      surfaces — don't invent a fake caller just to have an integration test.
+    - **Applies to:** `docs/FDC-implementation.md` (new, full device guide), reference doc §5d
+      (Sense Drive Status confirmed usage + 15-vs-16-command correction, both added 2026-07-23) /
+      `src/P2000.Machine/Devices/Fdc/Upd765.cs` (command/execution/result phase generalization).
+    - **Synced:** yes (2026-07-23, into P2000T-reference.md §5d — the Sense Drive Status
+      confirmation and the 15-command correction) — implementation still outstanding.
+
 20. **Philips Expansion Card — RAM-variant status + multi-drive floppy subsystem** (promoted
     from the §14 "multi-board RAM-variant framework" placeholder; reference doc §5c/§5d +
     `docs/JWSDOS-format.md`; extends `InternalExtensionBoard`/`Upd765` from M19, does not
@@ -1160,6 +1225,184 @@ Ordinary in-project choices: proceed and keep CI green.
 ---
 
 ## 17. Findings log (working scratchpad — synced to the reference doc by the human)
+
+### 2026-07-23 — IMPLEMENTED: Upd765 live current-sector tracking (closes the flag below) + a real seek-status bug fix found along the way
+- **Implements the flag immediately below** (owner authorization): `Upd765.TransferStatus`
+  gained a `Sector` field. Two new fields, `_transferStartSector`/`_transferSectorSize`, are
+  set in `DispatchReadWrite` from the command's own R/N bytes (already read locally, just not
+  retained); `CurrentTransfer.Sector` computes `_transferStartSector + _transferIndex /
+  _transferSectorSize` (guarded against `_transferSectorSize == 0`) — advances live as bytes
+  move through the semi-DMA loop, not pinned to the starting sector for the whole transfer.
+- **Found (real bug, not introduced by this change but surfaced while touching the same
+  struct):** `BeginSeek` never set `_transferDrive` — `CurrentTransfer.Drive` during a SEEK
+  reported whichever drive last did a READ/WRITE DATA transfer (or 0, if none ever had), not
+  the drive actually being sought. The host status surface (`P2000.UI` milestone 14's
+  `DiskDriveVm`) would have lit up the wrong drive's activity indicator during a seek on a
+  different drive. Fixed: `BeginSeek` now sets `_transferDrive = drive`.
+- **Scope call — Head/Sector during a SEEK stay a known, accepted cosmetic imprecision, NOT
+  fixed to be command-type-aware:** a SEEK is also `Phase.ExecutionPhase` but has no head/
+  sector of its own; `CurrentTransfer.Head`/`.Sector` during a seek show whatever the LAST
+  real READ/WRITE DATA transfer's values were (stale, not meaningful) rather than something
+  seek-specific. Building real per-command-type status (and Format/Scan's own shapes) is
+  milestone 19a's job (full command-phase generalization), not a one-off patch here — see the
+  entry further below.
+- **`.state` bumped v5→v6, MinVersion 5→6 (reject v5) — this time the byte layout itself
+  changed, not just the config JSON:** the two new int32 fields are written/read mid-stream in
+  `Upd765.SaveState`/`LoadState`, between the existing transfer-drive and byte-ready fields. A
+  v5 file's FDC block is 8 bytes shorter than v6 expects — reading it under the new layout
+  would misalign every field after that point, not just silently drop the new ones.
+- **Tests:** `Upd765Tests` (+3): existing `CurrentTransfer_DuringReadData...` test extended
+  with a `Sector` assertion; new `CurrentTransfer_MultiSectorTransfer_SectorAdvancesAsBytesMove`
+  (Turbo policy, isolates the arithmetic from timing); new
+  `CurrentTransfer_DuringSeek_ReportsTheSeekingDrive_NotAStaleOne` (regression guard for the
+  bug fix — completes a transfer on drive 0 first, then seeks drive 2, confirms `Drive` reports
+  2 not stale 0). `MachineStateFileTests` (+1): `Load_VersionFive_Throws`. Full
+  `P2000.Machine.Tests`: 468/468 green (was 465).
+- **Applies to:** `src/P2000.Machine/Devices/Fdc/Upd765.cs` (`TransferStatus.Sector`,
+  `_transferStartSector`/`_transferSectorSize`, `BeginSeek` fix, `SaveState`/`LoadState`),
+  `src/P2000.Machine/State/MachineStateFile.cs` (v6 bump),
+  `tests/P2000.Machine.Tests/Devices/Fdc/Upd765Tests.cs`,
+  `tests/P2000.Machine.Tests/State/MachineStateFileTests.cs` — consumed by
+  `src/P2000.UI/ViewModels/DiskDriveVm.cs` (`HeadText`/`SectorText`, `P2000.UI/CLAUDE.md` §18).
+- **Synced:** no (implementation-only; the sector-tracking DECISION itself was already synced
+  via the flag entry below when it was authorized).
+
+### 2026-07-23 — New milestone flagged (not yet implemented): FDC full 15-command set, plus two real findings from a direct source read
+- **Trigger — owner:** don't stop the FDC at "passes the current boot/run test" — implement all
+  15 commands the real µPD765/8272A supports, learning from prior emulator implementations of
+  the same chip family the way this project already did for SAA5050 (MAME/jsbeeb) and MDCR.
+- **Research done (design-doc maintainer pass, web research + a direct grep of this project's
+  own `docs/jwsdos5.0.asm`):** full writeup now in new companion doc `docs/FDC-implementation.md`
+  (mirrors the SAA5050/MDCR implementation-guide pattern). Summary of the two things that
+  actually changed what's "confirmed" vs. "assumed" for THIS platform specifically (as opposed
+  to generic chip-datasheet facts, which the new doc also has in full):
+  - **SENSE DRIVE STATUS is real, confirmed usage, not just a datasheet command.** Direct read
+    of `jwsdos5.0.asm`'s `check_write_enable` routine: sends `02 04 <drive>`, reads 1 result
+    byte, tests bit 6 for write-protect — exact match to the standard ST3 layout. First sourced
+    confirmation this chip's status-bit semantics apply unmodified here. Synced into reference
+    doc §5d.
+  - **FORMAT A TRACK is NOT confirmed as JWSDOS's format mechanism — checked specifically and
+    not found.** The owner expected this was "undoubtedly" used by JWSDOS/PDOS format
+    utilities; `jwsdos5.0.asm`'s resident DOS command table (LOAD/SAVE/RUN/ZOEK/WIS/VP/SYS) has
+    no format command at all, and `VP` (checked directly on suspicion it might be a Dutch
+    "voorbereiden"/prepare command) turned out to be an unrelated load-with-relocation variant.
+    Either the real formatter is a separate utility program not in this disassembly, or it
+    works some other way — genuinely open, not resolved. Build Format A Track from the general
+    datasheet regardless (it's real, useful chip behavior and the priority within the new
+    milestone per the owner's request) but don't claim P2000-specific confirmation that isn't
+    there. Revisit if the owner sources the actual format-utility code.
+  - Also corrected a small pre-existing inaccuracy: this project's own docs said "the complete
+    16-command µPD765 set" in one place — that number came from eyeballing MAME's C++ enum,
+    which includes enhanced-later-chip-only commands beyond the real base-chip 15. Corrected to
+    15 in reference doc §5d, with the enhanced-chip entries explicitly named as out of scope.
+- **New milestone added:** project CLAUDE.md §13.19a (fast-follow to M19) — full writeup there
+  and in `docs/FDC-implementation.md`. Not yet implemented.
+- **Applies to:** `docs/FDC-implementation.md` (new), reference doc §5d (Sense Drive Status
+  confirmation + 15-command correction) / `src/P2000.Machine/Devices/Fdc/Upd765.cs` (future
+  implementation target).
+- **Synced:** yes (2026-07-23, into P2000T-reference.md §5d) — implementation outstanding.
+
+### 2026-07-23 — Flag (not yet implemented): Upd765 needs a live current-sector value during a transfer
+- **Trigger — owner, resolving what `P2000.UI` milestone 14 scoped out** ("sector" flagged as
+  not persisted by `Upd765` outside an active transfer's own command bytes, so it was left off
+  the live status row rather than guessed): *"that is officially not fed back from the drive,
+  so only the starting sector of a multi sector read is known, however, we could plug into the
+  internals of our FDC emulator and find out from there, I suppose?"*
+- **Decision (this entry IS the authorization to implement):** yes — extend
+  `Upd765`'s transfer-status tracking (the same `TransferStatus`/`CurrentTransfer` surface M14
+  already added for `Head`) with a running **current sector** value, derived from state the
+  chip already implicitly has during a semi-DMA transfer: the command's starting sector (R, from
+  the 9-byte parameter block) plus however many bytes have moved through the `0x8D`/`INI`
+  byte-loop so far. `current_sector = R + floor(bytes_transferred / bytes_per_sector)`,
+  wrapping at EOT per normal CHS sector-increment rules — this is exposing already-tracked
+  internal state, not adding new state, same category as the `MotorOn`/`GetCylinder`/
+  `CurrentTransfer` accessors M14 already added. For a single-sector command this collapses to
+  just R (the "at least the starting sector is knowable" case); for a real multi-sector run it
+  should visibly advance as the transfer progresses.
+  - **Idle (no command in flight): no sector value** — matches the parallel head-value decision
+    (`P2000.UI` CLAUDE.md §14 "Live status row" — owner, 2026-07-23): both head and sector show
+    "–" when nothing is happening, since neither is a real persistent register on idle
+    hardware; both show the REAL value once something is.
+- **Applies to:** `src/P2000.Machine/Devices/Fdc/Upd765.cs` (`TransferStatus`/
+  `CurrentTransfer` — add current-sector tracking) — consumed by `P2000.UI/CLAUDE.md` §14's
+  live status row (`DiskDriveVm`).
+- **Synced:** no (implementation-only accessor addition — no new hardware fact; "sector isn't a
+  real fed-back register on idle hardware" was already true and unchanged).
+
+### 2026-07-23 — Flag (not yet implemented): floppy+RAM board is an atomic package, not board+separate-RAM-tier
+- **Trigger — owner's request:** add UI to let the user add the Philips memory/CTC/FDC
+  extension board (and its memory) to their machine. In discussion, the owner clarified the
+  intended shape directly: *"I would make the Philips extension board an 'atomic unit'.
+  Homebrew or 3rd party memory card: that one should be configurable regarding # of banks."*
+- **Found (design-doc pass — this over-constrains the wrong axis today):**
+  `Machine`'s constructor (added during M19, §17 2026-07-22 entry) currently throws unless
+  `Board == InternalBoard.FloppyRam` implies `RamVariant == RamVariant.T102` exactly — i.e. it
+  validates board-vs-RAM-tier as two independently-set fields that happen to be cross-checked,
+  rather than modeling RAM capacity as something that BELONGS to whichever board is chosen.
+  That's the wrong shape for what's being asked now, even though it happened to enforce the
+  right real-world outcome (floppy+RAM ⇒ T/102) as a side effect of a stricter equality check.
+- **Decision (this entry IS the authorization to implement):**
+  - **Floppy+RAM is atomic.** Selecting it is ONE choice — FDC + CTC + the one confirmed real
+    RAM capacity (T/102, 80 KB) all appear together, same as plugging in one physical card.
+    **No separate memory-size control exists for this board** — there was never a smaller or
+    larger "official" version to pick between, so don't build a dial with only one legal
+    position; just auto-set the capacity and show it as read-only/implied, the same way there's
+    no separate CTC checkbox next to it.
+  - **RAM-only board is the configurable axis.** It models a homebrew/3rd-party RAM-expansion
+    card — no single official product (reference doc's own existing note: "homebrew RAM cards
+    decode more bits for more banks"). THIS is where a bank-count control belongs. T/54 is a
+    reasonable default value for it, not a second hardcoded "official tier."
+  - **`MachineConfig` shape implication:** `RamVariant` as a flat, independently-set enum
+    crossed against `Board` is the wrong representation of this. Prefer something closer to:
+    `Board` (None/RamOnly/FloppyRam) where `Board == FloppyRam` implies a fixed, non-configurable
+    capacity (no user input needed/possible), and `Board == RamOnly` carries its own bank-count
+    value that IS user-set (bounded to some sane range — exact real-world bank-count ranges for
+    homebrew cards are not sourced; pick a reasonable bound and flag it as unverified rather than
+    inventing false precision). `Board == None` is the fixed T/38 baseline, not a "variant."
+    Whether this is best expressed as reshaping `RamVariant` itself or replacing it with a
+    board-scoped capacity field is an implementation-level call — the constraint that matters is
+    the one above (no dial on FloppyRam, a real dial on RamOnly), not the exact C# shape.
+  - **Machine.cs validation should relax accordingly:** instead of "FloppyRam requires
+    RamVariant==T102 exactly" (a coincidentally-correct equality check), the real invariant is
+    "FloppyRam always HAS T102-equivalent capacity, by construction, not by user choice" — there
+    should be no code path where FloppyRam could be paired with a different capacity to reject
+    in the first place, because the UI/config layer should never offer that combination. If the
+    equality check stays as a defensive assertion after this refactor, that's fine — just not as
+    the primary mechanism enforcing the rule.
+  - **Config-window UI implication (mirrors into `P2000.UI/CLAUDE.md` §7 + a milestone-14-
+    adjacent UI task, not yet scoped as its own numbered milestone here):** checking
+    "floppy+RAM" in the board selector should immediately imply FDC+CTC+RAM together with no
+    further memory choice shown; checking "RAM-only" should reveal a capacity/bank-count
+    control; checking "none" hides both.
+  - **Drive-config retention on board removal — DECIDED (owner, 2026-07-23):** switching the
+    board away from Floppy+RAM should PRESERVE the configured `FloppyDrives` list (not clear
+    it) — the machine layer simply doesn't mount any of it while `Board != FloppyRam`; switching
+    back to Floppy+RAM should restore the drives exactly as configured. This is a config-
+    retention concern (don't null out `MachineConfig.FloppyDrives` just because the board
+    changed), not a new validation rule.
+- **Not resolved here — needs a real number before the RAM-only dial can ship:** what bank-count
+  range is plausible/authentic for a homebrew card (the current T/54 tier implies at least one
+  real reference point, but the useful UPPER bound for "3rd-party card" is unsourced) — pick a
+  reasonable placeholder and flag it, don't block the atomic/floppy+RAM half of this work on it.
+- **Applies to:** reference doc §3a (Config axes — "Board/RAM coupling model", updated same
+  date) / `src/P2000.Machine/Machine.cs` (constructor validation), `MachineConfig.cs`
+  (`RamVariant`/`Board` shape) — `src/P2000.UI/CLAUDE.md` §7 (Config window axes, updated same
+  date), a future Config-window UI milestone (board selector + conditional capacity control).
+- **Synced:** yes (2026-07-23, into P2000T-reference.md §3a — the coupling model decision) —
+  implementation (both machine-layer validation relaxation and the config-window UI) still
+  outstanding.
+- **Status update (2026-07-23, after `P2000.UI` milestone 14 — see that project's CLAUDE.md
+  §14 write-up):** the UI-side "no dial on Floppy+RAM" half is effectively already true —
+  `ConfigWindowVm` auto-forces `RamVariant.T102` and disables the RAM selector the moment
+  Floppy+RAM is chosen, as a side effect of milestone 14's new board selector, not because this
+  entry was specifically implemented. **Still outstanding:** (a) the RAM-only board still only
+  offers the same three fixed named tiers (T/38 · T/54 · T/102) rather than a genuine
+  bank-count dial for homebrew/3rd-party cards — the actual "configurable axis" half of this
+  decision; (b) `Machine.cs`'s validation is still the coincidental equality check
+  (`FloppyRam` requires `RamVariant == T102` exactly), not restructured to make the invalid
+  combination unrepresentable by construction; (c) whether drive-config is preserved (not
+  cleared) when the board is switched away from Floppy+RAM was not confirmed one way or the
+  other by the milestone-14 write-up — needs checking before this entry is considered done.
 
 ### 2026-07-23 — CHANGED (owner request): blanking margin is now dark grey, not pure black
 - **Trigger:** owner reported the Full-Field crop's blanking margins render as full black,

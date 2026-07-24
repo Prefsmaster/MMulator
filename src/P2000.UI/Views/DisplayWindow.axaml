@@ -62,6 +62,10 @@
                 <MenuItem Header="_Eject"            Command="{Binding CassetteVm.EjectCommand}"
                           ToolTip.Tip="Remove the current cassette" />
             </MenuItem>
+            <MenuItem Header="_Disk">
+                <MenuItem Header="_Open Disk Drives window" Command="{Binding OpenDiskDrivesCommand}"
+                          ToolTip.Tip="Mount/eject/create/save .dsk images per drive — needs a Floppy+RAM board configured" />
+            </MenuItem>
             <MenuItem Header="_View">
                 <!-- Display mode — bullet icon on the active item acts as radio indicator -->
                 <MenuItem Header="Mode: _Interlaced"

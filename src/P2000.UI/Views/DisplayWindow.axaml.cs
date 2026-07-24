@@ -9,6 +9,7 @@ public partial class DisplayWindow : Window
 {
     private DisplayWindowVm? _vm;
     private CassetteDeckWindow? _deckWindow;
+    private DiskDriveWindow? _diskWindow;
     private ConfigWindow? _configWindow;
     private DebuggerWindow? _debuggerWindow;
     private KeyboardWindow? _keyboardWindow;
@@ -32,6 +33,7 @@ public partial class DisplayWindow : Window
         {
             _vm.Runner.FrameReady           -= _frameReadyHandler;
             _vm.OpenDeckWindowRequested     -= ShowDeckWindow;
+            _vm.OpenDiskDriveWindowRequested -= ShowDiskDriveWindow;
             _vm.OpenConfigWindowRequested   -= ShowConfigWindow;
             _vm.OpenDebuggerWindowRequested -= ShowDebuggerWindow;
             _vm.OpenKeyboardWindowRequested -= ShowKeyboardWindow;
@@ -54,6 +56,7 @@ public partial class DisplayWindow : Window
             };
             _vm.Runner.FrameReady += _frameReadyHandler;
             _vm.OpenDeckWindowRequested     += ShowDeckWindow;
+            _vm.OpenDiskDriveWindowRequested += ShowDiskDriveWindow;
             _vm.OpenConfigWindowRequested   += ShowConfigWindow;
             _vm.OpenDebuggerWindowRequested += ShowDebuggerWindow;
             _vm.OpenKeyboardWindowRequested += ShowKeyboardWindow;
@@ -105,6 +108,17 @@ public partial class DisplayWindow : Window
         }
         _deckWindow = new CassetteDeckWindow { DataContext = _vm!.CassetteVm };
         _deckWindow.Show(this);
+    }
+
+    private void ShowDiskDriveWindow()
+    {
+        if (_diskWindow is { IsVisible: true })
+        {
+            _diskWindow.Activate();
+            return;
+        }
+        _diskWindow = new DiskDriveWindow { DataContext = _vm!.DiskVm };
+        _diskWindow.Show(this);
     }
 
     private void ShowConfigWindow()

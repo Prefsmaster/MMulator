@@ -1,0 +1,110 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="using:P2000.UI.ViewModels"
+        xmlns:local="using:P2000.UI.Views"
+        x:DataType="vm:DiskDriveWindowVm"
+        x:Class="P2000.UI.Views.DiskDriveWindow"
+        Title="Disk Drives"
+        Width="520" Height="480"
+        MinWidth="440" MinHeight="340"
+        CanResize="True"
+        Background="#1a1a1a">
+
+    <Grid Margin="10">
+        <!-- ── Empty state: no floppy board fitted ─────────────────────────── -->
+        <TextBlock Text="No floppy+RAM board fitted — add one and configure drives in Config."
+                   Foreground="#888" FontSize="13"
+                   TextWrapping="Wrap"
+                   HorizontalAlignment="Center" VerticalAlignment="Center"
+                   IsVisible="{Binding !HasFloppyBoard}" />
+
+        <!-- ── Drive tabs (project CLAUDE.md §14, 2026-07-23: "one window, DRIVE TABS, one
+             tab per configured drive" — a drag-drop onto this window lands on whichever tab
+             is currently selected, resolving the N-drive drop-target ambiguity). ────────── -->
+        <TabControl ItemsSource="{Binding Drives}"
+                    SelectedItem="{Binding SelectedDrive}"
+                    IsVisible="{Binding HasFloppyBoard}">
+            <TabControl.ItemTemplate>
+                <DataTemplate x:DataType="vm:DiskDriveVm">
+                    <TextBlock Text="{Binding TabHeader}"
+                               ToolTip.Tip="{Binding ImageLabel}" />
+                </DataTemplate>
+            </TabControl.ItemTemplate>
+            <TabControl.ContentTemplate>
+                <DataTemplate x:DataType="vm:DiskDriveVm">
+                    <ScrollViewer>
+                        <StackPanel Spacing="6" Margin="4">
+                            <!-- Status row: motor, cylinder, head, sector, activity/direction -->
+                            <StackPanel Orientation="Horizontal" Spacing="10">
+                                <StackPanel Orientation="Horizontal" Spacing="4" VerticalAlignment="Center"
+                                            ToolTip.Tip="MOTORON is a single shared line for the whole board — every drive's tab reflects the same signal, not an independent one per drive">
+                                    <Ellipse Width="7" Height="7"
+                                             Fill="{Binding IsMotorOn, Converter={x:Static local:BoolToLedBrushConverter.Instance}}" />
+                                    <TextBlock Text="Motor" FontSize="10" Foreground="#777" VerticalAlignment="Center" />
+                                </StackPanel>
+                                <TextBlock Text="{Binding CylinderText, StringFormat='Cyl {0}'}"
+                                           FontSize="11" Foreground="#bbb" VerticalAlignment="Center" />
+                                <TextBlock Text="{Binding HeadText, StringFormat='Head {0}'}"
+                                           FontSize="11" Foreground="#bbb" VerticalAlignment="Center"
+                                           ToolTip.Tip="Only meaningful during an active transfer — neither head nor sector is a real persistent register on idle hardware" />
+                                <TextBlock Text="{Binding SectorText, StringFormat='Sect {0}'}"
+                                           FontSize="11" Foreground="#bbb" VerticalAlignment="Center" />
+                                <StackPanel Orientation="Horizontal" Spacing="4" VerticalAlignment="Center">
+                                    <Ellipse Width="7" Height="7"
+                                             Fill="{Binding IsActive, Converter={x:Static local:BoolToLedBrushConverter.Instance}}" />
+                                    <TextBlock Text="{Binding DirectionText}" FontSize="10" Foreground="#777" VerticalAlignment="Center" />
+                                </StackPanel>
+                            </StackPanel>
+
+                            <!-- Write-protect padlock (same pattern as the cassette deck) -->
+                            <Button Command="{Binding ToggleWriteProtectCommand}"
+                                    IsEnabled="{Binding HasImage}"
+                                    Background="Transparent" BorderThickness="0"
+                                    Padding="2" Margin="-2,0,0,0"
+                                    HorizontalAlignment="Left" HorizontalContentAlignment="Left"
+                                    ToolTip.Tip="Click to toggle write-protect — a host-side control; does not persist through the .dsk file itself">
+                                <StackPanel Orientation="Horizontal" Spacing="6">
+                                    <TextBlock Text="{Binding IsWriteProtected, Converter={x:Static local:BoolToPadlockIconConverter.Instance}}"
+                                               FontSize="18" VerticalAlignment="Center" />
+                                    <TextBlock Text="{Binding IsWriteProtected, Converter={x:Static local:BoolToWriteProtectLabelConverter.Instance}}"
+                                               FontSize="11" Foreground="#bbb" VerticalAlignment="Center" />
+                                </StackPanel>
+                            </Button>
+
+                            <!-- Buttons -->
+                            <StackPanel Orientation="Horizontal" Spacing="6">
+                                <Button Content="Mount…"     Command="{Binding MountCommand}"       MinWidth="70"
+                                        ToolTip.Tip="Insert a .dsk/.img disk image (also drag-drop onto this window)" />
+                                <Button Content="New"        Command="{Binding NewBlankDiskCommand}" MinWidth="50"
+                                        ToolTip.Tip="Mount a fresh, unformatted disk at this drive's configured geometry" />
+                                <Button Content="Eject"      Command="{Binding EjectCommand}"        MinWidth="55" />
+                                <Button Content="Save"       Command="{Binding SaveCommand}"         MinWidth="55" />
+                                <Button Content="Save as…"   Command="{Binding SaveAsCommand}"        MinWidth="70" />
+                            </StackPanel>
+
+                            <!-- Directory -->
+                            <TextBlock Text="{Binding DirectoryHeader}"
+                                       FontSize="10" FontFamily="Consolas,Courier New,monospace"
+                                       Foreground="#666"
+                                       IsVisible="{Binding Programs.Count,
+                                           Converter={x:Static local:ZeroToBoolConverter.Instance},
+                                           ConverterParameter=invert}" />
+                            <ItemsControl ItemsSource="{Binding Programs}"
+                                          IsVisible="{Binding Programs.Count,
+                                              Converter={x:Static local:ZeroToBoolConverter.Instance},
+                                              ConverterParameter=invert}">
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <TextBlock Text="{Binding}"
+                                                   FontSize="10" FontFamily="Consolas,Courier New,monospace"
+                                                   Foreground="#ddd" />
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                        </StackPanel>
+                    </ScrollViewer>
+                </DataTemplate>
+            </TabControl.ContentTemplate>
+        </TabControl>
+    </Grid>
+</Window>

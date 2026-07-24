@@ -277,6 +277,19 @@ public class MachineStateFileTests
         Assert.Throws<InvalidDataException>(() => MachineStateFile.Load(ms));
     }
 
+    [Fact]
+    public void Load_VersionFive_Throws()
+    {
+        // v5 files' FDC block is 8 bytes shorter than v6 expects (two new int32 fields for the
+        // live current-sector value, project CLAUDE.md §17 2026-07-23) — reading it under the
+        // new layout would misalign every field after that point, not just drop the new ones.
+        var ms = new MemoryStream();
+        ms.Write("P2ST"u8);
+        ms.Write(new byte[] { 5, 0, 0, 0 }); // version = 5
+        ms.Position = 0;
+        Assert.Throws<InvalidDataException>(() => MachineStateFile.Load(ms));
+    }
+
     /// <summary>Project CLAUDE.md §13 milestone 20 test (e): a `.state` round trip with multiple
     /// drives mid-transfer at different head/cylinder positions reproduces identical subsequent
     /// frames (the chip's per-drive cylinder array already round-tripped since M19 — this test

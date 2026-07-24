@@ -39,6 +39,8 @@
                 <TextBlock Classes="label" Text="RAM" />
                 <ComboBox ItemsSource="{Binding RamVariants}"
                           SelectedItem="{Binding RamVariant}"
+                          IsEnabled="{Binding CanEditRamVariant}"
+                          ToolTip.Tip="Fixed to T/102 while Floppy + RAM is selected below — the machine's own disk-boot gate requires it."
                           MinWidth="200">
                     <ComboBox.ItemTemplate>
                         <DataTemplate x:DataType="m:RamVariant">
@@ -47,6 +49,58 @@
                     </ComboBox.ItemTemplate>
                 </ComboBox>
             </DockPanel>
+
+            <!-- ── Internal-slot board ──────────────────────────────────────── -->
+            <TextBlock Classes="section" Text="Internal-Slot Board" />
+            <TextBlock Foreground="#777" FontSize="11"
+                       Text="Determines upper memory AND whether the FDC/CTC + floppy drives exist." />
+            <DockPanel>
+                <TextBlock Classes="label" Text="Board" />
+                <ComboBox ItemsSource="{Binding Boards}"
+                          SelectedItem="{Binding Board}"
+                          MinWidth="200">
+                    <ComboBox.ItemTemplate>
+                        <DataTemplate x:DataType="m:InternalBoard">
+                            <TextBlock Text="{Binding Converter={x:Static vm:InternalBoardDescConverter.Instance}}" />
+                        </DataTemplate>
+                    </ComboBox.ItemTemplate>
+                </ComboBox>
+            </DockPanel>
+
+            <!-- ── Floppy drives (project CLAUDE.md §14 milestone 14) ───────── -->
+            <StackPanel IsVisible="{Binding ShowFloppyDrives}" Spacing="4">
+                <TextBlock Classes="section" Text="Floppy Drives" />
+                <TextBlock Foreground="#777" FontSize="11"
+                           Text="Drive count/geometry is topology (reset-to-apply). Capacity/Sides only seed newly-created blank media — a mounted image's own label always wins. Images themselves are mounted live from the Disk Drives window." />
+                <DockPanel>
+                    <TextBlock Classes="label" Text="Drive count" />
+                    <ComboBox ItemsSource="{Binding FloppyDriveCounts}"
+                              SelectedItem="{Binding FloppyDriveCount}"
+                              MinWidth="80" />
+                </DockPanel>
+                <ItemsControl ItemsSource="{Binding FloppyDriveRows}">
+                    <ItemsControl.ItemTemplate>
+                        <DataTemplate x:DataType="vm:FloppyDriveRowVm">
+                            <DockPanel Margin="0,2">
+                                <TextBlock Classes="label" Width="90"
+                                           Text="{Binding DriveIndex, StringFormat='Drive {0}'}" />
+                                <ComboBox ItemsSource="{x:Static vm:FloppyDriveRowVm.Capacities}"
+                                          SelectedItem="{Binding Capacity}"
+                                          MinWidth="90" Margin="0,0,8,0" />
+                                <ComboBox ItemsSource="{x:Static vm:FloppyDriveRowVm.SidesOptions}"
+                                          SelectedItem="{Binding Sides}"
+                                          MinWidth="140">
+                                    <ComboBox.ItemTemplate>
+                                        <DataTemplate x:DataType="m:DiskSides">
+                                            <TextBlock Text="{Binding Converter={x:Static vm:DiskSidesDescConverter.Instance}}" />
+                                        </DataTemplate>
+                                    </ComboBox.ItemTemplate>
+                                </ComboBox>
+                            </DockPanel>
+                        </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                </ItemsControl>
+            </StackPanel>
 
             <!-- ── SLOT1 cartridge ─────────────────────────────────────────── -->
             <TextBlock Classes="section" Text="SLOT1 Cartridge" />

@@ -40,16 +40,26 @@ public static class MachineStateFile
     ///     no error. The FDC device-state BLOCK's own byte layout is unchanged (it already
     ///     tracked all 4 drives' cylinders since M19); this bump is entirely about the config
     ///     JSON shape, not the device stream.</item>
+    ///   <item>v6: the FDC block's own byte layout DID change this time —
+    ///     <see cref="Devices.Fdc.Upd765"/> gained a live current-sector value for the disk
+    ///     drive UI's status row (`P2000.UI` milestone 14 follow-up, owner decision
+    ///     2026-07-23), adding two int32 fields (<c>_transferStartSector</c>/
+    ///     <c>_transferSectorSize</c>) mid-stream, between the existing transfer-drive and
+    ///     byte-ready fields. A v5 file's FDC block is 8 bytes shorter than v6 expects —
+    ///     reading it under the new layout would misalign every field after that point
+    ///     (byte-ready read as garbage, then cascading into the pending-action block etc.),
+    ///     not just silently drop the new fields.</item>
     /// </list></summary>
-    public const int CurrentVersion = 5;
+    public const int CurrentVersion = 6;
 
     /// <summary>Oldest <c>.state</c> version accepted by this build. Older files are rejected
     /// because the device-stream layout (or, for v4→v5, the embedded config JSON shape) changed
     /// incompatibly without a version bump at the time (v1→v2: SoundDevice added, NMI bool added
     /// to Interrupts; v2→v3: Lock bool added to Interrupts, optional Ctc block appended; v3→v4:
     /// FDC block appended after Ctc; v4→v5: config JSON's disk axis reshaped from a singular path
-    /// to a per-drive collection — see <see cref="CurrentVersion"/>'s v5 note).</summary>
-    private const int MinVersion = 5;
+    /// to a per-drive collection; v5→v6: FDC block gained two int32 fields mid-stream for the
+    /// live current-sector value — see <see cref="CurrentVersion"/>'s v6 note).</summary>
+    private const int MinVersion = 6;
 
     private static readonly byte[] Magic = "P2ST"u8.ToArray();
 

@@ -83,6 +83,8 @@ public sealed class Upd765 : IDevice
     private int _transferCylinder;
     private int _transferHead;
     private int _transferDrive;
+    private int _transferStartSector;
+    private int _transferSectorSize;
     private bool _byteReady;
 
     private PendingAction _pending = PendingAction.None;
@@ -111,6 +113,40 @@ public sealed class Upd765 : IDevice
     public void EjectDisk(int drive) => _drives[drive] = null;
 
     public DskImage? GetDisk(int drive) => _drives[drive];
+
+    // ---- Host status surface (P2000.UI milestone 14 — disk drive window) ------------------
+
+    /// <summary>The board's single shared MOTORON line (reference doc §5d, project CLAUDE.md
+    /// §13.20's M2200-manual finding) — NOT per-drive; every configured drive's status row
+    /// reflects this SAME bit.</summary>
+    public bool MotorOn => _motorOn;
+
+    /// <summary>The given drive's own tracked head position (0-3; out-of-range drives read 0,
+    /// same as a drive that's never been sought). Survives across commands — real hardware's
+    /// RESET does not rehome the heads (see <see cref="WriteControl"/>'s doc comment).</summary>
+    public int GetCylinder(int drive) => _cylinder[drive];
+
+    /// <summary>Snapshot of a semi-DMA transfer in progress — the current status display's
+    /// activity/direction/head/sector source. <c>null</c> when idle or between command phases
+    /// (not consulted by the chip's own command dispatch, host-status-only). <see cref="Sector"/>
+    /// is the REAL current sector (project CLAUDE.md §17, 2026-07-23 owner decision) — derived
+    /// from the command's own starting sector (R) plus how many bytes have moved through the
+    /// semi-DMA byte-loop so far, not just echoing R for the whole transfer; exposing state the
+    /// chip already implicitly tracks, not new state. <c>Head</c>/<c>Sector</c> are only
+    /// meaningful during an actual READ/WRITE DATA transfer — a SEEK/RECALIBRATE settle is also
+    /// <see cref="Phase.ExecutionPhase"/> but has no head/sector of its own; it reads whatever
+    /// the LAST real transfer's values were (a known, accepted cosmetic imprecision, not a data
+    /// hazard — nothing in the chip's own dispatch consults this struct).</summary>
+    public readonly record struct TransferStatus(int Drive, int Head, bool IsWrite, int Sector);
+
+    public TransferStatus? CurrentTransfer => _phase == Phase.ExecutionPhase
+        ? new TransferStatus(_transferDrive, _transferHead, _transferIsWrite, CurrentSector())
+        : null;
+
+    private int CurrentSector() =>
+        _transferSectorSize > 0
+            ? _transferStartSector + _transferIndex / _transferSectorSize
+            : _transferStartSector;
 
     // ---- Port-facing surface (mapped by InternalExtensionBoard) --------------------------
 
@@ -352,6 +388,11 @@ public sealed class Upd765 : IDevice
     {
         _phase = Phase.ExecutionPhase;
         _transferIsWrite = false; // no byte transfer during a seek — MSR DIO bit is irrelevant here
+        // Real bug, fixed 2026-07-23: _transferDrive previously wasn't updated here, so
+        // CurrentTransfer.Drive reported whichever drive last did a READ/WRITE DATA transfer
+        // (or 0, if none ever had) during a seek on a DIFFERENT drive — the host status
+        // surface (P2000.UI milestone 14) would light up the wrong drive's activity indicator.
+        _transferDrive = drive;
         _pending = PendingAction.SeekSettle;
         _pendingDrive = drive;
         _pendingCylinder = targetCylinder;
@@ -407,6 +448,8 @@ public sealed class Upd765 : IDevice
         _transferCylinder = cylinder;
         _transferHead = head;
         _transferDrive = drive;
+        _transferStartSector = startSector;
+        _transferSectorSize = sectorSize;
         _transferIndex = 0;
         _phase = Phase.ExecutionPhase;
 
@@ -484,6 +527,8 @@ public sealed class Upd765 : IDevice
         _transferBuffer = Array.Empty<byte>();
         _transferIndex = 0;
         _transferIsWrite = false;
+        _transferStartSector = 0;
+        _transferSectorSize = 0;
         _byteReady = false;
         _pending = PendingAction.None;
         _delayCounter = 0;
@@ -514,6 +559,8 @@ public sealed class Upd765 : IDevice
         w.WriteInt32(_transferCylinder);
         w.WriteInt32(_transferHead);
         w.WriteInt32(_transferDrive);
+        w.WriteInt32(_transferStartSector);
+        w.WriteInt32(_transferSectorSize);
         w.WriteBool(_byteReady);
 
         w.WriteByte((byte)_pending);
@@ -551,6 +598,8 @@ public sealed class Upd765 : IDevice
         _transferCylinder = r.ReadInt32();
         _transferHead = r.ReadInt32();
         _transferDrive = r.ReadInt32();
+        _transferStartSector = r.ReadInt32();
+        _transferSectorSize = r.ReadInt32();
         _byteReady = r.ReadBool();
 
         _pending = (PendingAction)r.ReadByte();

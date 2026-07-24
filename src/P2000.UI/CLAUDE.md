@@ -242,6 +242,38 @@ window surfaces the axes; the machine owns their meaning.
   Driven by the internal-slot board choice below.
 - **Internal-slot board (three-way): none / RAM-only / floppy+RAM.** Determines upper memory
   AND whether the FDC/CTC + disk exist ("more RAM" is separable from "disk present").
+  - **NEW — board/RAM coupling UI, DECIDED (owner, 2026-07-23), PARTIALLY BUILT as of
+    milestone 14 (see `P2000.Machine` CLAUDE.md §17 flag of the same date for the machine-layer
+    side):** **floppy+RAM is a single atomic selection, not "board + separate memory dial."**
+    Real hardware is one physical card (FDC + CTC + a fixed RAM capacity, all bundled) —
+    checking "floppy+RAM" in the UI should just work, immediately implying the FDC, the CTC,
+    and the one confirmed capacity (T/102) together, with **no memory-size control shown at
+    all** for this board (there's nothing to choose — same reasoning as why there's no
+    separate CTC checkbox). **RAM-only, by contrast, IS meant to expose a capacity/bank-count
+    control** — it models a homebrew/3rd-party RAM-expansion card (no single official
+    product), so a numeric or preset bank-count selector belongs there, not on floppy+RAM.
+    **Status update (2026-07-23, after milestone 14):** the Floppy+RAM half is effectively
+    already satisfied as a side effect of the milestone-14 board selector — selecting
+    Floppy+RAM auto-forces `RamVariant.T102` and disables the RAM selector
+    (`ConfigWindowVm.CanEditRamVariant`), so there's already no reachable way to pick a
+    different capacity alongside it. **Still open:** RAM-only currently just offers the same
+    fixed named tiers (T/38 · T/54 · T/102) via that same disabled/enabled selector, not a
+    genuine bank-count dial for an unofficial/homebrew card — the "RAM-only should be a real
+    configurable axis, not a picker over three fixed official names" half of this decision is
+    not yet built. Practical UI shape once it is: selecting Floppy+RAM should keep hiding/
+    disabling any RAM-only-style capacity control entirely (already true); selecting RAM-only
+    should show a bank-count control that isn't limited to today's three named tiers.
+  - **Drive-config preservation on board removal — DECIDED (owner, 2026-07-23):** switching
+    the internal-slot board away from Floppy+RAM (removing the FDC) should **preserve** the
+    already-configured floppy drive list (capacity/sides/mounted images), just grey it out —
+    not clear it. Switching back to Floppy+RAM restores it exactly as it was. This is a UI/
+    `MachineConfig`-retention concern (keep the `FloppyDrives` collection intact in the config
+    object even while `Board != FloppyRam`; the machine layer simply doesn't mount any of it
+    when the board isn't present), not a machine-layer validation concern. **Not yet verified
+    against the milestone-14 implementation** — check whether `ConfigWindowVm`'s board-switch
+    handling already keeps `FloppyDriveRows`/`FloppyDriveCount` intact when the board is set
+    away from `FloppyRam`, or clears them; the milestone-14 write-up above doesn't say either
+    way.
 - **Slot population:** SLOT1 (memory-mapped ROM carts — BASIC etc., `.bin`/`.rom`), SLOT2
   (I/O-mapped hardware), internal extension (floppy/CTC). Reflect `machine.Slot1` etc.
 - **Disk — drive (mechanism) vs. image (media), split like the cassette:** the **floppy
@@ -781,9 +813,18 @@ builds did. Do not advance while the current milestone is red. Record spec corre
       selector (SS/DS) — both reset-to-apply, both act only as the **seed for blank/unlabeled
       media**, since the machine auto-detects real geometry from the on-disk label once an image
       is mounted (M19/M20) — don't let the UI imply the selector overrides a present label.
-    - **New "Disk drive(s)" window** (or a per-drive panel within one window — cassette-deck-
-      style single window, N status rows, is probably the closer fit than N separate windows;
-      minor UX call, not a hardware fact): for each configured drive —
+    - **New "Disk drive(s)" window — RESOLVED (owner, 2026-07-23): one window, DRIVE TABS, one
+      tab per configured drive.** Supersedes the "N status rows vs. N separate windows" framing
+      below as a genuinely open UX call — it's decided now. Each tab owns everything currently
+      described as a "per-drive row": mount/eject, directory browse, live status, write-protect,
+      New/Save/Save-as. **This also resolves the main-window `.dsk` drag-drop target ambiguity**
+      flagged as blocking in the milestone-14 write-up (`P2000.UI` CLAUDE.md §17, "not built"
+      list) — with N drives there was no way to tell which drive a dropped file was meant for;
+      with tabs, a drop lands on whichever drive's tab is currently active/focused, exactly like
+      dropping a file onto a specific document tab in an editor. No separate target-picker UI
+      needed. Tab header should show enough per-drive summary (drive index, mounted filename or
+      "empty", dirty-asterisk) that the user can tell tabs apart without opening each one.
+      For each configured drive (i.e., within its tab) —
       - **Mount/eject**, file dialog + drag-drop, **runtime** (extends the existing main-window
         `.dsk` drag-drop rule, §5.1 — no reset once the drive itself already exists).
       - **New (blank) disk + Save / Save as `.dsk`…** (owner decision, 2026-07-23 — mirrors
@@ -806,7 +847,29 @@ builds did. Do not advance while the current milestone is red. Record spec corre
       - **Live status row** — head (0/1), track/cylinder, sector, motor (on/off), read/write
         activity + direction, write-protected/write-enabled — same activity-LED sourcing pattern
         as the cassette deck (§5/§6: derive from device state, not from guessing at command
-        intent). **Motor is a single shared line, not per-drive — CONFIRMED (2026-07-23, M2200
+        intent).
+        - **Head and sector when idle vs. active — RESOLVED (owner, 2026-07-23), reopening what
+          milestone 14 scoped out as "flagged rather than guessed":** neither is a real
+          persistent register on idle hardware, but BOTH are real, recoverable state during an
+          active operation — reach into the FDC emulation's own internals for them rather than
+          leaving them blank whenever something is actually happening.
+          - **Idle (no command in flight): show "–" for both head and sector.** Matches real
+            hardware — there's nothing to read when the drive isn't doing anything.
+          - **Active (read/write/format/seek — any multi-step operation, not just the
+            already-modeled READ/WRITE DATA case):** show the REAL current value, sourced from
+            `Upd765`'s own internal transfer-tracking, not guessed from the command bytes alone.
+            Head: already available today via `CurrentTransfer.Head` (M14) — just needs
+            surfacing for whichever command is active, not only read/write. Sector: extend
+            `Upd765`'s transfer-status tracking with a running current-sector value — the chip
+            already knows the starting sector (R, from the 9-byte command block) and how many
+            bytes have moved through the semi-DMA byte-loop (`0x8D`/`INI`) so far; deriving
+            "which sector is this" from bytes-transferred-so-far ÷ bytes-per-sector (wrapping at
+            EOT per normal CHS increment rules) is exposing state the chip already implicitly
+            tracks, not inventing new state. For a single-sector command this is just R itself
+            (satisfies "at least the starting sector is knowable" for the simple case); for a
+            multi-sector run it should advance live as the transfer progresses, not stay pinned
+            to the starting value.
+        - **Motor is a single shared line, not per-drive — CONFIRMED (2026-07-23, M2200
         manual, `P2000.Machine` CLAUDE.md §13.20's per-drive-device-state bullet).** The real
         34-pin connector has exactly one `MOTORON` signal for the whole card, not one per drive.
         **Design implication:** showing an independent "motor on/off" indicator per drive row
@@ -920,6 +983,158 @@ project.
 - **Applies to:** reference doc §3a / <file>
 - **Synced:** yes (YYYY-MM-DD)
 -->
+
+### 2026-07-23 — Milestone 14 follow-up IMPLEMENTED: drive tabs, head/sector/dirty status, drag-drop
+- **Trigger — owner updated both this file and `P2000.Machine/CLAUDE.md` with resolutions to
+  everything milestone 14 (entry below) scoped out or flagged.** This entry implements the
+  concrete, actionable ones; see the "not acted on yet" note at the bottom for what's still
+  open and why.
+- **"DRIVE TABS" — implemented, supersedes the milestone-14 stacked-rows layout:**
+  `DiskDriveWindow.axaml` is now a `TabControl` (one `TabItem` per configured drive) instead of
+  an `ItemsControl` of stacked panels. `DiskDriveWindowVm` gained `SelectedDrive`
+  (`[ObservableProperty]`, two-way bound to `TabControl.SelectedItem`), defaulted to the first
+  drive whenever the collection rebuilds. `DiskDriveVm.TabHeader` (`"{DriveIndex}: {ImageLabel}
+  {dirty-asterisk}"`) is the tab's header content.
+- **Drag-drop `.dsk`/`.img` onto the Disk Drives window — implemented, resolves the drop-target
+  ambiguity milestone 14 left unbuilt:** `DiskDriveWindow.axaml.cs` gained `OnDrop`/`OnDragOver`
+  handlers (same shape as `DisplayWindow`'s existing `.cas` drop handling) that mount onto
+  `_vm.SelectedDrive` — whichever tab is currently active receives the drop, exactly the "like
+  a document tab in an editor" model the owner specified. Did NOT extend the MAIN display
+  window's drag-drop to accept `.dsk` — that would still need to either open/focus the Disk
+  Drives window on drop or silently target drive 0, neither of which the owner's tab-based
+  resolution actually specifies; left as a smaller, clearly-scoped follow-up if wanted.
+- **Head/Sector in the live status row — implemented:** `DiskDriveVm` gained `HeadText`/
+  `SectorText`, populated from `Upd765.CurrentTransfer` (now carrying `Sector` too — see the
+  machine-layer entry above) exactly like the existing `DirectionText`/`CylinderText` —
+  "–" when this drive has no active transfer, the real value while it does.
+- **Dirty indicator — implemented, using the already-existing machine-layer signal (M20a),
+  no new machine work needed:** `DiskDriveVm.IsDirty` mirrors `DskImage.IsDirty` (refreshed
+  every frame, same as the other status fields) and feeds the tab header's dirty asterisk.
+  Still NOT wired to an eject/replace warning dialog (milestone 14a, genuinely unbuilt) — this
+  is only the passive display half, which was always going to exist independently of 14a per
+  the machine-layer note that "the flag exists and works live regardless of whether it persists
+  or gets consumed by a warning."
+- **Not acted on this pass, and why:** the RAM-only-board bank-count dial / `MachineConfig`
+  reshaping decision (`P2000.Machine/CLAUDE.md` §17, "floppy+RAM board is an atomic unit, not
+  board+separate-RAM-tier" entry) is a separate, larger design question the owner explicitly
+  left as "not resolved here… still outstanding" (no sourced real-world bank-count upper bound
+  yet) — distinct from the concrete, immediately-actionable sector/tabs/drag-drop decisions
+  this entry implements. Flagging rather than guessing a placeholder bound; ready to build once
+  a number is picked. Drive-config preservation on board removal was ALREADY correct as of
+  milestone 14 (verified, not fixed) — `ConfigWindowVm.OnBoardChanged` only ever force-sets
+  `RamVariant`, never touches `FloppyDriveCount`/`FloppyDriveRows`; added a regression test
+  (`SwitchingBoardAwayFromFloppyRam_PreservesDriveConfiguration`) to lock this in explicitly
+  now that it's a documented decision, not just incidental behavior.
+- **Tests:** `DiskDriveVmTests` (+6): head/sector idle vs. active (the active case stops the
+  runner's background thread right after the topology swap lands and drives the FDC fully
+  synchronously via ports — writing ports while the emulation thread ticks concurrently would
+  race against an Authentic transfer completing on its own before the test observes it),
+  dirty-flag transitions (fresh/blank → false, after a write → true, reflected in `TabHeader`),
+  tab-header format. `ConfigWindowVmTests` (+1): board-switch-away-and-back preserves drive
+  config. Full `P2000.UI.Tests`: 130/130 green (was 124); `P2000.Machine.Tests`: 468/468 (see
+  the machine-layer entry).
+- **Verified:** app launches cleanly with the tab-based window (smoke-tested via background
+  launch + window-title check, no crash) — same caveat as milestone 14's own entry: the actual
+  tab-switching/drag-drop click-through was not driven end-to-end from this seat.
+- **Applies to:** `src/P2000.UI/ViewModels/DiskDriveWindowVm.cs` (`SelectedDrive`),
+  `src/P2000.UI/ViewModels/DiskDriveVm.cs` (`TabHeader`, `HeadText`, `SectorText`, `IsDirty`),
+  `src/P2000.UI/Views/DiskDriveWindow.axaml` (`TabControl`), `src/P2000.UI/Views/DiskDriveWindow.axaml.cs`
+  (drag-drop), `tests/P2000.UI.Tests/ViewModels/DiskDriveVmTests.cs`,
+  `tests/P2000.UI.Tests/ViewModels/ConfigWindowVmTests.cs`.
+- **Synced:** no (implementation-only — the design decisions themselves were already synced by
+  the owner's own updates to this file and the reference doc before this pass began).
+
+### 2026-07-23 — Milestone 14 IMPLEMENTED: Disk drive UI
+- **Assumed (per the milestone's own text):** the Config window already had an
+  "Internal-slot board" selector (§7 lists it as an existing axis) — the disk drive axis would
+  just slot in alongside it.
+- **Found (a real, blocking pre-existing gap, not assumed correctly):** `ConfigWindowVm`/
+  `ConfigWindow.axaml` had NO board selector at all — `BuildConfig()` never set `Board`, so
+  every machine built from the config window was permanently `InternalBoard.None`. Without
+  fixing this, a "Floppy drives" axis would have been unreachable (the FDC only exists when
+  `Board == FloppyRam`). Added the missing selector (None/RAM-only/Floppy+RAM) as a genuine
+  prerequisite, not scope creep — the milestone's own spec assumed it already existed.
+- **Found (a second real, latent bug, surfaced by the same gap):** `ConfigWindowVm.Apply()` had
+  no try/catch around `_runner.Reconfigure(config)`. `Machine`'s constructor throws
+  `ArgumentException` for `FloppyRam` + non-T102 (and, since milestone 20, for an invalid
+  `FloppyDrives` shape) — with no board selector, this combination was previously unreachable
+  from the UI at all, so the gap was latent. Adding the board selector makes it reachable, so
+  fixed it: `Apply()` now catches `ArgumentException` and surfaces it via `StatusMessage`
+  instead of crashing the UI thread. Also proactively prevented the specific known-invalid
+  combination: selecting `FloppyRam` auto-forces `RamVariant.T102` and disables the RAM
+  selector (`CanEditRamVariant`) so a user can't build that combination through normal
+  interaction either way — the try/catch is defense-in-depth, not the primary guard.
+- **Design choice — config window models drive COUNT, not the machine's more general per-drive
+  shape:** `MachineConfig.FloppyDrives` allows arbitrary indices/gaps/per-drive `Enabled`
+  flags (machine milestone 20), but the UI only ever needs "how many drives, sequential from
+  0." `ConfigWindowVm.FloppyDriveCount` + `ObservableCollection<FloppyDriveRowVm>` (resized to
+  match, each row fixed at construction to its `DriveIndex`) is the whole axis — simpler than
+  exposing the machine's full generality, and it's still a strict subset (every config this
+  window can produce is valid input to `Machine`, just not every config `Machine` accepts is
+  reachable from here). `LoadFromCurrentConfig`/`LoadCfgAsync` collapse a loaded config's drive
+  list the same way (highest enabled index + 1 = count) — a hand-edited `.cfg` with gaps or a
+  disabled middle drive round-trips lossily through this window, which is an accepted
+  limitation of the simpler model, not a bug.
+- **Machine-layer additions needed (small, additive — the "live status row" the milestone's own
+  test (d) requires had no public accessor to read from):** `Upd765` gained `MotorOn` (the
+  single shared control-latch bit), `GetCylinder(int drive)` (already-tracked per-drive state,
+  just not exposed), and `CurrentTransfer` (a `TransferStatus?` snapshot of drive/head/
+  direction during an active semi-DMA transfer, null when idle) — all host-status-only, none
+  consulted by the chip's own command dispatch. Confirmed via the "check before adding" rule:
+  neither the chip nor `DskImage` already exposed these.
+- **Scoped OUT of the live status row, flagged rather than guessed:** "sector" — `Upd765`
+  doesn't persist a current-sector value outside an active transfer's own command bytes (which
+  aren't retained as separate fields), and adding that would be new state, not just a new
+  accessor over existing state. "Head" is shown only during an active transfer (from
+  `CurrentTransfer`); there's no persistent per-drive head register to show it from when idle,
+  matching real hardware (H is a per-command parameter, not a resting register). Both flagged
+  in `DiskDriveVm`'s own doc comments rather than fabricated.
+- **NOT built this pass (explicitly out of scope — user asked for milestone 14 only):**
+  milestone 14a (unsaved-changes eject/replace warning) — `DskImage.IsDirty`/`MarkClean()` and
+  `MdcrDevice.IsDirty`/`MarkClean()` already exist from machine milestone 20a and
+  `WriteDiskToFileAsync`/cassette's own save path already call `MarkClean()` on success, so
+  14a has its machine-layer signal ready to consume, nothing here blocks it. Also not built:
+  drag-drop of `.dsk` onto the main display window (ambiguous which drive should receive it
+  with N drives configured, unlike the cassette's single-deck case — needs an owner decision on
+  the default target before it can be built without guessing) and any UI-side persistence for
+  disk write-protect (machine-layer M20 flagged this as blocked on a still-open "what does a
+  saved session persist" question).
+- **Tests:** `DiskDriveVmTests` (new, 15) — mount/eject/new-blank/write-protect state
+  transitions and `CanExecute` wiring, write-protect actually gating a write, motor state
+  shared identically across two drives' rows, per-drive independence (mounting on drive 0
+  doesn't touch drive 1). `DiskDriveWindowVmTests` (new, 4) — row collection rebuilds on a
+  topology `Reconfigure` (board added/removed, drive count changed), disabled drives get no
+  row. `ConfigWindowVmTests` (new, 9 — this VM had NO tests before this pass) — board/RAM
+  auto-force interaction, drive-count row resize (grow/shrink preserves earlier rows), config
+  round-trip through `LoadFromCurrentConfig`, `Apply`'s try/catch. `Upd765Tests` (+7, machine
+  layer) — the three new accessors. Uses `[AvaloniaFact]` + async/`Start()`/`await Task.Delay`
+  for any test that needs a real `Reconfigure` swap to land (same requirement already
+  documented in `EmulationRunnerStateTests`) — unlike `CassetteDeckVmTests`, which never
+  reconfigures the machine's board and could stay fully synchronous. Full `P2000.UI.Tests`:
+  124/124 green (was 99); `P2000.Machine.Tests`: 465/465 green (was 459).
+- **Verified:** the app launches cleanly with this change (smoke-tested via a background
+  launch + window-title check, no crash, main window title "MMulator - P2000T" present) but
+  the actual Config→Floppy+RAM→Disk-Drives-window click-through was NOT driven end-to-end from
+  this seat (no interactive access to a native Avalonia window) — same limitation already
+  logged elsewhere in this file for computer-use against a running dev instance. Owner should
+  click through: Config → Board = Floppy+RAM → set drive count → Apply → Disk menu → Open Disk
+  Drives window → Mount/New/Save/Eject/write-protect per row.
+- **Applies to:** project CLAUDE.md §14 milestone 14 /
+  `src/P2000.Machine/Devices/Fdc/Upd765.cs` (`MotorOn`, `GetCylinder`, `CurrentTransfer`,
+  `TransferStatus`), `src/P2000.UI/ViewModels/ConfigWindowVm.cs` (`Board`, `Boards`,
+  `CanEditRamVariant`, `ShowFloppyDrives`, `FloppyDriveCount`, `FloppyDriveRows`,
+  `FloppyDriveRowVm`, `Apply` try/catch), `src/P2000.UI/ViewModels/ConfigConverters.cs`
+  (`InternalBoardDescConverter`, `DiskSidesDescConverter`), `src/P2000.UI/Views/ConfigWindow.axaml`
+  (board selector, floppy-drives section), `src/P2000.UI/ViewModels/DiskDriveVm.cs` (new),
+  `src/P2000.UI/ViewModels/DiskDriveWindowVm.cs` (new), `src/P2000.UI/Views/DiskDriveWindow.axaml(.cs)`
+  (new), `src/P2000.UI/ViewModels/DisplayWindowVm.cs` (`DiskVm`, `OpenDiskDriveWindowRequested`,
+  `OpenDiskDrivesCommand`), `src/P2000.UI/Views/DisplayWindow.axaml(.cs)` (Disk menu, window
+  wiring), `tests/P2000.Machine.Tests/Devices/Fdc/Upd765Tests.cs`,
+  `tests/P2000.UI.Tests/ViewModels/DiskDriveVmTests.cs` (new),
+  `tests/P2000.UI.Tests/ViewModels/DiskDriveWindowVmTests.cs` (new),
+  `tests/P2000.UI.Tests/ViewModels/ConfigWindowVmTests.cs` (new).
+- **Synced:** no (implementation-only — no new hardware facts; the scope-out decisions above
+  are UX/sequencing calls, not corrections to anything the reference doc claims).
 
 ### 2026-07-22 — Flag (not yet implemented): Full-Field vs Graphics-window UI toggle
 - **Trigger — owner's request:** the machine should render the complete field (black blanking

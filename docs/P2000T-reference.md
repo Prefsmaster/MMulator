@@ -2213,6 +2213,50 @@ is at least 7 commands, not just the 6 `getdos` itself issues. See
 project's own command subset above is a proper subset of that, not the whole chip) and the
 new machine-layer milestone (project CLAUDE.md §13.19a) building full command-set fidelity.
 
+**An eighth command, now CONFIRMED (2026-07-24, owner-supplied disassembly of `JWSFormat.bin`,
+the standalone formatter utility — `docs/jwsformat.asm`, not part of `jwsdos5.0.asm`, exactly as
+flagged 2026-07-23) — FORMAT A TRACK, real bytes and real execution-phase mechanism:** command
+phase `06 4D <HD/US> 01 10h 32h 00h` (length 6, opcode `0x0D`|MF, HD/US set at runtime from the
+user's drive+side choice, N=1/256 B per sector, SC=16 sectors/cylinder — matches this platform's
+confirmed disk geometry, GPL=`0x32`/50 decimal, D=`0x00` fill byte) — an exact, byte-for-byte
+match to the general-datasheet shape already modeled in `docs/FDC-implementation.md` §4, so only
+its status moves from "modeled" to "confirmed," not the shape itself. **Execution phase also
+confirmed exactly as predicted, reusing the same semi-DMA mechanism already documented above for
+READ/WRITE DATA:** for each of the SC=16 sectors, the host feeds exactly 4 bytes (Cylinder, Head,
+Record, N) from a small in-RAM data block via `outi` to port `0x8D`, gated by the identical
+`0x90` bit0 poll used elsewhere — no new port or transfer logic, just the existing byte-poll loop
+fed 4×SC bytes instead of N-bytes-per-sector.
+
+A genuinely useful cross-check surfaced by this same source: the Cylinder byte `jwsformat.asm`
+writes into each track's own format data is `track_index + 1`, **not** the real 0-based physical
+track index used for that track's own SEEK — physical track 0 gets Cylinder=1 written into its
+sector headers, physical track 1 gets Cylinder=2, and so on, a consistent off-by-one between the
+ID field's nominal Cylinder value and the drive's actual physical position. Combined with the
+`Disk.asm` finding two paragraphs below (READ/WRITE DATA's C parameter is reused stale across
+different physical tracks and still works), these are now **two independent real-software data
+points** that this platform's software never relies on strict ID-field Cylinder verification —
+addressing is genuinely by physical head position (SEEK), with the C parameter carried along as
+largely decorative bookkeeping. **Recommendation: `Upd765` should not gate READ DATA/WRITE
+DATA/FORMAT A TRACK success on an exact C-byte match** against a sector's nominal ID field — moot
+anyway for this project's `DskImage`, which already addresses sectors by direct
+`(cylinder,head,sector)` formula (§2 `SectorOffset`, machine milestone 19) rather than by scanning
+a real MFM bitstream for ID address marks, so there is no separately-stored "ID field Cylinder
+byte" to mismatch against in the first place. Model Format A Track as: populate the SC sectors of
+the currently-seeked (cylinder,head) with fill byte D, in the order the host supplies R values —
+no ID-mark bookkeeping needed.
+
+Two more confirmations from this same source: **HD/US byte bit 2 = side/head select**, confirmed
+exactly against the datasheet's `0 0 0 0 0 HD US1 US0` layout (`get_disk_side`'s `set 2,a` —
+"side 5 = side 2 of drive 1, 6 = side 2 of drive 2" — sets bit 2 for side 2, a real platform
+confirmation of a detail this doc previously only had from the generic datasheet); and
+**user-facing drive numbers 1-4 map to internal drive indices 1, 2, 3, 0** (`get_drive_choice`
+accepts ASCII '1'-'4', `and 003h` converts: '1'→1, '2'→2, '3'→3, **'4'→0**) — worth matching if
+`P2000.UI`'s drive-tab numbering (project CLAUDE.md §14) ever needs to mirror real P2000
+software's own on-screen drive numbering convention exactly. Sense Drive Status above is also
+now independently reconfirmed by this second, completely separate real program: `JWSFormat.bin`'s
+own `check_write_protect` sends the identical `02 04 <drive>` shape and tests the identical ST3
+bit 6.
+
 **Two confirmed µPD765 usage facts from real-ROM boot-test diagnosis (2026-07-22), both
 worth knowing beyond just "the FDC has 4 drives" (drive count corrected 2026-07-23, above):**
 - **The ROM driver hardcodes unit-select to drive 1, never drive 0.** `Disk.asm`'s
@@ -2264,9 +2308,10 @@ The card uses a **µPD765-family FDC** (MAME's P2000T support implements it as �
 PR #7577 carried µPD765 emulation changes; further corroborated by the real command bytes
 above structurally matching the standard µPD765 parameter-block shapes). Standard,
 well-documented chip — emulate the register interface, not an analog medium:
-- Main Status Register + Data Register; command / execution / result phases; 16 commands in
-  the datasheet, though the ROM driver only ever issues the subset above; user-programmable
-  step-rate / head-load / head-unload; FM + MFM.
+- Main Status Register + Data Register; command / execution / result phases; **15** commands in
+  the base-chip datasheet (corrected 2026-07-23 — see the 15-vs-16 note above; `docs/
+  FDC-implementation.md` §0 has the full command-count citation), though the ROM driver only ever
+  issues the subset above; user-programmable step-rate / head-load / head-unload; FM + MFM.
 - INT line: in **non-DMA mode pulses per byte**, in **DMA mode pulses at command completion**.
   **CONFIRMED non-DMA/semi-DMA, polled:** the driver services each byte itself via the
   `0x90`-bit0 poll + `INI` (above) — resolves "Constants to source" item 3 below.

@@ -85,19 +85,94 @@ this chip's status-register bit semantics apply unmodified on this hardware (as 
 being reconstructed from the general datasheet only). **Elevate Sense Drive Status from
 "modeled, unconfirmed" to "confirmed real usage" in the milestone below.**
 
-**Format A Track — checked, NOT found in this source.** The owner expected JWSDOS/PDOS format
-utilities would obviously use this command; `docs/jwsdos5.0.asm`'s resident "#" DOS command
-table was searched specifically and contains exactly **LOAD, SAVE, RUN, ZOEK (search), WIS
-(delete), VP, SYS** — no FORMAT/PREPARE command. `VP` was checked directly (in case it was a
-Dutch-language format command, e.g. "voorbereiden") and is actually a LOAD-with-memory-
-relocation variant (`vp_file_fits`/`move_vars_down` — BASIC array/variable space
-adjustment), not a formatter. **CONFIRMED (owner, 2026-07-23): formatting IS a separate application, not part of
-`jwsdos5.0.asm`.** The absence above wasn't a gap in this disassembly's coverage — the owner
-confirmed formatting genuinely lives in a standalone utility program, not the resident DOS
-extension this file is. The owner plans to supply more information, and hopefully a
-disassembly of that formatter, in a future session. Until that arrives, Format A Track must
-still be built from the general datasheet only (§4/§5/§6) — this platform's real command-byte
-shape for it remains unsourced, just no longer an open question about WHERE to look.
+**An 8th, now CONFIRMED (2026-07-24, owner-supplied disassembly of `JWSFormat.bin`, the
+standalone formatter — not part of `jwsdos5.0.asm`, exactly as flagged 2026-07-23) — FORMAT A
+TRACK, real bytes, real execution-phase mechanism:**
+
+```
+Format_command:
+    db 06h        ; command-phase length = 6
+    db 4Dh        ; opcode 0x0D | MF(bit6) = 0x4D  -- exact datasheet match
+fmt_cmd_head_drive:
+    db 05h        ; HD/US byte, set at runtime from the user's drive+side choice
+    db 01h        ; N -- 256 bytes/sector
+    db 10h        ; SC -- 16 sectors/cylinder (decimal 16, matches confirmed disk geometry)
+    db 32h        ; GPL -- gap-3 length, 50 decimal
+    db 00h        ; D  -- fill byte for every formatted sector: 0x00
+```
+
+**This is an exact, byte-for-byte match to this guide's §4 general-datasheet prediction**
+(6-byte command phase: cmd, HD/US, N, SC, GPL, D) — nothing about the command PHASE needed to
+change, only its status moves from "modeled" to "confirmed."
+
+**Execution phase, also confirmed exactly as predicted — reuses the SAME semi-DMA mechanism
+already built for Write Data, no new port or poll logic needed:**
+
+```
+send_next_sector_info:
+check_data_can_be_sent:
+    in a,(DSKCTRL)      ; 0x90 -- poll byte-ready bit
+    rra
+    jr nc,check_data_can_be_sent
+    outi                ; send one byte to port C (0x8D), from (HL), dec B
+    jr nz,check_data_can_be_sent   ; loop until B==0 (4 bytes sent)
+    dec e                ; one more sector done (E started at 16, SC)
+    ret
+```
+
+For each of the SC=16 sectors, the host feeds exactly 4 bytes (Cylinder, Head, Record/sector#,
+N) from a small in-RAM `next_sector_data_block`, gated by the identical `0x90` bit0 poll used
+elsewhere. **Practical implication for `Upd765`: Format A Track's execution phase needs NO new
+transfer plumbing** — it's the existing host→FDC byte-poll loop, just fed 4×SC bytes instead
+of N-bytes-per-sector, exactly per §6's structural plan.
+
+**A genuinely interesting cross-check surfaced by this source — the Cylinder byte written into
+each track's sector headers is `track_index + 1`, NOT the physical track index:**
+
+```
+xor a                          ; track = 0 (first physical track)
+format_a_track:
+    push af
+    ld (dsk_seek_cmd_track),a  ; SEEK uses the real, 0-based track index
+    inc a
+    ld (nxt_sctr_track),a      ; but the format data block's Cylinder byte = track+1
+    call MON_DSK_seek_track
+    ...
+```
+
+So physical track 0 gets Cylinder=1 written into its own sector ID fields, physical track 1
+gets Cylinder=2, and so on — a consistent **off-by-one between the ID field's Cylinder value
+and the drive's actual physical position.** Combined with the earlier `Disk.asm` finding
+(reference doc §5d) that the ROM's own READ/WRITE DATA driver reuses one stale, never-updated
+Cylinder byte across reads at two DIFFERENT physical tracks and still succeeds — these two
+facts together are consistent, mutually-reinforcing evidence that **this platform's real
+software does not rely on strict ID-field Cylinder verification at all**; addressing is
+genuinely by physical head position (SEEK), with the C parameter carried along as
+largely-decorative bookkeeping rather than a real security-verification. **Recommendation for
+`Upd765`: do NOT gate READ DATA/WRITE DATA success on an exact C-byte match against a
+sector's "ID field."** This is also a non-issue for THIS project's `DskImage` model
+specifically, since it already addresses sectors by direct `(cylinder, head, sector)` formula
+(§2's `SectorOffset` finding, milestone 19) rather than by scanning a real MFM bitstream for
+matching ID address marks — there IS no separately-stored "ID field Cylinder byte" to mismatch
+against in the first place. Model Format A Track as: populate the SC sectors of the currently
+seeked (cylinder, head) with the fill byte D, in the order the host supplies R values — no
+ID-mark bookkeeping needed.
+
+**Two more real, useful confirmations from this same source:**
+- **HD/US byte bit 2 = side/head select, CONFIRMED exactly against the datasheet's
+  `0 0 0 0 0 HD US1 US0` layout:** `get_disk_side`'s `set 2,a` ("add 4, side 5 = side 2 of
+  drive 1, 6 = side 2 of drive 2 etc.") sets bit 2 of the drive/head byte for side 2 — bit 2 IS
+  the HD position in the standard byte layout. Real, concrete platform confirmation of a
+  detail this guide's §4 only had from the generic datasheet before.
+- **User-facing drive numbers 1-4 map to internal drive indices 1, 2, 3, 0** — `get_drive_choice`
+  accepts ASCII '1'-'4', and `and 003h` converts them: '1'→1, '2'→2, '3'→3, **'4'→0**. Drive
+  "4" as the user types it is internal index 0. Worth keeping in mind for the UI's drive
+  numbering (`P2000.UI` CLAUDE.md §14) if it ever needs to match real P2000 software's own
+  on-screen drive numbering convention exactly.
+- **Sense Drive Status independently re-confirmed** — `JWSFormat.bin`'s own
+  `check_write_protect` sends the identical `02 04 <drive>` shape and tests the identical ST3
+  bit 6, from a completely separate real program than `jwsdos5.0.asm`'s `check_write_enable`.
+  Two independent real callers now confirm this command's exact bytes and bit semantics.
 
 **One ambiguous, inconclusive sighting, not a confirmed usage:** a lone `db 002h,04ah,001h`
 (len=2, opcode `0x4A` = MF\|READ ID, drive#) sits in `jwsdos5.0.asm` right after

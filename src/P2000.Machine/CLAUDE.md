@@ -916,19 +916,43 @@ is NO machine-layer runner milestone here — it's promoted in with the external
       is the first sourced confirmation that this chip's status-bit semantics apply unmodified
       on real P2000 hardware. Elevate this command from "generic datasheet only" to "confirmed"
       alongside the existing 6 — see reference doc §5d for the citation, now added there.
-    - **FORMAT A TRACK — the owner's flagged priority within this milestone, but NOT confirmed
-      as JWSDOS's actual mechanism.** The owner expected format utilities would obviously use
-      it; `docs/jwsdos5.0.asm`'s resident "#" DOS command table was checked specifically and
-      contains only LOAD/SAVE/RUN/ZOEK/WIS/VP/SYS — no FORMAT command (VP was checked directly,
-      in case it was a Dutch "voorbereiden"/prepare command — it's actually a load-with-memory-
-      relocation variant, not a formatter). **CONFIRMED (owner, 2026-07-23): formatting genuinely
-      IS a separate application**, not a gap in this disassembly's coverage — the owner will
-      supply more information, and hopefully a disassembly of that formatter, in a future
-      session. Build Format A Track from the general datasheet (implementation guide §5/§6) in
-      the meantime — it's real chip behavior worth having and the most involved of the 9 missing
-      commands — but its real P2000-specific command-byte shape stays unsourced until that
-      formatter's source arrives, at which point this upgrades the same way Sense Drive Status
-      just did.
+    - **FORMAT A TRACK — NOW FULLY CONFIRMED (owner, 2026-07-24, disassembly of `JWSFormat.bin`,
+      the standalone formatter utility — `docs/jwsformat.asm`), superseding the 2026-07-23 "not
+      yet confirmed" note below.** As predicted there, formatting lives in a separate application
+      from `jwsdos5.0.asm`'s resident DOS, and the owner has now supplied its disassembly.
+      **Exact confirmed command bytes** (6-byte command phase, byte-for-byte match to the general
+      datasheet shape already in implementation guide §4 — nothing about the shape itself
+      changed, only its status from "modeled" to "confirmed"): `06 4D <HD/US> 01 10h 32h 00h` —
+      length 6, opcode `0x0D`\|MF, HD/US byte set at runtime from the user's drive+side choice, N=1
+      (256 bytes/sector), SC=16 (decimal, matches confirmed disk geometry), GPL=0x32 (50 decimal),
+      D=0x00 fill byte. **Execution phase, also exactly as predicted — reuses the SAME semi-DMA
+      byte-poll mechanism already built for Write Data, no new port or transfer plumbing needed:**
+      for each of the SC=16 sectors the host feeds exactly 4 bytes (Cylinder, Head, Record, N)
+      from a small in-RAM data block via `outi` to port `0x8D`, gated by the same `0x90` bit0
+      poll used elsewhere. **Practical implication: Format A Track's execution phase needs no new
+      transfer logic in `Upd765`**, just the existing host→FDC byte-poll loop fed 4×SC bytes
+      instead of N-bytes-per-sector — exactly per §6's structural plan.
+      **Bonus finding — Cylinder-field off-by-one, reinforces existing ID-verification-leniency
+      conclusion:** `jwsformat.asm` writes `track_index + 1` (not the real 0-based physical track
+      used for SEEK) into each track's format-data Cylinder byte. Combined with the earlier
+      `Disk.asm` finding (reference doc §5d) that the ROM's own READ/WRITE DATA driver reuses one
+      stale Cylinder byte across two different physical tracks and still succeeds, this is now
+      two independent real-software data points that this platform's software never relies on
+      strict ID-field Cylinder verification. **Recommendation, carried into this milestone's
+      scope: `Upd765` should NOT gate READ DATA/WRITE DATA/FORMAT A TRACK success on an exact
+      C-byte match.** Moot anyway for this project's `DskImage`, which already addresses sectors
+      by direct `(cylinder,head,sector)` formula rather than by scanning a bitstream for ID marks
+      — model Format A Track as simply populating the SC sectors of the currently-seeked
+      (cylinder,head) with fill byte D, in host-supplied R order, no ID-mark bookkeeping needed.
+      **Two more confirmations from the same source:** HD/US byte bit 2 = side/head select,
+      confirmed exactly against the datasheet's `0 0 0 0 0 HD US1 US0` layout (`get_disk_side`'s
+      `set 2,a` for side 2); and user-facing drive numbers 1-4 map to internal drive indices
+      1, 2, 3, 0 (`get_drive_choice` + `and 003h`: '1'→1, '2'→2, '3'→3, '4'→0 — worth keeping in
+      mind if `P2000.UI`'s drive numbering ever needs to match real P2000 software's own
+      convention). Sense Drive Status is now independently reconfirmed by a SECOND real program
+      (`JWSFormat.bin`'s `check_write_protect` sends the identical `02 04 <drive>` shape and
+      tests the identical ST3 bit 6, from a completely separate codebase than `jwsdos5.0.asm`'s
+      `check_write_enable`). Full writeup: implementation guide §2.
     - **Structural approach:** extend the EXISTING `Upd765` object (real per-drive state,
       working semi-DMA byte-poll mechanism) to a proper Command/Execution/Result phase state
       machine per the implementation guide §6 — generalize the semi-DMA loop to run in either
@@ -944,14 +968,20 @@ is NO machine-layer runner milestone here — it's promoted in with the external
       guide §7):** synthetic protocol tests per command against the datasheet-specified
       command/execution/result shapes (the primary validation for the 8 commands with no known
       real caller); a real integration test for Sense Drive Status against `check_write_enable`'s
-      actual sequence (write-protected vs. writable `DskImage` fixtures); Format A Track gets a
-      synthetic protocol test now, a real end-to-end test later IF a real formatter source
-      surfaces — don't invent a fake caller just to have an integration test.
+      actual sequence (write-protected vs. writable `DskImage` fixtures); **Format A Track now
+      also gets a real integration test** (2026-07-24: `jwsformat.asm` is a confirmed real caller
+      — drive `check_write_protect` gate, the exact `06 4D ...` command bytes, and the 4-bytes/
+      sector execution loop against a `DskImage` fixture) in addition to the synthetic protocol
+      test against the general datasheet shape.
     - **Applies to:** `docs/FDC-implementation.md` (new, full device guide), reference doc §5d
-      (Sense Drive Status confirmed usage + 15-vs-16-command correction, both added 2026-07-23) /
-      `src/P2000.Machine/Devices/Fdc/Upd765.cs` (command/execution/result phase generalization).
+      (Sense Drive Status confirmed usage + 15-vs-16-command correction, added 2026-07-23; Format
+      A Track confirmed bytes + ID-verification-leniency reinforcement + HD/US bit2 + drive-number
+      mapping, added 2026-07-24) / `src/P2000.Machine/Devices/Fdc/Upd765.cs` (command/execution/
+      result phase generalization).
     - **Synced:** yes (2026-07-23, into P2000T-reference.md §5d — the Sense Drive Status
-      confirmation and the 15-command correction) — implementation still outstanding.
+      confirmation and the 15-command correction; 2026-07-24, Format A Track's confirmed bytes and
+      the ID-verification-leniency reinforcement — see §17 findings log) — implementation still
+      outstanding.
 
 20. **Philips Expansion Card — RAM-variant status + multi-drive floppy subsystem** (promoted
     from the §14 "multi-board RAM-variant framework" placeholder; reference doc §5c/§5d +
@@ -1226,6 +1256,83 @@ Ordinary in-project choices: proceed and keep CI green.
 
 ## 17. Findings log (working scratchpad — synced to the reference doc by the human)
 
+### 2026-07-24 — CONFIRMED: Format A Track's real P2000 command bytes + execution mechanism (owner-supplied disassembly of the standalone JWSFormat.bin formatter)
+- **Trigger — owner:** delivered `docs/jwsformat.asm`, a personally-produced disassembly of
+  `JWSFormat.bin` (the standalone formatter utility flagged as a separate application on
+  2026-07-23), following through on "I will provide more information, and hopefully a
+  disassembly, later."
+- **Supersedes the 2026-07-23 entry below's "NOT confirmed as JWSDOS's format mechanism" finding**
+  — that was correct as far as it went (format isn't in `jwsdos5.0.asm`'s resident DOS), and is
+  now completed by this separate formatter's source.
+- **Exact confirmed FORMAT A TRACK command bytes, byte-for-byte match to the general-datasheet
+  shape already modeled in `docs/FDC-implementation.md` §4** (nothing about the 6-byte command
+  phase needed to change — only its status, modeled → confirmed): `06 4D <HD/US> 01 10h 32h 00h`
+  — length 6, opcode `0x0D`\|MF(bit6), HD/US set at runtime, N=1 (256 B/sector), SC=16 sectors/
+  cylinder (matches confirmed disk geometry), GPL=0x32 (gap-3, 50 decimal), D=0x00 fill byte.
+- **Execution phase confirmed exactly as predicted — reuses the existing Write Data semi-DMA
+  byte-poll mechanism, no new transfer plumbing needed in `Upd765`:** per sector (×SC=16), the
+  host feeds 4 bytes (Cylinder, Head, Record, N) via `outi` to port `0x8D`, gated by the same
+  `0x90` bit0 "byte ready" poll used elsewhere.
+- **Bonus finding — Cylinder off-by-one, reinforces the existing ID-verification-leniency
+  conclusion (reference doc §5d, `Disk.asm`):** `jwsformat.asm` writes `track_index + 1` into
+  each track's format-data Cylinder byte, NOT the real 0-based physical track used for SEEK.
+  Combined with `Disk.asm`'s own READ/WRITE DATA driver reusing one stale Cylinder byte across
+  two different physical tracks and still succeeding, this is now **two independent real-software
+  data points** that P2000 software never relies on strict ID-field Cylinder verification.
+  Recommendation carried into milestone 19a's scope: `Upd765` should not gate READ/WRITE/FORMAT
+  success on an exact C-byte match (moot anyway for this project's formula-addressed `DskImage`).
+- **Two more confirmations from the same source:**
+  - HD/US byte bit 2 = side/head select, confirmed exactly against the datasheet's
+    `0 0 0 0 0 HD US1 US0` layout (`get_disk_side`'s `set 2,a` for side 2 of a drive).
+  - User-facing drive numbers 1-4 map to internal drive indices **1, 2, 3, 0**
+    (`get_drive_choice` + `and 003h`: '1'→1, '2'→2, '3'→3, '4'→0) — relevant if `P2000.UI`'s
+    drive-tab numbering (§14) ever needs to match real P2000 software's own convention.
+  - **Sense Drive Status independently reconfirmed by a SECOND real program:**
+    `JWSFormat.bin`'s own `check_write_protect` sends the identical `02 04 <drive>` shape and
+    tests the identical ST3 bit 6, from a completely separate codebase than `jwsdos5.0.asm`'s
+    `check_write_enable`.
+- **Applies to:** `docs/FDC-implementation.md` §2 (full rewrite of the Format A Track paragraph),
+  §13.19a above (Format A Track bullet rewritten from "not confirmed" to "fully confirmed" +
+  test-strategy bullet updated to add a real integration test), reference doc §5d (pending —
+  same class of hardware-fact addition as the Sense Drive Status entry).
+- **Synced:** partial — `docs/FDC-implementation.md` and this project's own §13.19a/§17 done
+  2026-07-24; `P2000T-reference.md` §5d update still to be applied this same pass.
+
+### 2026-07-23 — New milestone flagged (not yet implemented): FDC full 15-command set, plus two real findings from a direct source read
+- **Trigger — owner:** don't stop the FDC at "passes the current boot/run test" — implement all
+  15 commands the real µPD765/8272A supports, learning from prior emulator implementations of
+  the same chip family the way this project already did for SAA5050 (MAME/jsbeeb) and MDCR.
+- **Research done (design-doc maintainer pass, web research + a direct grep of this project's
+  own `docs/jwsdos5.0.asm`):** full writeup now in new companion doc `docs/FDC-implementation.md`
+  (mirrors the SAA5050/MDCR implementation-guide pattern). Summary of the two things that
+  actually changed what's "confirmed" vs. "assumed" for THIS platform specifically (as opposed
+  to generic chip-datasheet facts, which the new doc also has in full):
+  - **SENSE DRIVE STATUS is real, confirmed usage, not just a datasheet command.** Direct read
+    of `jwsdos5.0.asm`'s `check_write_enable` routine: sends `02 04 <drive>`, reads 1 result
+    byte, tests bit 6 for write-protect — exact match to the standard ST3 layout. First sourced
+    confirmation this chip's status-bit semantics apply unmodified here. Synced into reference
+    doc §5d.
+  - **FORMAT A TRACK is NOT confirmed as JWSDOS's format mechanism — checked specifically and
+    not found.** The owner expected this was "undoubtedly" used by JWSDOS/PDOS format
+    utilities; `jwsdos5.0.asm`'s resident DOS command table (LOAD/SAVE/RUN/ZOEK/WIS/VP/SYS) has
+    no format command at all, and `VP` (checked directly on suspicion it might be a Dutch
+    "voorbereiden"/prepare command) turned out to be an unrelated load-with-relocation variant.
+    Either the real formatter is a separate utility program not in this disassembly, or it
+    works some other way — genuinely open, not resolved. Build Format A Track from the general
+    datasheet regardless (it's real, useful chip behavior and the priority within the new
+    milestone per the owner's request) but don't claim P2000-specific confirmation that isn't
+    there. Revisit if the owner sources the actual format-utility code.
+  - Also corrected a small pre-existing inaccuracy: this project's own docs said "the complete
+    16-command µPD765 set" in one place — that number came from eyeballing MAME's C++ enum,
+    which includes enhanced-later-chip-only commands beyond the real base-chip 15. Corrected to
+    15 in reference doc §5d, with the enhanced-chip entries explicitly named as out of scope.
+- **New milestone added:** project CLAUDE.md §13.19a (fast-follow to M19) — full writeup there
+  and in `docs/FDC-implementation.md`. Not yet implemented.
+- **Applies to:** `docs/FDC-implementation.md` (new), reference doc §5d (Sense Drive Status
+  confirmation + 15-command correction) / `src/P2000.Machine/Devices/Fdc/Upd765.cs` (future
+  implementation target).
+- **Synced:** yes (2026-07-23, into P2000T-reference.md §5d) — implementation outstanding.
+
 ### 2026-07-23 — IMPLEMENTED: Upd765 live current-sector tracking (closes the flag below) + a real seek-status bug fix found along the way
 - **Implements the flag immediately below** (owner authorization): `Upd765.TransferStatus`
   gained a `Sector` field. Two new fields, `_transferStartSector`/`_transferSectorSize`, are
@@ -1266,41 +1373,6 @@ Ordinary in-project choices: proceed and keep CI green.
   `src/P2000.UI/ViewModels/DiskDriveVm.cs` (`HeadText`/`SectorText`, `P2000.UI/CLAUDE.md` §18).
 - **Synced:** no (implementation-only; the sector-tracking DECISION itself was already synced
   via the flag entry below when it was authorized).
-
-### 2026-07-23 — New milestone flagged (not yet implemented): FDC full 15-command set, plus two real findings from a direct source read
-- **Trigger — owner:** don't stop the FDC at "passes the current boot/run test" — implement all
-  15 commands the real µPD765/8272A supports, learning from prior emulator implementations of
-  the same chip family the way this project already did for SAA5050 (MAME/jsbeeb) and MDCR.
-- **Research done (design-doc maintainer pass, web research + a direct grep of this project's
-  own `docs/jwsdos5.0.asm`):** full writeup now in new companion doc `docs/FDC-implementation.md`
-  (mirrors the SAA5050/MDCR implementation-guide pattern). Summary of the two things that
-  actually changed what's "confirmed" vs. "assumed" for THIS platform specifically (as opposed
-  to generic chip-datasheet facts, which the new doc also has in full):
-  - **SENSE DRIVE STATUS is real, confirmed usage, not just a datasheet command.** Direct read
-    of `jwsdos5.0.asm`'s `check_write_enable` routine: sends `02 04 <drive>`, reads 1 result
-    byte, tests bit 6 for write-protect — exact match to the standard ST3 layout. First sourced
-    confirmation this chip's status-bit semantics apply unmodified here. Synced into reference
-    doc §5d.
-  - **FORMAT A TRACK is NOT confirmed as JWSDOS's format mechanism — checked specifically and
-    not found.** The owner expected this was "undoubtedly" used by JWSDOS/PDOS format
-    utilities; `jwsdos5.0.asm`'s resident DOS command table (LOAD/SAVE/RUN/ZOEK/WIS/VP/SYS) has
-    no format command at all, and `VP` (checked directly on suspicion it might be a Dutch
-    "voorbereiden"/prepare command) turned out to be an unrelated load-with-relocation variant.
-    Either the real formatter is a separate utility program not in this disassembly, or it
-    works some other way — genuinely open, not resolved. Build Format A Track from the general
-    datasheet regardless (it's real, useful chip behavior and the priority within the new
-    milestone per the owner's request) but don't claim P2000-specific confirmation that isn't
-    there. Revisit if the owner sources the actual format-utility code.
-  - Also corrected a small pre-existing inaccuracy: this project's own docs said "the complete
-    16-command µPD765 set" in one place — that number came from eyeballing MAME's C++ enum,
-    which includes enhanced-later-chip-only commands beyond the real base-chip 15. Corrected to
-    15 in reference doc §5d, with the enhanced-chip entries explicitly named as out of scope.
-- **New milestone added:** project CLAUDE.md §13.19a (fast-follow to M19) — full writeup there
-  and in `docs/FDC-implementation.md`. Not yet implemented.
-- **Applies to:** `docs/FDC-implementation.md` (new), reference doc §5d (Sense Drive Status
-  confirmation + 15-command correction) / `src/P2000.Machine/Devices/Fdc/Upd765.cs` (future
-  implementation target).
-- **Synced:** yes (2026-07-23, into P2000T-reference.md §5d) — implementation outstanding.
 
 ### 2026-07-23 — Flag (not yet implemented): Upd765 needs a live current-sector value during a transfer
 - **Trigger — owner, resolving what `P2000.UI` milestone 14 scoped out** ("sector" flagged as

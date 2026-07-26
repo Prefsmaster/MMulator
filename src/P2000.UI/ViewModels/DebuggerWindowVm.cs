@@ -194,6 +194,19 @@ public sealed partial class DebuggerWindowVm : ObservableObject, IDisposable
         OpenMemoryWatchRequested?.Invoke(watch);
     }
 
+    /// <summary>Creates and opens a memory watch pre-configured to a saved range/follow-register
+    /// — the <c>.uistate</c> sidecar's restore path (project CLAUDE.md milestone 14b), reusing
+    /// the same open-window event <see cref="AddMemoryWatch"/> uses so the view's window-tracking
+    /// stays the single code path for both.</summary>
+    public MemoryWatchVm RestoreMemoryWatch(ushort baseAddress, int length, string follow)
+    {
+        var watch = new MemoryWatchVm(_runner) { Follow = follow };
+        watch.SetRange(baseAddress, length);
+        MemoryWatches.Add(watch);
+        OpenMemoryWatchRequested?.Invoke(watch);
+        return watch;
+    }
+
     [RelayCommand]
     private void RemoveMemoryWatch(MemoryWatchVm watch)
     {

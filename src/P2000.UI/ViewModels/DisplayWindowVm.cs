@@ -65,6 +65,17 @@ public sealed partial class DisplayWindowVm : ObservableObject, IDisposable
     /// The view code-behind shows a modal dialog.</summary>
     public event Action<string>? ShowMessageRequested;
 
+    /// <summary>Raised with the destination path immediately after a successful .state save —
+    /// the view captures the current window layout and writes the matching .uistate sidecar
+    /// (project CLAUDE.md milestone 14b).</summary>
+    public event Action<string>? StateSaved;
+
+    /// <summary>Raised with the source path immediately after a successful .state load — the
+    /// view best-effort restores a matching .uistate sidecar's window layout, if one exists
+    /// (project CLAUDE.md milestone 14b). A missing or version-mismatched sidecar is a silent
+    /// no-op, never surfaced as a load failure.</summary>
+    public event Action<string>? StateLoaded;
+
     // ── Observable state ──────────────────────────────────────────────────────
 
     [ObservableProperty] private string _stateText = "Running";
@@ -281,6 +292,7 @@ public sealed partial class DisplayWindowVm : ObservableObject, IDisposable
         {
             await using var stream = await file.OpenWriteAsync();
             Runner.SaveStateToStream(stream);
+            StateSaved?.Invoke(file.Path.LocalPath);
         }
         catch (Exception ex)
         {
@@ -310,6 +322,7 @@ public sealed partial class DisplayWindowVm : ObservableObject, IDisposable
             ms.Position = 0;
             var machine = await Task.Run(() => MachineStateFile.Load(ms));
             Runner.ReconfigureWithMachine(machine);
+            StateLoaded?.Invoke(files[0].Path.LocalPath);
         }
         catch (InvalidDataException ex)
         {

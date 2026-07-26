@@ -1,6 +1,7 @@
 using Avalonia.Controls;
 using Avalonia.Input;
 using Avalonia.Platform.Storage;
+using P2000.UI.State;
 using P2000.UI.ViewModels;
 
 namespace P2000.UI.Views;
@@ -38,6 +39,8 @@ public partial class DisplayWindow : Window
             _vm.OpenDebuggerWindowRequested -= ShowDebuggerWindow;
             _vm.OpenKeyboardWindowRequested -= ShowKeyboardWindow;
             _vm.ShowMessageRequested        -= ShowErrorDialog;
+            _vm.StateSaved                  -= OnStateSaved;
+            _vm.StateLoaded                 -= OnStateLoaded;
         }
 
         _vm = DataContext as DisplayWindowVm;
@@ -61,6 +64,8 @@ public partial class DisplayWindow : Window
             _vm.OpenDebuggerWindowRequested += ShowDebuggerWindow;
             _vm.OpenKeyboardWindowRequested += ShowKeyboardWindow;
             _vm.ShowMessageRequested        += ShowErrorDialog;
+            _vm.StateSaved                  += OnStateSaved;
+            _vm.StateLoaded                 += OnStateLoaded;
         }
 
         base.OnDataContextChanged(e);
@@ -155,6 +160,67 @@ public partial class DisplayWindow : Window
         }
         _keyboardWindow = new KeyboardWindow { DataContext = _vm!.KeyboardVm };
         _keyboardWindow.Show(this);
+    }
+
+    // ── .uistate sidecar (project CLAUDE.md milestone 14b) ────────────────────
+    // Pure UI window-layout state, written/read only alongside the EXISTING Save State / Load
+    // State actions (ms.8) — never inside .state itself, and never a reason to fail a .state
+    // load (reference doc §3a "a separate .uistate sidecar file, NOT embedded in .state").
+
+    private void OnStateSaved(string statePath)
+    {
+        var data = new UiStateData
+        {
+            MainWindow = UiStateFile.Capture(this),
+            CassetteDeck = UiStateFile.Capture(_deckWindow),
+            DiskDrive = UiStateFile.Capture(_diskWindow),
+            Config = UiStateFile.Capture(_configWindow),
+            Keyboard = UiStateFile.Capture(_keyboardWindow),
+            Debugger = _debuggerWindow?.CaptureLayout(),
+        };
+        try
+        {
+            UiStateFile.Save(data, UiStateFile.SidecarPathFor(statePath));
+        }
+        catch
+        {
+            // Best-effort: a sidecar write failure must never surface as a .state save failure.
+        }
+    }
+
+    private void OnStateLoaded(string statePath)
+    {
+        var data = UiStateFile.TryLoad(UiStateFile.SidecarPathFor(statePath));
+        if (data is null) return; // missing/version-mismatched -> default layout, silent no-op
+
+        UiStateFile.Apply(this, data.MainWindow);
+
+        if (data.CassetteDeck is { IsOpen: true })
+        {
+            ShowDeckWindow();
+            UiStateFile.Apply(_deckWindow, data.CassetteDeck);
+        }
+        if (data.DiskDrive is { IsOpen: true })
+        {
+            ShowDiskDriveWindow();
+            UiStateFile.Apply(_diskWindow, data.DiskDrive);
+        }
+        if (data.Config is { IsOpen: true })
+        {
+            ShowConfigWindow();
+            UiStateFile.Apply(_configWindow, data.Config);
+        }
+        if (data.Keyboard is { IsOpen: true })
+        {
+            ShowKeyboardWindow();
+            UiStateFile.Apply(_keyboardWindow, data.Keyboard);
+        }
+        if (data.Debugger is { } debuggerLayout &&
+            (debuggerLayout.Window is { IsOpen: true } || debuggerLayout.MemoryWatches.Count > 0))
+        {
+            ShowDebuggerWindow();
+            _debuggerWindow!.ApplyLayout(debuggerLayout);
+        }
     }
 
     // ── Drag-and-drop (.cas mount) ────────────────────────────────────────────

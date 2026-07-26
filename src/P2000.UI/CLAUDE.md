@@ -479,6 +479,7 @@ src/P2000.UI/
   Input/            # host-key → matrix mapping, enqueue to machine
   Runner/           # owns the emulation loop: paces RunField()/StepInstruction() to 50Hz (uncapped=turbo),
                     # run/pause, command submit, input at boundaries; promotable to a machine-layer runner (§3.2a)
+  State/            # .uistate sidecar (ms.14b) — pure UI window-layout JSON, independent of P2000.Machine's .state/.cfg
   Assets/           # key-layout data, icons
 tests/P2000.UI.Tests/
   ...               # VM logic, blit/mode correctness (headless framebuffer), mapping, snapshot binding
@@ -1060,6 +1061,62 @@ full historical log (every entry, unedited) now lives in
 genuinely open, plus the last few active days, for continuity. Everything fully resolved and
 already synced lives only in the archive now — check there before assuming something's
 missing.
+
+### 2026-07-26 — Milestone 14b IMPLEMENTED: `.uistate` sidecar
+- **Built:** `src/P2000.UI/State/UiStateFile.cs` (new) — a `P2000.UI`-owned JSON sidecar
+  (`UiStateData`/`WindowLayout`/`MemoryWatchLayout`/`DebuggerLayout`), own `CurrentVersion`
+  (starts at 1), own reject-by-`TryLoad`-returning-`null` discipline (missing file, version
+  mismatch, or any parse exception), completely independent of `MachineStateFile`'s versioning —
+  no `P2000.Machine` file touched. `UiStateFile.SidecarPathFor` derives `mygame.uistate` from
+  `mygame.state` via `Path.ChangeExtension`.
+- **Wiring — extends the EXISTING Save/Load State actions (ms.8), not a new menu item, exactly
+  as spec'd:** `DisplayWindowVm` gained two events, `StateSaved`/`StateLoaded`, raised with the
+  file path immediately after `Runner.SaveStateToStream`/`Runner.ReconfigureWithMachine` succeed
+  in `SaveStateAsync`/`LoadStateAsync`. `DisplayWindow` (the view, which alone holds the satellite
+  window references) subscribes and does the actual capture/restore:
+  - **Save:** captures the main window plus the 4 simple satellite windows (deck/disk/config/
+    keyboard — open/position/size only) via `UiStateFile.Capture`, plus `_debuggerWindow?.CaptureLayout()`
+    for the debugger's own nested state, then writes the sidecar. A write failure is swallowed
+    (best-effort — must never surface as a `.state` save failure, per the milestone's own framing).
+  - **Load:** `TryLoad`s the sidecar; `null` (missing/version-mismatched) is a silent no-op —
+    whatever's currently open just stays open, which IS "default window layout" in this context
+    (a fresh app launch has nothing open; mid-session there's nothing to force-close either).
+    Otherwise re-shows each satellite window that was open and applies its captured layout.
+- **Debugger's own nested layout** (`DebuggerWindow.CaptureLayout()`/`ApplyLayout()`): the VRAM
+  window's open/position + `ShowHex` toggle, and every open memory-watch window's open/position +
+  Base/Length/Follow. **Found while wiring this up:** `DebuggerWindow` tracked memory-watch VMs
+  (via `DebuggerWindowVm.MemoryWatches`) but never tracked their WINDOWS — `OnOpenMemoryWatch`
+  created each `MemoryWatchWindow` locally with no stored reference. Added a
+  `Dictionary<MemoryWatchVm, MemoryWatchWindow>` to close that gap (needed to read each window's
+  position back out for capture).
+- **New `DebuggerWindowVm.RestoreMemoryWatch(baseAddress, length, follow)`:** a second entry point
+  alongside the existing button-driven `AddMemoryWatch()` (which always starts at the default
+  256-byte range) — pre-configures the VM via the already-existing `SetRange`/`Follow` before
+  raising the SAME `OpenMemoryWatchRequested` event `AddMemoryWatch` uses, so the view's
+  window-creation/tracking stays one code path for both the manual "Add" button and sidecar
+  restore.
+- **Tests:** `UiStateFileTests` (new, 11 tests) — full-layout round-trip incl. nested debugger/
+  VRAM/memory-watch data; no-debugger round-trips to a null `Debugger`; missing file, future
+  version, and corrupt JSON all return `null` rather than throwing; sidecar path derivation;
+  `Capture`/`Apply` against a real (unshown) headless `Window` for the parts that don't need
+  actual rendering (`IsOpen` semantics, `Width`/`Height`). **Not tested: `Position` actually
+  taking effect** — that needs a shown window, and this test project's headless setup
+  (`UseHeadlessDrawing = false`) throws (`Unable to locate IPlatformRenderInterface`) on any
+  attempt to render one, the same reason no other test in this suite exercises a live `Window`
+  (see `MemoryWatchVmTests`' own doc comment on the same limitation) — flagged rather than
+  worked around. `DebuggerWindowVmTests` (new, 3 tests) — `RestoreMemoryWatch` applies the given
+  range/follow (not the default), adds to `MemoryWatches`, and raises the open-window event with
+  the same VM instance. Full `P2000.UI.Tests`: 163/163 green (was 149).
+- **Applies to:** `src/P2000.UI/State/UiStateFile.cs` (new), `src/P2000.UI/ViewModels/DisplayWindowVm.cs`
+  (`StateSaved`/`StateLoaded` events), `src/P2000.UI/Views/DisplayWindow.axaml.cs` (`OnStateSaved`/
+  `OnStateLoaded`), `src/P2000.UI/ViewModels/DebuggerWindowVm.cs` (`RestoreMemoryWatch`),
+  `src/P2000.UI/Views/DebuggerWindow.axaml.cs` (`CaptureLayout`/`ApplyLayout`,
+  `_memoryWatchWindows`), `tests/P2000.UI.Tests/State/UiStateFileTests.cs` (new),
+  `tests/P2000.UI.Tests/ViewModels/DebuggerWindowVmTests.cs` (new). §14 milestone 14b's own spec
+  (this file); reference doc §3a's ".uistate" resolution.
+- **Synced:** no (implementation-only — the design decision itself was already synced into the
+  reference doc's own 2026-07-26 "RESOLVED" entry, and milestone 14b's spec was already written
+  into §14 above, before this was built).
 
 ### 2026-07-26 — Investigation (§7's two flagged gaps): both CONFIRMED real, read-only pass, nothing built yet
 - **Trigger:** §7's disk bullet and its cassette follow-on flagged two open questions rather than

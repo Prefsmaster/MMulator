@@ -1043,7 +1043,19 @@ is NO machine-layer runner milestone here — it's promoted in with the external
       sidedness is topology** (reset-to-apply, same rule as the drive-vs-image split already
       decided in `P2000.UI` CLAUDE.md §7); the **image mounted in an already-present drive is a
       runtime swap**, exactly like cassette mount/eject — no new split to invent, just apply the
-      existing one per-drive instead of once globally.
+      existing one per-drive instead of once globally. **This per-drive `ImagePath` field is also
+      what makes a `.cfg` able to specify an INITIAL mounted image, seeded at construction —
+      confirmed built and load-bearing (§17, 2026-07-23 finding: `Machine`'s constructor mounts
+      every enabled entry's `ImagePath` at build time). Reference doc §3a (2026-07-26) frames why
+      this matters:** it's the mechanism behind "load a `.cfg` → reset-to-apply → the machine
+      boots already holding its cartridge + boot floppy," the emulator's equivalent of a real
+      P2000T that's already physically wired up before the power switch is flipped. The runtime
+      swap capability is additive on top of this, not a replacement for it. **RESOLVED (owner,
+      2026-07-26) — cassette gets the same treatment; see milestone 20b below.** `MachineConfig`
+      currently carries `Slot1CartridgePath`/`FloppyDrives` but nothing for the cassette — real
+      hardware falls through to a cassette-boot wait when no valid cartridge is found (already
+      documented, reference doc §3a), so "what's loaded at power-on" legitimately includes the
+      tape too, not just symmetry for its own sake.
     - **Two ways to provision a drive's media (owner decision, 2026-07-23):** (a) **mount an
       existing `.dsk` file** — geometry auto-detected from its label, per the rule below; (b)
       **manually defined / create-blank** — no file, just the drive's own configured
@@ -1125,28 +1137,29 @@ is NO machine-layer runner milestone here — it's promoted in with the external
       seed for blank media).
     - **Write-protect, per drive, host-side (mirrors the cassette ms.13a pattern):** a live
       `IsProtected` bool per drive, defaults writable, gates WRITE DATA the same way WEN gates
-      CSAVE. **Does NOT round-trip through the `.dsk` file** the way cassette protect rides
-      spare padding in the `.cas` record container (reference doc §3a) — a raw sector-dump `.dsk`
-      has no equivalent spare byte to (ab)use without corrupting real JWSDOS data. **Persistence
-      mechanism DEFERRED, not a UX call to pick freely (owner, 2026-07-23) — depends on a bigger,
-      still-open question: whether/where UI-layer session state (open windows, memory-watch
-      ranges, etc.) gets persisted at all** (reference doc §3a, "OPEN DESIGN QUESTION"). The
-      owner's reasoning: cassette write-protect already lives in `.state` (`MdcrDevice.Protected`),
-      and a `.state` load is supposed to restore the machine exactly as it was — so disk
-      write-protect should land in whatever container ends up holding "resume exactly where the
-      user left off," not be decided in isolation as session-only vs. a sidecar file. **Do not
-      pick a mechanism here before that's resolved** — this bullet is genuinely blocked, not just
-      unprioritized.
+      CSAVE. **Still does NOT round-trip through the `.dsk` file itself** the way cassette
+      protect rides spare padding in the `.cas` record container (reference doc §3a) — a raw
+      sector-dump `.dsk` has no equivalent spare byte to (ab)use without corrupting real JWSDOS
+      data — but this is no longer the only persistence path. **UNBLOCKED (owner, 2026-07-26,
+      reference doc §3a "RESOLVED — mounted media CONTENT travels inside `.state`"):** the
+      bigger question this was deferred on is resolved — disk `.state` blocks now embed the
+      mounted image's content directly (this milestone's own `.state` bullet below). Persist
+      `IsProtected` as a plain bool field in that SAME per-drive `.state` block, exactly
+      mirroring how `MdcrDevice.Protected` already persists in the cassette's `.state` block
+      (`docs/MDCR-implementation.md` §7) — no separate mechanism, no sidecar, nothing UI-layer
+      needed. A `.state` save/load round-trips write-protect correctly; a `.dsk` file saved via
+      "Save as…" still does not carry it (matches the file-format limitation above, unchanged).
     - **`.state`:** the FDC device block's shape changes from implicit-single-drive to
-      per-drive arrays (motor/head/cylinder/write-protect/mounted-image-ref × N) → bump
-      `MachineStateFile.CurrentVersion`/`MinVersion` from **v4 to v5** at build time (reject v4),
-      same discipline as every prior bump — never retroactively. **"mounted-image-ref" is
-      deliberately vague, not yet decided (owner, 2026-07-23) — reference doc §3a "self-contained
-      `.state`" note:** whether this is a path (remount required on load, matching the cassette's
-      existing precedent) or the actual in-memory disk bytes (making `.state` self-contained/
-      shareable) is an open question shared with the cassette's own reopened embedding decision —
-      don't build one silently before that's settled; the version bump above happens regardless
-      of which way it lands, so it doesn't block starting this milestone.
+      per-drive arrays (motor/head/cylinder/write-protect/**embedded disk content**/mounted-path-
+      hint × N) → bump `MachineStateFile.CurrentVersion`/`MinVersion` from **v4 to v5** at build
+      time (reject v4), same discipline as every prior bump — never retroactively. **RESOLVED
+      (owner, 2026-07-26, reference doc §3a):** "mounted-image-ref" is the actual in-memory disk
+      bytes, not a path — each drive's block embeds its full raw sector-dump content (already
+      compact per-drive, see the hardware-ceiling note above), making `.state` self-contained/
+      shareable exactly like the cassette's parallel resolution. The original mount path (if any)
+      travels along only as metadata, never re-read on restore; a drive created via "New (blank)
+      disk" with no backing file embeds and restores fine with no path at all. Apply gzip/deflate
+      over the embedded bytes (reference doc §3a) — disk sector dumps compress well.
     - **Host `.dsk` API:** extend M19's API — **mount** (existing file → in-memory image, geometry
       from label), **create-blank** (drive's configured Capacity/Sides → in-memory unformatted
       image, no file involved yet), **eject** (drops the in-memory image; discards unsaved
@@ -1189,21 +1202,48 @@ is NO machine-layer runner milestone here — it's promoted in with the external
       on a successful Save/Save-as. Eject/replace-mount themselves do NOT clear it — the UI reads
       the flag to decide whether to warn, then the eject/replace proceeds (or is cancelled) per
       the user's choice at the UI layer; the machine layer only tracks and exposes the bit.
-    - **`.state` — DEFERRED, same reason and same dependency as M20's write-protect item (owner,
-      2026-07-23):** whether `IsDirty` should serialize into `.state` (a session saved with an
-      unsaved cassette/disk change pending would then restore as still-dirty) or stay a
-      live/transient UI hint is tied to the still-open "what does resuming a session persist"
-      question (reference doc §3a). Same logic as write-protect: `.state` is meant to bring the
-      machine back exactly as it was, so this isn't an independent UX call to make now — it lands
-      wherever that broader question lands (inside `.state` itself, a UI-state sidecar, or
-      elsewhere). Doesn't block the UI-layer warning from being built either way (the flag exists
-      and works live regardless of whether it persists) — only the persistence question is
-      deferred.
+    - **`.state` — UNBLOCKED (owner, 2026-07-26, reference doc §3a "RESOLVED — mounted media
+      CONTENT travels inside `.state`"):** serialize `IsDirty` too — a session saved with an
+      unsaved cassette/disk change pending restores as still-dirty, matching the "bring the
+      machine back exactly as it was" goal. Same resolution as write-protect (M20 above): a plain
+      bool field in the same per-device `.state` block the content itself now lives in, not a
+      separate mechanism and not a UI-state concern. Bump the version alongside the content-
+      embedding change for that device (M20's v4→v5 for disk; the cassette block's own bump, per
+      reference doc §3a) rather than as a second, independent bump — both land in the same
+      device-block shape change. Doesn't change how the UI-layer warning already works (§14.14a):
+      it reads the live bit regardless of whether it persists — this only means the bit's value
+      is now also correct immediately after a `.state` load, not just during the live session.
     - **Tests:** (a) a freshly mounted/created image (no writes yet) reads NOT dirty; (b) a
       write (authentic or turbo) sets dirty on both cassette and disk; (c) Save/Save-as clears
       dirty; (d) eject/replace do not themselves clear or set dirty — only reads it; (e) a
       second write after Save re-sets dirty (the flag isn't sticky-false after the first save).
       → commit.
+
+20b. **Cassette config-seeded initial mount — `MachineConfig.CassettePath`** (NEW, owner decision
+    2026-07-26, reference doc §3a "RESOLVED — cassette gets the same treatment" — the cassette-side
+    sibling of what M20 built for disk; extends milestone 9's `MdcrDevice`, does not replace it).
+    - **Add `MachineConfig.CassettePath` (nullable `string`),** mirroring `FloppyDrives[i].
+      ImagePath`/`Slot1CartridgePath`. `Machine`'s constructor mounts it via the SAME `LoadCasImage`
+      path the runtime host-API already uses (§7's mount entry point) — no new tape-loading logic,
+      just an additional caller at construction time. `null` (the default) → bare/no-cassette,
+      unchanged; this is purely additive and does not touch the "bare by default" locked decision
+      (§2.1) any more than `Slot1CartridgePath` already doesn't.
+    - **Runtime mount/eject/swap (already locked, §7) is unaffected** — a config-seeded tape is
+      just what's in the deck when the machine is BUILT; the user can still eject/insert live
+      afterward with no reset, exactly as already true for disk.
+    - **Write-protect round-trips for free** — a config-seeded `.cas` file's protect bit (offset
+      `0x50` bit 0, ms.13a) is read the same way any other mount reads it; no special-casing.
+    - **`.cfg` serialization:** add `CassettePath` to `MachineConfigFile`'s DTO
+      (`ToDto`/`FromDto`), same additive pattern as the `RamSeed` fix (§17, 2026-07-23) — purely
+      additive/nullable, so **no version bump needed** (an old `.cfg`/`.state` with no
+      `cassettePath` key still deserializes to `null`, identical to today's behaviour).
+    - **Tests:** (a) a `.cfg` with `CassettePath` set, applied via reset-to-apply, boots with CIP
+      already present and the correct tape mounted — no separate runtime mount step needed; (b) a
+      `.cfg` with `CassettePath` null boots bare (regression guard — must not change today's
+      default); (c) `.cfg` round-trip preserves `CassettePath` (or its absence) exactly like
+      `Slot1CartridgePath`/`FloppyDrives`; (d) once running, the config-seeded tape can still be
+      ejected and a different one mounted live, with no reset required (regression guard against
+      the runtime-swap capability). → commit.
 
 ---
 
@@ -1277,6 +1317,36 @@ marked synced. Do NOT edit the reference doc from this project.
 - **Applies to:** reference doc §… / <file/port>
 - **Synced:** yes (2026-07-05, into P2000T-reference.md + device guides)
 -->
+
+### 2026-07-26 — Milestone 20b IMPLEMENTED: MachineConfig.CassettePath (config-seeded cassette mount)
+- **Built:** `MachineConfig.CassettePath` (nullable string) — closes the exact asymmetry the
+  reference doc §3a "RESOLVED — cassette gets the same treatment" flagged: `null` (default)
+  leaves the deck bare, unchanged; a set path is read via `File.ReadAllBytes` and mounted through
+  `Mdcr.InsertTape` in `Machine`'s constructor, mirroring `Slot1CartridgePath`'s and
+  `FloppyDriveConfig.ImagePath`'s existing mount-at-construction pattern exactly (no new
+  tape-loading logic — the same host-API path runtime insert already uses). Added to
+  `MachineConfigFile`'s DTO (`ToDto`/`FromDto` + `ConfigDto.CassettePath`) — additive/nullable,
+  **no `.cfg` version bump**, same precedent as the `RamSeed` fix (2026-07-23 entry above): an old
+  file with no `cassettePath` key still deserializes to `null`, identical to today's behaviour.
+- **Found (adjacent gap, fixed in the same pass):** `P2000.UI`'s `EmulationRunner.Reconfigure`
+  manually copies `MachineConfig` fields (no `with` expression on the class) when it needs to
+  inject a fresh `RamSeed` — this field-copy had not been touched for M20's `FloppyDrives` either
+  and would have silently dropped a config's `CassettePath` on any reconfigure call that also
+  needed a fresh RAM seed. Added `CassettePath = config.CassettePath` alongside the existing
+  `FloppyDrives`/`Slot1CartridgePath` copies.
+- **Tests:** `MachineTests` (+3): null path stays bare (CIP set, no tape); a set path mounts at
+  construction (CIP clears, `HasTape` true); runtime eject/re-insert still works live after a
+  config-seeded mount (the runtime swap capability is additive, not exclusive, per reference doc
+  §3a). `MachineConfigFileTests` (+2): explicit `CassettePath` round-trips through `.cfg`; absent
+  `CassettePath` still defaults to `null`. Full `P2000.Machine.Tests`: 487/487 green (was 484 net
+  of the +3 here vs. some renumbering); `P2000.UI.Tests`: 149/149, unaffected.
+- **Applies to:** `src/P2000.Machine/MachineConfig.cs` (`CassettePath`), `src/P2000.Machine/Machine.cs`
+  (constructor mount), `src/P2000.Machine/State/MachineConfigFile.cs` (DTO), `src/P2000.UI/Runner/EmulationRunner.cs`
+  (`Reconfigure` field-copy), `tests/P2000.Machine.Tests/MachineTests.cs`,
+  `tests/P2000.Machine.Tests/State/MachineConfigFileTests.cs`. Reference doc §3a (both "RESOLVED
+  2026-07-26" blocks).
+- **Synced:** no (implementation-only — the design decision itself was already synced into the
+  reference doc's own 2026-07-26 "RESOLVED" entry before this milestone was built).
 
 
 ### 2026-07-24 — CONFIRMED: Format A Track's real P2000 command bytes + execution mechanism (owner-supplied disassembly of the standalone JWSFormat.bin formatter)

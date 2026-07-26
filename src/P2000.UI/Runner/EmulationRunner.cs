@@ -118,6 +118,7 @@ public sealed class EmulationRunner : IDisposable
                 MonitorRomPath = config.MonitorRomPath,
                 Slot1CartridgePath = config.Slot1CartridgePath,
                 FloppyDrives = config.FloppyDrives,
+                CassettePath = config.CassettePath,
                 RamSeed = NewRandomRamSeed(),
             };
         }

@@ -152,6 +152,8 @@ public sealed class Machine
         Video = new Video(Memory);
         Keyboard = new KeyboardDevice(CpOut);
         Mdcr = new MdcrDevice(CpOut);
+        if (Config.CassettePath is not null)
+            Mdcr.InsertTape(File.ReadAllBytes(Config.CassettePath));
         Sound = new SoundDevice(() => Video.FieldTState);
 
         Ports.RegisterWrite(CPoutLatch.Port,  CpOut.Write);

@@ -348,4 +348,57 @@ public class MachineTests
         Assert.Equal(directlySeeded.Memory.Read(PageTable.BaseRamStart),
             configSeeded.Memory.Read(PageTable.BaseRamStart));
     }
+
+    // ---- Cassette config-seeded mount (project CLAUDE.md milestone 20b; reference doc §3a
+    // "RESOLVED — cassette gets the same treatment, not left asymmetric") ---------------------
+
+    [Fact]
+    public void Constructor_NullCassettePath_StaysBare()
+    {
+        var machine = new Machine();
+
+        Assert.False(machine.Mdcr.HasTape);
+        Assert.Equal(0x10, machine.Mdcr.ReadStatus() & 0x10); // CIP set (no cassette)
+    }
+
+    [Fact]
+    public void Constructor_CassettePath_MountsTapeAtConstruction()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"cassette-config-seed-{Guid.NewGuid():N}.cas");
+        File.WriteAllBytes(path, new byte[1280]); // one blank/unformatted .cas record
+        try
+        {
+            var machine = new Machine(new MachineConfig { CassettePath = path });
+
+            Assert.True(machine.Mdcr.HasTape);
+            Assert.Equal(0x00, machine.Mdcr.ReadStatus() & 0x10); // CIP clear (cassette present)
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public void Constructor_CassettePath_LiveSwapStillWorksAfterConfigSeededMount()
+    {
+        // The runtime mount/eject/swap capability is untouched on top of a config-seeded
+        // mount (reference doc §3a) — eject and re-insert must both still work live.
+        var path = Path.Combine(Path.GetTempPath(), $"cassette-config-seed-{Guid.NewGuid():N}.cas");
+        File.WriteAllBytes(path, new byte[1280]);
+        try
+        {
+            var machine = new Machine(new MachineConfig { CassettePath = path });
+
+            machine.Mdcr.EjectTape();
+            Assert.False(machine.Mdcr.HasTape);
+
+            machine.Mdcr.InsertTape(new byte[1280]);
+            Assert.True(machine.Mdcr.HasTape);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
 }

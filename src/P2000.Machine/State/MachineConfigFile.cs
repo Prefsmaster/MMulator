@@ -69,6 +69,7 @@ public static class MachineConfigFile
         Slot1CartridgePath = c.Slot1CartridgePath,
         FloppyDrives = c.FloppyDrives.ToList(),
         RamSeed = c.RamSeed,
+        CassettePath = c.CassettePath,
     };
 
     private static MachineConfig FromDto(ConfigDto d) => new()
@@ -81,6 +82,7 @@ public static class MachineConfigFile
         Slot1CartridgePath = d.Slot1CartridgePath,
         FloppyDrives = d.FloppyDrives ?? new List<FloppyDriveConfig>(),
         RamSeed = d.RamSeed,
+        CassettePath = d.CassettePath,
     };
 
     private sealed class ConfigDto
@@ -94,5 +96,6 @@ public static class MachineConfigFile
         public string? Slot1CartridgePath { get; set; }
         public List<FloppyDriveConfig>? FloppyDrives { get; set; }
         public ulong? RamSeed { get; set; }
+        public string? CassettePath { get; set; }
     }
 }

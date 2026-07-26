@@ -120,6 +120,17 @@ public sealed class MachineConfig
     /// is running (locked decision §2.3).</summary>
     public string? Slot1CartridgePath { get; init; }
 
+    /// <summary>Optional path to a <c>.cas</c> image to mount in the cassette deck at
+    /// machine-assembly time (project CLAUDE.md milestone 20b; reference doc §3a "RESOLVED —
+    /// cassette gets the same treatment, not left asymmetric"). <c>null</c> (the default)
+    /// leaves the cassette deck empty, same as <see cref="Slot1CartridgePath"/>'s and
+    /// <see cref="FloppyDriveConfig.ImagePath"/>'s null-means-absent convention. Mounted via
+    /// the same <see cref="Devices.Cassette.MdcrDevice.InsertTape"/> path the runtime host-API
+    /// already uses — purely additive, doesn't touch the "bare by default" locked decision
+    /// (§2.1). The runtime mount/eject/swap capability (already locked) is unaffected on top
+    /// of this, exactly as already true for disk.</summary>
+    public string? CassettePath { get; init; }
+
     /// <summary>Per-drive floppy topology — up to 4 drives (project CLAUDE.md §13 milestone 20;
     /// reference doc §5d, the confirmed 4-position connector), replacing the earlier
     /// milestone-19 singular <c>FloppyDiskImagePath</c> (implicitly drive 1 only). Only

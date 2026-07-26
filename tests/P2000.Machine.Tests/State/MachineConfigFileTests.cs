@@ -101,6 +101,25 @@ public class MachineConfigFileTests
     }
 
     [Fact]
+    public void RoundTrip_CassettePath_IsPreserved()
+    {
+        // Machine ms.20b (reference doc §3a "RESOLVED — cassette gets the same treatment"):
+        // MachineConfig.CassettePath must round-trip through .cfg the same way
+        // Slot1CartridgePath/FloppyDrives[i].ImagePath already do.
+        var original = new MachineConfig { CassettePath = "ghosthunt.cas" };
+        var restored = MachineConfigFile.Deserialize(MachineConfigFile.Serialize(original));
+
+        Assert.Equal(original.CassettePath, restored.CassettePath);
+    }
+
+    [Fact]
+    public void RoundTrip_NoCassettePath_DefaultsToNull()
+    {
+        var restored = MachineConfigFile.Deserialize(MachineConfigFile.Serialize(new MachineConfig()));
+        Assert.Null(restored.CassettePath);
+    }
+
+    [Fact]
     public void Serialize_ProducesReadableJson_WithVersionField()
     {
         var json = MachineConfigFile.Serialize(new MachineConfig());

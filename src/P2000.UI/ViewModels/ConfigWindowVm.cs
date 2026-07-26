@@ -5,6 +5,7 @@ using CommunityToolkit.Mvvm.Input;
 using P2000.Machine;
 using P2000.Machine.State;
 using P2000.UI.Runner;
+using P2000.UI.State;
 using System.Collections.ObjectModel;
 
 namespace P2000.UI.ViewModels;
@@ -22,6 +23,12 @@ public sealed partial class FloppyDriveRowVm : ObservableObject
     [ObservableProperty] private int _capacity = 40;
     [ObservableProperty] private DiskSides _sides = DiskSides.Single;
 
+    /// <summary>Manually-authored initial image path (project CLAUDE.md milestone 14c) — for
+    /// hand-authoring a <c>.cfg</c> (e.g. a "starter kit" for someone else) without a machine
+    /// running to capture from. Complementary to, not a substitute for,
+    /// <see cref="ConfigWindowVm.SaveCfgAsync"/> now capturing whatever's actually live-mounted.</summary>
+    [ObservableProperty] private string _imagePath = "";
+
     public static IReadOnlyList<int> Capacities { get; } = [35, 40, 80];
     public static IReadOnlyList<DiskSides> SidesOptions { get; } = [DiskSides.Single, DiskSides.Double];
 
@@ -33,16 +40,30 @@ public sealed partial class FloppyDriveRowVm : ObservableObject
         Enabled = true,
         Capacity = Capacity,
         Sides = Sides,
-        ImagePath = null, // initial media is mounted live from the Disk Drives window, not here
+        ImagePath = string.IsNullOrWhiteSpace(ImagePath) ? null : ImagePath.Trim(),
     };
+
+    [RelayCommand]
+    private async Task BrowseImageAsync()
+    {
+        var path = await ConfigWindowVm.PickFileAsync($"Drive {DriveIndex} initial image (.dsk / .img)",
+            [new FilePickerFileType("P2000T Disk") { Patterns = ["*.dsk", "*.img"] }]);
+        if (path is not null) ImagePath = path;
+    }
+
+    [RelayCommand]
+    private void ClearImage() => ImagePath = "";
 }
 
 /// <summary>ViewModel for the config window (milestone 5, extended by milestone 14 for the
-/// floppy-drive axis). Exposes the topology axes of <see cref="MachineConfig"/> as observable
-/// properties; Apply rebuilds and cold-resets the machine (reset-to-apply, locked decision
-/// §2.3). Cassette is not a topology axis — it lives in the deck window (runtime exception
-/// §2.7); disk IMAGES are the same runtime exception (drive COUNT/geometry is topology, an
-/// image mounted in an already-present drive is a live swap — the Disk Drives window's job).</summary>
+/// floppy-drive axis; milestone 14c for cassette/per-drive path authoring + startup pinning).
+/// Exposes the topology axes of <see cref="MachineConfig"/> as observable properties; Apply
+/// rebuilds and cold-resets the machine (reset-to-apply, locked decision §2.3). Cassette
+/// live-mount is not a topology axis — it lives in the deck window (runtime exception §2.7);
+/// disk IMAGES are the same runtime exception (drive COUNT/geometry is topology, an image
+/// mounted in an already-present drive is a live swap — the Disk Drives window's job).
+/// <see cref="CassettePath"/>/<see cref="FloppyDriveRowVm.ImagePath"/> here are for HAND-AUTHORING
+/// a <c>.cfg</c>'s initial mount, not for driving a running machine's live deck/drives.</summary>
 public sealed partial class ConfigWindowVm : ObservableObject
 {
     private readonly EmulationRunner _runner;
@@ -60,7 +81,28 @@ public sealed partial class ConfigWindowVm : ObservableObject
 
     [ObservableProperty] private string _slot1CartridgePath = "";
     [ObservableProperty] private string _monitorRomPath = "";
+
+    /// <summary>Manually-authored initial cassette path (project CLAUDE.md milestone 14c) —
+    /// mirrors <see cref="Slot1CartridgePath"/>'s existing browse/clear pattern. Complementary to
+    /// <see cref="SaveCfgAsync"/> now capturing whatever's actually live-mounted in the deck.</summary>
+    [ObservableProperty] private string _cassettePath = "";
+
     [ObservableProperty] private string _statusMessage = "";
+
+    /// <summary>The last <c>.cfg</c> path this window loaded from or saved to — what
+    /// <see cref="PinAsStartupConfig"/> pins, since pinning designates an already-named, already-
+    /// saved file, not whatever happens to be in the fields right now (project CLAUDE.md
+    /// milestone 14c).</summary>
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(CanPinStartup))]
+    private string? _lastCfgPath;
+
+    /// <summary>True when <see cref="AppPreferences.StartupCfgPath"/> is pinned — auto-remember
+    /// (writing <c>last-session.cfg</c> on quit) stops overwriting it until unpinned (project
+    /// CLAUDE.md milestone 14c).</summary>
+    [ObservableProperty] private bool _isStartupPinned;
+
+    public bool CanPinStartup => LastCfgPath is not null;
 
     public IReadOnlyList<RamVariant> RamVariants { get; } =
         [RamVariant.T38, RamVariant.T54, RamVariant.T102];
@@ -87,6 +129,7 @@ public sealed partial class ConfigWindowVm : ObservableObject
     {
         _runner = runner;
         LoadFromCurrentConfig();
+        IsStartupPinned = AppPreferencesFile.Load().StartupCfgIsPinned;
     }
 
     // ── Sync UI from the live machine config ─────────────────────────────────
@@ -98,6 +141,7 @@ public sealed partial class ConfigWindowVm : ObservableObject
         Board = cfg.Board;
         Slot1CartridgePath = cfg.Slot1CartridgePath ?? "";
         MonitorRomPath = cfg.MonitorRomPath ?? "";
+        CassettePath = cfg.CassettePath ?? "";
         LoadFloppyDrivesFrom(cfg.FloppyDrives);
         StatusMessage = "";
     }
@@ -119,6 +163,7 @@ public sealed partial class ConfigWindowVm : ObservableObject
             {
                 row.Capacity = d.Capacity;
                 row.Sides = d.Sides;
+                row.ImagePath = d.ImagePath ?? "";
             }
         }
     }
@@ -182,6 +227,17 @@ public sealed partial class ConfigWindowVm : ObservableObject
     private void ClearMonitorRom() => MonitorRomPath = "";
 
     [RelayCommand]
+    private async Task BrowseCassetteAsync()
+    {
+        var path = await PickFileAsync("Initial cassette (.cas / .p2000t)",
+            [new FilePickerFileType("P2000T Cassette") { Patterns = ["*.cas", "*.p2000t"] }]);
+        if (path is not null) CassettePath = path;
+    }
+
+    [RelayCommand]
+    private void ClearCassette() => CassettePath = "";
+
+    [RelayCommand]
     private async Task LoadCfgAsync()
     {
         var path = await PickFileAsync("Load .cfg",
@@ -194,7 +250,9 @@ public sealed partial class ConfigWindowVm : ObservableObject
             Board = cfg.Board;
             Slot1CartridgePath = cfg.Slot1CartridgePath ?? "";
             MonitorRomPath = cfg.MonitorRomPath ?? "";
+            CassettePath = cfg.CassettePath ?? "";
             LoadFloppyDrivesFrom(cfg.FloppyDrives);
+            LastCfgPath = path;
             StatusMessage = $"Loaded {Path.GetFileName(path)} — press Apply to use it.";
         }
         catch (Exception ex)
@@ -203,6 +261,12 @@ public sealed partial class ConfigWindowVm : ObservableObject
         }
     }
 
+    /// <summary>Saves a <c>.cfg</c> capturing what the machine is ACTUALLY running right now —
+    /// including whatever disk/cassette is currently live-mounted, via
+    /// <see cref="Machine.CaptureCurrentConfig"/> (machine ms.20c) — not just this window's own
+    /// bound fields. Closes the 2026-07-26 investigation's confirmed gap (§18): previously this
+    /// only ever serialized <see cref="BuildConfig"/>, which always saved a null/empty
+    /// <c>ImagePath</c>/<c>CassettePath</c> regardless of what was actually mounted.</summary>
     [RelayCommand]
     private async Task SaveCfgAsync()
     {
@@ -221,13 +285,41 @@ public sealed partial class ConfigWindowVm : ObservableObject
         try
         {
             var path = file.Path.LocalPath;
-            MachineConfigFile.SaveToFile(BuildConfig(), path);
+            MachineConfigFile.SaveToFile(_runner.Machine.CaptureCurrentConfig(), path);
+            LastCfgPath = path;
             StatusMessage = $"Saved to {Path.GetFileName(path)}.";
         }
         catch (Exception ex)
         {
             StatusMessage = $"Save failed: {ex.Message}";
         }
+    }
+
+    // ── Startup pinning (project CLAUDE.md milestone 14c) ───────────────────────
+
+    /// <summary>"Always start with this configuration": pins <see cref="LastCfgPath"/> — the
+    /// last file THIS window explicitly loaded or saved, not whatever's currently in the fields —
+    /// as the startup default. Auto-remember stops overwriting it until <see cref="UnpinStartupConfig"/>.</summary>
+    [RelayCommand(CanExecute = nameof(CanPinStartup))]
+    private void PinAsStartupConfig()
+    {
+        if (LastCfgPath is null) return;
+        var prefs = AppPreferencesFile.Load();
+        prefs.StartupCfgPath = LastCfgPath;
+        prefs.StartupCfgIsPinned = true;
+        AppPreferencesFile.Save(prefs);
+        IsStartupPinned = true;
+        StatusMessage = $"Pinned {Path.GetFileName(LastCfgPath)} as the startup configuration.";
+    }
+
+    [RelayCommand]
+    private void UnpinStartupConfig()
+    {
+        var prefs = AppPreferencesFile.Load();
+        prefs.StartupCfgIsPinned = false;
+        AppPreferencesFile.Save(prefs);
+        IsStartupPinned = false;
+        StatusMessage = "Unpinned — the app will remember your last session again on quit.";
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────
@@ -239,13 +331,16 @@ public sealed partial class ConfigWindowVm : ObservableObject
         Board = Board,
         Slot1CartridgePath = NullIfEmpty(Slot1CartridgePath),
         MonitorRomPath = NullIfEmpty(MonitorRomPath),
+        CassettePath = NullIfEmpty(CassettePath),
         FloppyDrives = FloppyDriveRows.Select(r => r.ToConfig()).ToList(),
     };
 
     private static string? NullIfEmpty(string s) =>
         string.IsNullOrWhiteSpace(s) ? null : s.Trim();
 
-    private async Task<string?> PickFileAsync(string title, IReadOnlyList<FilePickerFileType> types)
+    /// <summary>Internal (not private) so <see cref="FloppyDriveRowVm"/>'s own browse command can
+    /// reuse the same file-dialog plumbing rather than duplicating it.</summary>
+    internal static async Task<string?> PickFileAsync(string title, IReadOnlyList<FilePickerFileType> types)
     {
         var topLevel = GetTopLevel();
         if (topLevel is null) return null;

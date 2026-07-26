@@ -5,7 +5,9 @@ using P2000.Machine;
 using P2000.Machine.Debug;
 using P2000.Machine.Contention;
 using P2000.Machine.Devices;
+using P2000.Machine.State;
 using P2000.UI.Audio;
+using P2000.UI.State;
 using MachineCore = P2000.Machine.Machine;
 
 namespace P2000.UI.Runner;
@@ -105,23 +107,7 @@ public sealed class EmulationRunner : IDisposable
     /// that intentionally pins one) to keep that value instead.</summary>
     public void Reconfigure(MachineConfig config)
     {
-        if (config.RamSeed is null)
-        {
-            // MachineConfig is a plain class with init-only properties (not a record), so
-            // there's no `with` expression — reconstruct explicitly, copying every other axis.
-            config = new MachineConfig
-            {
-                Model = config.Model,
-                Board = config.Board,
-                RamVariant = config.RamVariant,
-                BankCount = config.BankCount,
-                MonitorRomPath = config.MonitorRomPath,
-                Slot1CartridgePath = config.Slot1CartridgePath,
-                FloppyDrives = config.FloppyDrives,
-                CassettePath = config.CassettePath,
-                RamSeed = NewRandomRamSeed(),
-            };
-        }
+        config = EnsureRamSeed(config);
         var next = new MachineCore(config);
         next.Video.FieldComplete += OnFieldComplete;
         next.BreakHit += OnBreakHit;
@@ -159,6 +145,14 @@ public sealed class EmulationRunner : IDisposable
     // Locate BASIC.bin relative to the executable (assets/ in the repo root).
     private static MachineConfig MakeConfig()
     {
+        // Startup configuration (project CLAUDE.md milestone 14c; reference doc §3a "RESOLVED —
+        // startup configuration"): an experienced user's ordinary relaunch remembers their last
+        // setup (or a pinned one) instead of always booting bare. Fail-soft on anything wrong —
+        // a fresh install (no preferences file) falls straight through to the logic below,
+        // unchanged from today.
+        var startupConfig = TryLoadStartupConfig();
+        if (startupConfig is not null) return EnsureRamSeed(startupConfig);
+
         var ramSeed = NewRandomRamSeed();
 
         // Trim trailing separator so GetDirectoryName reliably walks up one level per call.
@@ -175,6 +169,46 @@ public sealed class EmulationRunner : IDisposable
         // No BASIC found → bare machine (cassette-wait screen).
         return new MachineConfig { RamSeed = ramSeed };
     }
+
+    /// <summary>Loads <see cref="P2000.UI.State.AppPreferences.StartupCfgPath"/> and the <c>.cfg</c>
+    /// it points at, if any (project CLAUDE.md milestone 14c). <b>Fails soft on anything wrong</b>
+    /// — a missing preferences file, a missing/unreadable target, a parse error, or a rejected
+    /// version — returning <c>null</c> rather than throwing, so the caller falls through to
+    /// today's bare/bundled-BASIC boot. Never surfaces as a startup error dialog.</summary>
+    private static MachineConfig? TryLoadStartupConfig()
+    {
+        try
+        {
+            var prefs = AppPreferencesFile.Load();
+            if (prefs.StartupCfgPath is null) return null;
+            return MachineConfigFile.LoadFromFile(prefs.StartupCfgPath);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    /// <summary>Returns <paramref name="config"/> unchanged if it already carries an explicit
+    /// <see cref="MachineConfig.RamSeed"/>, otherwise a copy with a fresh random one filled in
+    /// (project CLAUDE.md §17, 2026-07-21/22 finding — real volatile RAM doesn't power up
+    /// all-zero, and a real cold start should get a genuinely new pattern each time). Shared by
+    /// <see cref="Reconfigure(MachineConfig)"/> and <see cref="MakeConfig"/> so this field list —
+    /// already flagged twice as easy to forget a new field in (RamSeed itself, then
+    /// CassettePath) — has exactly one copy instead of two that could drift apart.</summary>
+    private static MachineConfig EnsureRamSeed(MachineConfig config) =>
+        config.RamSeed is not null ? config : new MachineConfig
+        {
+            Model = config.Model,
+            Board = config.Board,
+            RamVariant = config.RamVariant,
+            BankCount = config.BankCount,
+            MonitorRomPath = config.MonitorRomPath,
+            Slot1CartridgePath = config.Slot1CartridgePath,
+            FloppyDrives = config.FloppyDrives,
+            CassettePath = config.CassettePath,
+            RamSeed = NewRandomRamSeed(),
+        };
 
     /// <summary>Generates a genuinely random 64-bit RAM-fill seed (project CLAUDE.md §17,
     /// 2026-07-21/22 finding). Lives here, outside `P2000.Machine`, deliberately — the core

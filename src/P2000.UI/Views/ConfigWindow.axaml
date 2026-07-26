@@ -81,26 +81,55 @@
                 <ItemsControl ItemsSource="{Binding FloppyDriveRows}">
                     <ItemsControl.ItemTemplate>
                         <DataTemplate x:DataType="vm:FloppyDriveRowVm">
-                            <DockPanel Margin="0,2">
-                                <TextBlock Classes="label" Width="90"
-                                           Text="{Binding DriveIndex, StringFormat='Drive {0}'}" />
-                                <ComboBox ItemsSource="{x:Static vm:FloppyDriveRowVm.Capacities}"
-                                          SelectedItem="{Binding Capacity}"
-                                          MinWidth="90" Margin="0,0,8,0" />
-                                <ComboBox ItemsSource="{x:Static vm:FloppyDriveRowVm.SidesOptions}"
-                                          SelectedItem="{Binding Sides}"
-                                          MinWidth="140">
-                                    <ComboBox.ItemTemplate>
-                                        <DataTemplate x:DataType="m:DiskSides">
-                                            <TextBlock Text="{Binding Converter={x:Static vm:DiskSidesDescConverter.Instance}}" />
-                                        </DataTemplate>
-                                    </ComboBox.ItemTemplate>
-                                </ComboBox>
-                            </DockPanel>
+                            <StackPanel Margin="0,2" Spacing="2">
+                                <DockPanel>
+                                    <TextBlock Classes="label" Width="90"
+                                               Text="{Binding DriveIndex, StringFormat='Drive {0}'}" />
+                                    <ComboBox ItemsSource="{x:Static vm:FloppyDriveRowVm.Capacities}"
+                                              SelectedItem="{Binding Capacity}"
+                                              MinWidth="90" Margin="0,0,8,0" />
+                                    <ComboBox ItemsSource="{x:Static vm:FloppyDriveRowVm.SidesOptions}"
+                                              SelectedItem="{Binding Sides}"
+                                              MinWidth="140">
+                                        <ComboBox.ItemTemplate>
+                                            <DataTemplate x:DataType="m:DiskSides">
+                                                <TextBlock Text="{Binding Converter={x:Static vm:DiskSidesDescConverter.Instance}}" />
+                                            </DataTemplate>
+                                        </ComboBox.ItemTemplate>
+                                    </ComboBox>
+                                </DockPanel>
+                                <!-- Manual initial-image authoring (project CLAUDE.md milestone 14c) —
+                                     complementary to Save .cfg now capturing whatever's live-mounted. -->
+                                <DockPanel Margin="90,0,0,0">
+                                    <Button Command="{Binding ClearImageCommand}"
+                                            DockPanel.Dock="Right" Content="Clear" Margin="4,0,0,0" />
+                                    <Button Command="{Binding BrowseImageCommand}"
+                                            DockPanel.Dock="Right" Content="Browse…" Margin="4,0,0,0" />
+                                    <TextBox Text="{Binding ImagePath}"
+                                             Watermark="(no initial image — mount live at runtime)"
+                                             FontSize="11" IsReadOnly="True" />
+                                </DockPanel>
+                            </StackPanel>
                         </DataTemplate>
                     </ItemsControl.ItemTemplate>
                 </ItemsControl>
             </StackPanel>
+
+            <!-- ── Cassette (project CLAUDE.md milestone 14c) ───────────────── -->
+            <TextBlock Classes="section" Text="Cassette" />
+            <TextBlock Foreground="#777" FontSize="11"
+                       Text="Manually-authored initial tape (hand-authoring a .cfg). Save .cfg from a running machine instead captures whatever's actually mounted in the deck." />
+            <DockPanel>
+                <TextBlock Classes="label" Text="Initial cassette" />
+                <Button Command="{Binding ClearCassetteCommand}"
+                        DockPanel.Dock="Right" Content="Clear" Margin="4,0,0,0"
+                        ToolTip.Tip="No initial cassette (bare deck)" />
+                <Button Command="{Binding BrowseCassetteCommand}"
+                        DockPanel.Dock="Right" Content="Browse…" Margin="4,0,0,0" />
+                <TextBox Text="{Binding CassettePath}"
+                         Watermark="(empty — bare deck)"
+                         IsReadOnly="True" />
+            </DockPanel>
 
             <!-- ── SLOT1 cartridge ─────────────────────────────────────────── -->
             <TextBlock Classes="section" Text="SLOT1 Cartridge" />
@@ -139,13 +168,31 @@
                 <!-- .cfg load/save on the left -->
                 <StackPanel DockPanel.Dock="Left" Orientation="Horizontal" Spacing="6">
                     <Button Command="{Binding LoadCfgCommand}"   Content="Load .cfg…" />
-                    <Button Command="{Binding SaveCfgCommand}"   Content="Save .cfg…" />
+                    <Button Command="{Binding SaveCfgCommand}"   Content="Save .cfg…"
+                            ToolTip.Tip="Captures whatever's actually running right now — including any live-mounted disk/cassette — not just the fields above." />
                 </StackPanel>
                 <!-- Apply on the right -->
                 <Button Command="{Binding ApplyCommand}"
                         HorizontalAlignment="Right"
                         Content="Apply (resets machine)"
                         ToolTip.Tip="Rebuilds the machine with the settings above and performs a cold reset." />
+            </DockPanel>
+
+            <!-- ── Startup configuration (project CLAUDE.md milestone 14c) ─── -->
+            <TextBlock Classes="section" Text="Startup" />
+            <TextBlock Foreground="#777" FontSize="11"
+                       Text="By default the app remembers your last session automatically. Pin a specific, already-saved .cfg (via Load/Save .cfg above) to always start with that instead." />
+            <DockPanel>
+                <TextBlock Classes="label" Text="Pinned startup config" />
+                <Button Command="{Binding UnpinStartupConfigCommand}"
+                        DockPanel.Dock="Right" Content="Unpin" Margin="4,0,0,0"
+                        IsVisible="{Binding IsStartupPinned}" />
+                <Button Command="{Binding PinAsStartupConfigCommand}"
+                        DockPanel.Dock="Right" Content="Always start with this configuration" Margin="4,0,0,0"
+                        IsVisible="{Binding !IsStartupPinned}"
+                        ToolTip.Tip="Pins the last .cfg loaded or saved via this window as the permanent startup default." />
+                <TextBlock Text="{Binding IsStartupPinned, Converter={x:Static vm:BoolToPinnedTextConverter.Instance}}"
+                           Foreground="#888" VerticalAlignment="Center" />
             </DockPanel>
 
             <!-- ── Status message ──────────────────────────────────────────── -->

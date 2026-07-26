@@ -69,3 +69,16 @@ public sealed class NonEmptyStringToBoolConverter : IValueConverter
     public object? ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture)
         => throw new NotSupportedException();
 }
+
+/// <summary>Maps <see cref="ConfigWindowVm.IsStartupPinned"/> to a short status label (project
+/// CLAUDE.md milestone 14c).</summary>
+public sealed class BoolToPinnedTextConverter : IValueConverter
+{
+    public static readonly BoolToPinnedTextConverter Instance = new();
+
+    public object? Convert(object? value, Type targetType, object? parameter, CultureInfo culture)
+        => (bool?)value == true ? "Pinned" : "Not pinned (auto-remembering last session)";
+
+    public object? ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture)
+        => throw new NotSupportedException();
+}

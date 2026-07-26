@@ -479,7 +479,6 @@ src/P2000.UI/
   Input/            # host-key → matrix mapping, enqueue to machine
   Runner/           # owns the emulation loop: paces RunField()/StepInstruction() to 50Hz (uncapped=turbo),
                     # run/pause, command submit, input at boundaries; promotable to a machine-layer runner (§3.2a)
-  State/            # .uistate sidecar (ms.14b) — pure UI window-layout JSON, independent of P2000.Machine's .state/.cfg
   Assets/           # key-layout data, icons
 tests/P2000.UI.Tests/
   ...               # VM logic, blit/mode correctness (headless framebuffer), mapping, snapshot binding
@@ -994,6 +993,53 @@ builds did. Do not advance while the current milestone is red. Record spec corre
       machine correctly — confirms the two files are truly independent, not silently coupled.
       → commit.
 
+14c. **Startup configuration — remembers your last setup automatically; pinning available**
+    (NEW, owner decision 2026-07-26, reference doc §3a "RESOLVED — startup configuration"; depends
+    on machine milestone 20c's `CaptureCurrentConfig()`). Also finally closes the §7 investigation's
+    confirmed gap — same underlying fix serves both.
+    - **New app-level preferences file — a FOURTH file type, distinct from `.cfg`/`.state`/
+      `.uistate`:** small JSON (e.g. `AppPreferences.json`) in the platform-appropriate per-user
+      app-data folder (NOT the user's documents/save folder) — `StartupCfgPath` (nullable string),
+      `StartupCfgIsPinned` (bool, default false).
+    - **Auto-remember (default behavior, no toggle to turn it on):** on a clean app quit (and/or
+      opportunistically on reconfigure/mount-eject — an implementation robustness choice, not a
+      design fork), if NOT pinned, call `Machine.CaptureCurrentConfig()` (machine ms.20c) and
+      serialize it via the EXISTING `.cfg` writer to a fixed path in the same app-data folder
+      (e.g. `last-session.cfg`) — an ordinary `.cfg` file, no new format. Set `StartupCfgPath` to
+      that path if not already.
+    - **Startup:** if `StartupCfgPath` is set, try to load and apply it (same reset-to-apply path
+      as any `.cfg`) in place of the bare default. **Fail soft on anything wrong** — missing file,
+      parse error, version rejection — falls through to today's bare boot, never a startup error
+      dialog. A fresh install (no preferences file at all) boots bare exactly as today.
+    - **Pinning:** an explicit Config-window action ("Always start with this configuration") sets
+      `StartupCfgPath` to a specific, separately-saved, user-named `.cfg` and `StartupCfgIsPinned
+      = true` — auto-remember stops overwriting it until explicitly unpinned. This is a DIFFERENT
+      file from the auto-managed `last-session.cfg` — pinning points at a real file the user
+      manages themselves (browsed/saved through the ordinary Config window flow, itself now
+      correctly capturing live media per the fix below).
+    - **"New (bare) machine" stays the explicit escape hatch** to the honest baseline (already
+      exists in spirit as a config action) — unaffected by any of this, and not gated behind a
+      settings toggle; this milestone changes what happens on ordinary relaunch, not what "start
+      fresh" means when asked for explicitly.
+    - **Also fixes the §7 investigation's confirmed gap, using the SAME deriver:**
+      `ConfigWindowVm.SaveCfgAsync`/`BuildConfig()` currently only serializes its own bound
+      properties (`FloppyDriveRowVm.ImagePath` hardcoded `null`, no `CassettePath` at all). Change
+      it to call `Machine.CaptureCurrentConfig()` when a machine is running, so an explicit
+      "Save `.cfg`" now correctly captures whatever's actually mounted — closing the gap in
+      general, not just for this feature's own auto-managed file.
+    - **Separately, still worth doing (complementary, not a substitute for the fix above):** add
+      manual browse/clear fields for each drive's `ImagePath` and for `CassettePath` in the Config
+      window, mirroring `Slot1CartridgePath`'s existing pattern — for authoring a `.cfg` BY HAND
+      (e.g. a "starter kit" config for someone else) without a machine running to capture from.
+    - **Tests:** (a) quit with a disk mounted in drive 0 and a tape in the deck, relaunch — both
+      are back, unmounted-then-remounted automatically at startup (via the reconstructed `.cfg`'s
+      `FloppyDrives`/`CassettePath`); (b) a fresh install (no preferences file) boots bare,
+      unchanged from today; (c) pin a specific `.cfg`, then change live topology and quit — next
+      launch still uses the pinned file, not the changed live state; (d) unpinning resumes
+      auto-remember on the next quit; (e) a corrupt/missing `StartupCfgPath` target falls through
+      to bare with no error dialog; (f) `SaveCfgAsync` after live-mounting a disk/tape now saves
+      those paths into the `.cfg` (regression guard for the §7 gap, now closed). → commit.
+
 ---
 
 ## 15. Deferred (build the seams now, implement later)
@@ -1062,108 +1108,84 @@ genuinely open, plus the last few active days, for continuity. Everything fully 
 already synced lives only in the archive now — check there before assuming something's
 missing.
 
-### 2026-07-26 — Milestone 14b IMPLEMENTED: `.uistate` sidecar
-- **Built:** `src/P2000.UI/State/UiStateFile.cs` (new) — a `P2000.UI`-owned JSON sidecar
-  (`UiStateData`/`WindowLayout`/`MemoryWatchLayout`/`DebuggerLayout`), own `CurrentVersion`
-  (starts at 1), own reject-by-`TryLoad`-returning-`null` discipline (missing file, version
-  mismatch, or any parse exception), completely independent of `MachineStateFile`'s versioning —
-  no `P2000.Machine` file touched. `UiStateFile.SidecarPathFor` derives `mygame.uistate` from
-  `mygame.state` via `Path.ChangeExtension`.
-- **Wiring — extends the EXISTING Save/Load State actions (ms.8), not a new menu item, exactly
-  as spec'd:** `DisplayWindowVm` gained two events, `StateSaved`/`StateLoaded`, raised with the
-  file path immediately after `Runner.SaveStateToStream`/`Runner.ReconfigureWithMachine` succeed
-  in `SaveStateAsync`/`LoadStateAsync`. `DisplayWindow` (the view, which alone holds the satellite
-  window references) subscribes and does the actual capture/restore:
-  - **Save:** captures the main window plus the 4 simple satellite windows (deck/disk/config/
-    keyboard — open/position/size only) via `UiStateFile.Capture`, plus `_debuggerWindow?.CaptureLayout()`
-    for the debugger's own nested state, then writes the sidecar. A write failure is swallowed
-    (best-effort — must never surface as a `.state` save failure, per the milestone's own framing).
-  - **Load:** `TryLoad`s the sidecar; `null` (missing/version-mismatched) is a silent no-op —
-    whatever's currently open just stays open, which IS "default window layout" in this context
-    (a fresh app launch has nothing open; mid-session there's nothing to force-close either).
-    Otherwise re-shows each satellite window that was open and applies its captured layout.
-- **Debugger's own nested layout** (`DebuggerWindow.CaptureLayout()`/`ApplyLayout()`): the VRAM
-  window's open/position + `ShowHex` toggle, and every open memory-watch window's open/position +
-  Base/Length/Follow. **Found while wiring this up:** `DebuggerWindow` tracked memory-watch VMs
-  (via `DebuggerWindowVm.MemoryWatches`) but never tracked their WINDOWS — `OnOpenMemoryWatch`
-  created each `MemoryWatchWindow` locally with no stored reference. Added a
-  `Dictionary<MemoryWatchVm, MemoryWatchWindow>` to close that gap (needed to read each window's
-  position back out for capture).
-- **New `DebuggerWindowVm.RestoreMemoryWatch(baseAddress, length, follow)`:** a second entry point
-  alongside the existing button-driven `AddMemoryWatch()` (which always starts at the default
-  256-byte range) — pre-configures the VM via the already-existing `SetRange`/`Follow` before
-  raising the SAME `OpenMemoryWatchRequested` event `AddMemoryWatch` uses, so the view's
-  window-creation/tracking stays one code path for both the manual "Add" button and sidecar
-  restore.
-- **Tests:** `UiStateFileTests` (new, 11 tests) — full-layout round-trip incl. nested debugger/
-  VRAM/memory-watch data; no-debugger round-trips to a null `Debugger`; missing file, future
-  version, and corrupt JSON all return `null` rather than throwing; sidecar path derivation;
-  `Capture`/`Apply` against a real (unshown) headless `Window` for the parts that don't need
-  actual rendering (`IsOpen` semantics, `Width`/`Height`). **Not tested: `Position` actually
-  taking effect** — that needs a shown window, and this test project's headless setup
-  (`UseHeadlessDrawing = false`) throws (`Unable to locate IPlatformRenderInterface`) on any
-  attempt to render one, the same reason no other test in this suite exercises a live `Window`
-  (see `MemoryWatchVmTests`' own doc comment on the same limitation) — flagged rather than
-  worked around. `DebuggerWindowVmTests` (new, 3 tests) — `RestoreMemoryWatch` applies the given
-  range/follow (not the default), adds to `MemoryWatches`, and raises the open-window event with
-  the same VM instance. Full `P2000.UI.Tests`: 163/163 green (was 149).
-- **Applies to:** `src/P2000.UI/State/UiStateFile.cs` (new), `src/P2000.UI/ViewModels/DisplayWindowVm.cs`
-  (`StateSaved`/`StateLoaded` events), `src/P2000.UI/Views/DisplayWindow.axaml.cs` (`OnStateSaved`/
-  `OnStateLoaded`), `src/P2000.UI/ViewModels/DebuggerWindowVm.cs` (`RestoreMemoryWatch`),
-  `src/P2000.UI/Views/DebuggerWindow.axaml.cs` (`CaptureLayout`/`ApplyLayout`,
-  `_memoryWatchWindows`), `tests/P2000.UI.Tests/State/UiStateFileTests.cs` (new),
-  `tests/P2000.UI.Tests/ViewModels/DebuggerWindowVmTests.cs` (new). §14 milestone 14b's own spec
-  (this file); reference doc §3a's ".uistate" resolution.
+### 2026-07-26 — Milestone 14c IMPLEMENTED: startup configuration (auto-remember + pin) + the §7 gap finally closed
+- **Built (new 4th file type):** `src/P2000.UI/State/AppPreferencesFile.cs` — `AppPreferences`
+  (`StartupCfgPath`, `StartupCfgIsPinned`) as small JSON in the platform-appropriate per-user
+  app-data folder (`Environment.SpecialFolder.ApplicationData`/`MMulator`), fail-soft `Load()`
+  (missing/corrupt file → a fresh unpinned instance, never throws), `Save()`, and a fixed
+  `LastSessionCfgPath` (`last-session.cfg`, an ordinary `.cfg`, no new format).
+- **Auto-remember:** `DisplayWindowVm.Dispose()` (the existing clean-quit path, wired from
+  `App.axaml.cs`'s `desktop.Exit`) gained `SaveStartupConfigIfNotPinned()` — if not pinned, calls
+  `Machine.CaptureCurrentConfig()` (machine ms.20c) and writes it to `last-session.cfg`, then
+  points `StartupCfgPath` there. Best-effort (swallows all exceptions) — a failed write on quit
+  must never block shutdown.
+- **Startup:** `EmulationRunner.MakeConfig()` now tries `TryLoadStartupConfig()` FIRST — reads
+  `AppPreferences.StartupCfgPath` and loads that `.cfg` via the existing `MachineConfigFile`
+  reader, fail-soft (returns `null` on ANY problem: missing prefs, missing target, parse error,
+  rejected version) — before falling through to today's unchanged bundled-BASIC-or-bare logic.
+  **Found + fixed along the way (a real duplication risk, not new to this milestone):**
+  `EmulationRunner.Reconfigure`'s manual `MachineConfig` field-copy (needed because the class has
+  no `with` expression) was the SECOND copy of that same field list (RamSeed's own fix, then
+  CassettePath, now this) — extracted into one shared `EnsureRamSeed(config)` static helper used
+  by both `Reconfigure` and the new startup path, so there's exactly one list to remember instead
+  of two that could silently drift apart.
+- **Pinning (`ConfigWindowVm`):** `PinAsStartupConfig` pins `LastCfgPath` — the last file THIS
+  window explicitly loaded or saved via `LoadCfgAsync`/`SaveCfgAsync` (NOT whatever's currently in
+  the fields, which may be unsaved edits) — and sets `StartupCfgIsPinned = true`; `UnpinStartupConfig`
+  clears the pin. `IsStartupPinned` is read from `AppPreferencesFile` at VM construction so the
+  Config window reflects the real state on open.
+- **The §7 investigation's gap, closed exactly as flagged:** `SaveCfgAsync` now serializes
+  `_runner.Machine.CaptureCurrentConfig()` instead of `BuildConfig()` — a saved `.cfg` now
+  captures whatever's ACTUALLY mounted (live disk swaps, live cassette swaps), not just this
+  window's own bound fields (which `FloppyDriveRowVm.ToConfig()` used to hardcode `ImagePath =
+  null` for). **`BuildConfig()` itself is UNCHANGED and still used by `Apply`** — Apply's whole
+  point is rebuilding from what's authored in the fields, which must stay independent of whatever
+  happens to be live-mounted right now; only Save-to-file switches to the live-capture semantics.
+- **Complementary hand-authoring fields added** (`ConfigWindowVm`/`ConfigWindow.axaml`):
+  `CassettePath` (mirrors `Slot1CartridgePath`'s browse/clear pattern exactly) and
+  `FloppyDriveRowVm.ImagePath` (new browse/clear commands per row, reusing
+  `ConfigWindowVm.PickFileAsync` — promoted from `private` to `internal static` so the row VM can
+  call it without duplicating the dialog plumbing). `LoadFloppyDrivesFrom`/`LoadFromCurrentConfig`/
+  `LoadCfgAsync` all populate these now instead of leaving them permanently blank.
+- **Found (a real test-isolation hazard, closed before writing any ms.14c tests) — EVERY
+  `EmulationRunner` construction now calls through `AppPreferencesFile.Load()` via `MakeConfig()`,
+  including every existing test in this suite that does `new EmulationRunner()`.** Left
+  unguarded, running `dotnet test` on a developer's own machine would read (and `Dispose()`'s
+  auto-remember would WRITE) their REAL `AppPreferences.json`/`last-session.cfg` — a real, wanted regression to
+  avoid. Fixed with a test-only seam: `AppPreferencesFile.DirectoryOverride` (internal, gated by
+  a new `src/P2000.UI/AssemblyInfo.cs` `[InternalsVisibleTo("P2000.UI.Tests")]`, mirroring
+  `P2000.Machine`'s existing precedent for the same need), set ONCE to a throwaway temp directory
+  by a `[ModuleInitializer]` in the test project's new `TestEnvironment.cs` — isolates the ENTIRE
+  suite automatically, no per-test boilerplate needed for tests that don't care about preferences.
+  Tests that DO need to control preferences content use a small `IDisposable` scope that
+  redirects further and restores the shared directory on dispose. **Also added
+  `[assembly: CollectionBehavior(DisableTestParallelization = true)]`** — `DirectoryOverride` is
+  a single shared static, and xUnit parallelizes across test classes by default; without this, a
+  test in this milestone's own class overriding the directory could race against an unrelated
+  test class's `EmulationRunner()` construction in another thread. Suite runtime impact was
+  negligible (~7-8s either way, 170 tests).
+- **Tests:** `StartupConfigurationTests` (new, 7): fresh-install boots bare (no prefs file);
+  mount-then-quit-then-relaunch round-trips both a disk and a cassette automatically; a
+  missing/corrupt `StartupCfgPath` target falls through to bare with no exception (both cases);
+  pinning survives a live topology change across a simulated quit/relaunch; unpinning resumes
+  auto-remember on the next quit; `Machine.CaptureCurrentConfig()` reflects live-mounted paths
+  (the direct regression guard for the §7 gap — `ConfigWindowVm.SaveCfgAsync` itself isn't
+  unit-tested here, same StorageProvider-needs-a-real-desktop limitation this suite's other
+  Save/Load-dialog code already has, per `MemoryWatchVmTests`' own doc comment). Full
+  `P2000.UI.Tests`: 170/170 green (was 163), run twice to confirm no flakiness from the
+  threading/parallelization changes. `P2000.Machine.Tests`: 501/501, unaffected.
+- **Applies to:** `src/P2000.UI/State/AppPreferencesFile.cs` (new), `src/P2000.UI/AssemblyInfo.cs`
+  (new), `src/P2000.UI/Runner/EmulationRunner.cs` (`TryLoadStartupConfig`, `EnsureRamSeed`),
+  `src/P2000.UI/ViewModels/DisplayWindowVm.cs` (`SaveStartupConfigIfNotPinned`),
+  `src/P2000.UI/ViewModels/ConfigWindowVm.cs` (`CassettePath`, `LastCfgPath`, `IsStartupPinned`,
+  pin/unpin commands, `SaveCfgAsync` rewrite, `PickFileAsync` visibility),
+  `src/P2000.UI/ViewModels/ConfigConverters.cs` (`BoolToPinnedTextConverter`),
+  `src/P2000.UI/Views/ConfigWindow.axaml` (cassette section, per-drive image fields, startup
+  section), `tests/P2000.UI.Tests/TestEnvironment.cs` (new),
+  `tests/P2000.UI.Tests/State/StartupConfigurationTests.cs` (new). Reference doc §3a's "RESOLVED
+  — startup configuration" block; machine ms.20c.
 - **Synced:** no (implementation-only — the design decision itself was already synced into the
-  reference doc's own 2026-07-26 "RESOLVED" entry, and milestone 14b's spec was already written
-  into §14 above, before this was built).
-
-### 2026-07-26 — Investigation (§7's two flagged gaps): both CONFIRMED real, read-only pass, nothing built yet
-- **Trigger:** §7's disk bullet and its cassette follow-on flagged two open questions rather than
-  assuming either answer, per the owner's explicit "check before building anything" instruction.
-  Answered by reading `ConfigWindowVm.cs` end to end (no code changed this pass).
-- **Question 1, disk — CONFIRMED gap:** `ConfigWindowVm` has NO field that lets the Config window
-  set a drive's initial `ImagePath` into a saved `.cfg`. `FloppyDriveRowVm.ToConfig()`
-  (`ConfigWindowVm.cs:30-37`) hardcodes `ImagePath = null` with its own comment confirming this is
-  deliberate: *"initial media is mounted live from the Disk Drives window, not here."* The window
-  only exposes Capacity/Sides per row (topology) — never a path. So `MachineConfig.FloppyDrives[i].ImagePath`
-  is a real, already-mountable field at the machine layer (M20), but nothing in this window can
-  ever populate it; the only way to get an image into a saved `.cfg` today is to hand-edit the
-  JSON after saving.
-- **Question 1, cassette — CONFIRMED gap, same shape:** `ConfigWindowVm` has no `CassettePath`
-  property, command, or `BuildConfig()`/`LoadFromCurrentConfig()`/`LoadCfgAsync()` reference at
-  all — grepped the whole project (`CassettePath` only appears in `P2000.Machine` and this doc).
-  The new machine-layer `MachineConfig.CassettePath` (machine ms.20b) is exactly as unreachable
-  from the Config window as disk's `ImagePath`.
-- **Question 2 — CONFIRMED: `SaveCfgAsync` never captures anything live-mounted, for either
-  device.** `SaveCfgAsync` → `BuildConfig()` (`ConfigWindowVm.cs:207-243`) serializes ONLY the
-  ViewModel's own bound properties — `RamVariant`/`Board`/`Slot1CartridgePath`/`MonitorRomPath`/
-  `FloppyDriveRows` (each row's `ImagePath` always null, per Q1). Those properties are populated
-  exactly twice: `LoadFromCurrentConfig()` (called once, at VM construction, from
-  `_runner.Machine.Config`) and `LoadCfgAsync()` (from a loaded `.cfg` file). Neither path, nor
-  anything else in the VM, ever re-reads what's CURRENTLY mounted in a running machine's drives or
-  cassette deck (`DiskDriveVm`/`CassetteDeckVm` are entirely separate ViewModels the Config window
-  never queries). So: mount a disk or tape live via their own deck/drive windows, then open Config
-  and hit "Save .cfg" — the saved file reflects whatever was true at machine-build time (or the
-  last `.cfg` loaded), never the live mount just made. **One partial asymmetry worth noting:**
-  `Slot1CartridgePath` IS a real bound field and DOES get saved — but this doesn't contradict the
-  finding, because SLOT1 has no live-swap capability at all (reset-to-apply only, locked §2.7), so
-  "what's live" and "what was last explicitly configured" can never diverge for SLOT1 the way they
-  can for disk/cassette; the field being present doesn't mean the VM does anything different for
-  it than for the two devices that lack a field entirely.
-- **Conclusion (matches the owner's own framing, not previously assumed either way):** this is UI
-  work, not a machine-layer gap — both `MachineConfig.FloppyDrives[i].ImagePath` and
-  `MachineConfig.CassettePath` are real, functioning, already-mounted-at-construction fields
-  (M20/M20b). What's missing is entirely in `P2000.UI`: (a) a way to set a drive's/the cassette's
-  path as part of building a `.cfg` in the Config window, and (b) if a "capture what's currently
-  live" convenience is wanted, an explicit action that reads `DiskDriveVm`/`CassetteDeckVm`'s
-  current mount state into the Config window before saving — NOT automatic/implicit, since that
-  would be a surprising side effect of opening the window. Scoping the actual fix (new fields +
-  browse/clear commands mirroring `Slot1CartridgePath`'s existing pattern, plus whether a
-  "capture current" action belongs on the Config window or the deck/drive windows themselves) is
-  future work — not decided or built in this pass, per the "check before building" instruction.
-- **Applies to:** `src/P2000.UI/CLAUDE.md` §7 (both flagged bullets) / `src/P2000.UI/ViewModels/ConfigWindowVm.cs`.
-- **Synced:** no (investigation only, no design decision made yet for the human to sync).
+  reference doc's own 2026-07-26 "RESOLVED" entry before this milestone was built).
 
 ### 2026-07-24 — Milestone 14a IMPLEMENTED: cassette + disk unsaved-changes warning
 - **Machine-layer signal was already built and green (M20a, `P2000.Machine` CLAUDE.md §13.20a)

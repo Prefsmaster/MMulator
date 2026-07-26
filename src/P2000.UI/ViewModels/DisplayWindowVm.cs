@@ -12,6 +12,7 @@ using P2000.Machine.State;
 using P2000.UI.Input;
 using P2000.UI.Rendering;
 using P2000.UI.Runner;
+using P2000.UI.State;
 using System.Runtime.InteropServices;
 using MachineDebug = P2000.Machine.Debug;
 using Video = P2000.Machine.Devices.Video;
@@ -389,6 +390,36 @@ public sealed partial class DisplayWindowVm : ObservableObject, IDisposable
         CassetteVm.Detach();
         DiskVm.Detach();
         DebuggerVm.Dispose();
+
+        SaveStartupConfigIfNotPinned();
+
         Runner.Dispose();
+    }
+
+    /// <summary>Auto-remember (project CLAUDE.md milestone 14c; reference doc §3a "RESOLVED —
+    /// startup configuration"): on a clean app quit, captures the CURRENT live configuration
+    /// (via <c>Machine.CaptureCurrentConfig()</c> — includes whatever media is actually mounted,
+    /// not just this session's original topology) and writes it as an ordinary <c>.cfg</c> to
+    /// the fixed <see cref="AppPreferencesFile.LastSessionCfgPath"/>, then points
+    /// <see cref="AppPreferences.StartupCfgPath"/> at it — unless the user has pinned a specific
+    /// config instead, in which case auto-remember must not overwrite it.
+    /// <b>Best-effort:</b> any failure here is swallowed — a failed write on quit must never
+    /// block shutdown or show an error.</summary>
+    private void SaveStartupConfigIfNotPinned()
+    {
+        try
+        {
+            var prefs = AppPreferencesFile.Load();
+            if (prefs.StartupCfgIsPinned) return;
+
+            var captured = Runner.Machine.CaptureCurrentConfig();
+            MachineConfigFile.SaveToFile(captured, AppPreferencesFile.LastSessionCfgPath);
+            prefs.StartupCfgPath = AppPreferencesFile.LastSessionCfgPath;
+            AppPreferencesFile.Save(prefs);
+        }
+        catch
+        {
+            // Best-effort — see doc comment above.
+        }
     }
 }

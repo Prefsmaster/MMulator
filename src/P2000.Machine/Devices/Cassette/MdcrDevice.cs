@@ -113,14 +113,28 @@ public sealed class MdcrDevice : IDevice
     /// are found.</summary>
     public byte[]? SaveTape() => _tape?.Save();
 
+    /// <summary>The host file the mounted tape was last loaded from or saved to; <c>null</c>
+    /// when no tape is mounted or the mounted tape is unbacked (fresh off "New (blank) tape," or
+    /// mounted directly from bytes with no known path) — project CLAUDE.md milestone 20c, the
+    /// field <c>Machine.CaptureCurrentConfig()</c> reads to reflect what's ACTUALLY mounted
+    /// rather than a stale construction-time value. Settable so a host Save-as or a live UI
+    /// mount (which reads bytes itself but knows the real path) can record it; <see cref="EjectTape"/>
+    /// clears it back to <c>null</c>.</summary>
+    public string? MountedPath { get; set; }
+
     /// <summary>Insert a loaded <c>.cas</c> image at runtime (CIP flips live — the ROM's
     /// busy-wait loop sees the cassette appear without a machine reset). Write-protect is
     /// read from the file itself (see <see cref="MiniTape.LoadCasImage"/>) — defaults writable
-    /// for any file that never set the protect byte (machine CLAUDE.md §17, 2026-07-14).</summary>
-    public void InsertTape(byte[] casImage)
+    /// for any file that never set the protect byte (machine CLAUDE.md §17, 2026-07-14).
+    /// <paramref name="path"/> is an optional host-side hint recording where this image came
+    /// from (project CLAUDE.md milestone 20c) — pass it whenever the caller knows a real path
+    /// (e.g. <c>MachineConfig.CassettePath</c> at construction); leave <c>null</c> for an
+    /// in-memory-only mount (turbo trap fixtures, tests).</summary>
+    public void InsertTape(byte[] casImage, string? path = null)
     {
         _tape = new MiniTape();
         _tape.LoadCasImage(casImage);
+        MountedPath = path;
         ResetPll();
         UpdateStatusFromTape();
     }
@@ -146,6 +160,7 @@ public sealed class MdcrDevice : IDevice
     public void InsertBlankTape()
     {
         _tape = new MiniTape();
+        MountedPath = null;
         ResetPll();
         UpdateStatusFromTape();
     }
@@ -154,6 +169,7 @@ public sealed class MdcrDevice : IDevice
     public void EjectTape()
     {
         _tape = null;
+        MountedPath = null;
         ResetPll();
         UpdateStatusFromTape();
     }

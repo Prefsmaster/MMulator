@@ -1,6 +1,7 @@
 using P2000.Machine.Contention;
 using P2000.Machine.Debug;
 using P2000.Machine.Devices;
+using P2000.Machine.Devices.Fdc;
 using P2000.Machine.Io;
 using P2000.Machine.Memory;
 
@@ -399,6 +400,140 @@ public class MachineTests
         finally
         {
             File.Delete(path);
+        }
+    }
+
+    // ---- CaptureCurrentConfig (project CLAUDE.md milestone 20c; reference doc §3a "RESOLVED —
+    // startup configuration") ------------------------------------------------------------------
+
+    private static string TempCasPath() =>
+        Path.Combine(Path.GetTempPath(), $"capture-test-{Guid.NewGuid():N}.cas");
+
+    private static string TempDskPath(int tracks = 40, int sides = 1)
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"capture-test-{Guid.NewGuid():N}.dsk");
+        File.WriteAllBytes(path, DskImage.CreateBlank(tracks, sides).GetBytes());
+        return path;
+    }
+
+    [Fact]
+    public void CaptureCurrentConfig_BareMachine_ReturnsEquivalentOfItsOwnConfig()
+    {
+        var machine = new Machine();
+
+        var captured = machine.CaptureCurrentConfig();
+
+        Assert.Equal(machine.Config.Model, captured.Model);
+        Assert.Equal(machine.Config.Board, captured.Board);
+        Assert.Equal(machine.Config.RamVariant, captured.RamVariant);
+        Assert.Empty(captured.FloppyDrives);
+        Assert.Null(captured.CassettePath);
+    }
+
+    [Fact]
+    public void CaptureCurrentConfig_DiskMountedLive_ReflectsLiveMount_NotTheStaleConstructionConfig()
+    {
+        var originalDiskPath = TempDskPath();
+        var liveDiskPath = TempDskPath();
+        try
+        {
+            var machine = new Machine(new MachineConfig
+            {
+                Board = InternalBoard.FloppyRam,
+                RamVariant = RamVariant.T102,
+                FloppyDrives = new[] { new FloppyDriveConfig { DriveIndex = 0, ImagePath = originalDiskPath } },
+            });
+
+            // Live-swap drive 0's image — the runtime-swap capability §3a already locks in.
+            machine.Fdc!.MountDisk(0, new DskImage(liveDiskPath));
+
+            var captured = machine.CaptureCurrentConfig();
+
+            Assert.Equal(liveDiskPath, captured.FloppyDrives[0].ImagePath);
+            // The ORIGINAL config object is untouched — this is what makes it stale.
+            Assert.Equal(originalDiskPath, machine.Config.FloppyDrives[0].ImagePath);
+        }
+        finally
+        {
+            File.Delete(originalDiskPath);
+            File.Delete(liveDiskPath);
+        }
+    }
+
+    [Fact]
+    public void CaptureCurrentConfig_CassetteMountedLive_ReflectsLiveMount_NotTheStaleConstructionConfig()
+    {
+        var originalCasPath = TempCasPath();
+        var liveCasPath = TempCasPath();
+        try
+        {
+            File.WriteAllBytes(originalCasPath, new byte[1280]);
+            File.WriteAllBytes(liveCasPath, new byte[1280]);
+
+            var machine = new Machine(new MachineConfig { CassettePath = originalCasPath });
+
+            // Live-swap the cassette — same runtime exception as disk.
+            machine.Mdcr.InsertTape(File.ReadAllBytes(liveCasPath), liveCasPath);
+
+            var captured = machine.CaptureCurrentConfig();
+
+            Assert.Equal(liveCasPath, captured.CassettePath);
+            Assert.Equal(originalCasPath, machine.Config.CassettePath);
+        }
+        finally
+        {
+            File.Delete(originalCasPath);
+            File.Delete(liveCasPath);
+        }
+    }
+
+    [Fact]
+    public void CaptureCurrentConfig_SlotRamBoardFields_AlwaysEchoTheOriginalConfig()
+    {
+        var machine = new Machine(new MachineConfig
+        {
+            RamVariant = RamVariant.T54,
+            BankCount = 3,
+            RamSeed = 0xABCDEF,
+        });
+
+        var captured = machine.CaptureCurrentConfig();
+
+        Assert.Equal(machine.Config.Model, captured.Model);
+        Assert.Equal(machine.Config.RamVariant, captured.RamVariant);
+        Assert.Equal(machine.Config.BankCount, captured.BankCount);
+        Assert.Equal(machine.Config.MonitorRomPath, captured.MonitorRomPath);
+        Assert.Equal(machine.Config.Slot1CartridgePath, captured.Slot1CartridgePath);
+        Assert.Equal(machine.Config.RamSeed, captured.RamSeed);
+    }
+
+    [Fact]
+    public void CaptureCurrentConfig_FedBackIntoNewMachine_MountsTheSameMedia()
+    {
+        var diskPath = TempDskPath();
+        var casPath = TempCasPath();
+        try
+        {
+            File.WriteAllBytes(casPath, new byte[1280]);
+
+            var original = new Machine(new MachineConfig
+            {
+                Board = InternalBoard.FloppyRam,
+                RamVariant = RamVariant.T102,
+                CassettePath = casPath,
+                FloppyDrives = new[] { new FloppyDriveConfig { DriveIndex = 0, ImagePath = diskPath } },
+            });
+
+            var captured = original.CaptureCurrentConfig();
+            var restored = new Machine(captured);
+
+            Assert.True(restored.Mdcr.HasTape);
+            Assert.NotNull(restored.Fdc!.GetDisk(0));
+        }
+        finally
+        {
+            File.Delete(diskPath);
+            File.Delete(casPath);
         }
     }
 }

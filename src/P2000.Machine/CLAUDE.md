@@ -1245,6 +1245,37 @@ is NO machine-layer runner milestone here — it's promoted in with the external
       ejected and a different one mounted live, with no reset required (regression guard against
       the runtime-swap capability). → commit.
 
+20c. **`Machine.CaptureCurrentConfig()` — derive a `MachineConfig` from LIVE state** (NEW, owner
+    decision 2026-07-26, reference doc §3a "RESOLVED — startup configuration"). A third
+    derivation direction alongside the two already established (config → machine at construction;
+    machine+devices → `.state` capture) — this one goes machine → a fresh, accurate config.
+    - **Why this is needed, not just a convenience:** `machine.Config` (the object held since
+      construction) goes stale the moment media is mounted/ejected/swapped LIVE — which is exactly
+      the runtime-swap capability §3a already locks in for both disk and cassette. Anything that
+      wants "what is this machine actually running right now, including what's in its drives" —
+      not just "what was it built from" — needs to read current state, not the constructor's copy.
+    - **Add `Machine.CaptureCurrentConfig()`:** returns a new `MachineConfig` with `Model`/`Board`/
+      `RamVariant`/`BankCount`/`MonitorRomPath`/`Slot1CartridgePath`/`RamSeed` copied from the
+      existing config (these aren't live-swappable — SLOT1 has no hot-swap, per the UI investigation
+      above), but `FloppyDrives[i].ImagePath` and `CassettePath` read from the LIVE devices
+      (`Upd765.GetDisk(i)`'s current mounted path, `MdcrDevice`'s current mounted path — `null` for
+      an empty drive/deck) rather than echoed from the original config. This is a read-only query,
+      no mutation, callable at any time the machine is running.
+    - **Two consumers, both in `P2000.UI` (not this project) — this milestone only builds the
+      machine-layer capability:** (a) fixing `ConfigWindowVm.SaveCfgAsync`'s confirmed gap (UI
+      CLAUDE.md §7 investigation — it currently only ever serializes its own stale bound fields);
+      (b) the new auto-remembered "last session" `.cfg`, written via this same deriver (UI
+      milestone 14c). Building one deriver here avoids two UI-side mechanisms that could drift
+      apart from each other.
+    - **Tests:** (a) capturing on a bare machine returns the equivalent of its own config (no
+      drives/cassette mounted); (b) mounting a disk live, then capturing, reflects that drive's
+      `ImagePath` even though `machine.Config.FloppyDrives[i].ImagePath` (the ORIGINAL, stale copy)
+      still shows whatever it was built with; (c) same for cassette via `CassettePath`; (d) SLOT1/
+      RAM/board fields always echo the original config (never re-derived, since they can't drift —
+      no live-swap path exists for them); (e) a captured config, fed back into `new Machine(...)`,
+      produces a machine with the SAME media mounted as the one it was captured from (round-trip
+      sanity check). → commit.
+
 ---
 
 ## 14. Deferred (build the seams now, implement later)
@@ -1318,93 +1349,54 @@ marked synced. Do NOT edit the reference doc from this project.
 - **Synced:** yes (2026-07-05, into P2000T-reference.md + device guides)
 -->
 
-### 2026-07-26 — Milestones 20/20a IMPLEMENTED: self-contained .state (embedded disk + cassette media content), .state bumped v7→v8
-- **Built (disk, `Upd765`):** each of the 4 drive slots' `.state` block now embeds, when a disk is
-  mounted: `Tracks`, `Sides`, `WriteProtected`, `IsDirty`, and the drive's full raw sector-dump
-  bytes (`DskImage.GetBytes()`), gzip-compressed (`State/StateBlobCompression.cs`, new file — a
-  thin `GZipStream` wrapper shared by both devices, per the reference doc's "apply gzip/deflate
-  over the embedded blob(s), not a per-device decision"). Restore reconstructs via a new
-  `DskImage.FromEmbeddedState(bytes, tracks, sides)` factory that bypasses the on-disk-label
-  auto-detect the `string`/`byte[]` constructors use — **found while implementing:** a
-  blank/unformatted `DskImage.CreateBlank` image has no label at all, so re-running auto-detect
-  on restore would compute `Tracks = 0 - 1 = -1` (the label offsets read as zero) instead of
-  preserving the real geometry the live instance already knows. `DskImage.IsDirty`'s existing
-  `private set` needed a new `internal RestoreDirtyFlag(bool)` (the inverse of `MarkClean()`) since
-  nothing previously needed to set it back to `true` from outside the class.
-- **Built (cassette, `MdcrDevice`):** the `.state` block now embeds, when a tape is mounted,
-  `IsDirty` plus the CURRENT SIDE's compact `.cas`-format bytes via `MiniTape.Save()` (item 1's
-  already-existing serializer — no new one built), gzip-compressed, appended after the existing
-  `Position`/`Side` fields. Restore: `new MiniTape()` → `SeekTo(0, side)` (selects the correct side
-  BEFORE decoding onto it — `LoadCasImage` writes into whichever side is currently selected) →
-  `LoadCasImage(casBytes)` → `SeekTo(pos, side)` again (restores the exact head position on top,
-  since `LoadCasImage` itself always resets position to 1) → `RestoreDirtyFlag(isDirty)` (new
-  `internal` method on `MiniTape`, same reasoning as `DskImage`'s — `LoadCasImage` unconditionally
-  clears dirty, so the captured flag must be reapplied after). **Deliberately NOT embedding the
-  non-current side** — matches the existing one-`.cas`-file-is-one-physical-side convention
-  "Save as `.cas`" already has (MDCR-implementation.md §6); flipping the tape and saving again
-  captures that side separately. Not a limitation introduced here, an existing one carried through.
-- **Found (real behavior fix, not just a passive addition) — embedded state is now authoritative
-  over the embedded config, closing a real gap:** `MdcrDevice.LoadState`'s `hasTape == false`
-  branch previously did nothing, silently leaving whatever `_tape` the freshly-rebuilt-from-config
-  `Machine` had already mounted (e.g. via the new `CassettePath`, milestone 20b above) in place.
-  Since `.state` is now self-contained, a snapshot taken with no tape must restore to no tape even
-  if the embedded config would otherwise have config-seeded one — fixed by explicitly setting
-  `_tape = null` in that branch. Exactly the "mounted file PATH is now a hint, not a dependency;
-  embedded bytes are authoritative" rule from reference doc §3a, applied to the "no tape" case too.
-- **`.state` bumped v7→v8** (`MachineStateFile.CurrentVersion`/`MinVersion`): both device blocks'
-  byte layout changed (new trailing fields on Mdcr's tape branch; a whole new per-drive section
-  appended to Fdc's block) — v7 files rejected with a clear version-mismatch error.
-- **Tests:** `MachineStateFileTests` (+9): disk content/geometry embeds and round-trips without a
-  remount; `WriteProtected`+clean `IsDirty` round-trip; `IsDirty=true` (from a real write) round-
-  trips; no-disk-mounted restores as absent; cassette `.cas` bytes embed and round-trip (via
-  `SaveTape()` after restore); cassette `IsDirty` round-trips; no-cassette-mounted restores as
-  absent; **no-cassette-mounted overrides a `CassettePath`-seeded config** (the authoritative-
-  state-over-config fix above); `Load_VersionSeven_Throws`. Updated the existing
-  `StateRoundTrip_MultipleDrivesAtDifferentCylinders_ArePreserved` test — its old "image bytes are
-  not part of .state, re-mount after load" comment and manual re-mount are now stale/redundant;
-  removed both, replaced with a `GetDisk(n) is not null` assertion. Full `P2000.Machine.Tests`:
-  496/496 green (was 487); `P2000.UI.Tests`: 149/149, unaffected.
-- **Applies to:** `src/P2000.Machine/Devices/Fdc/Upd765.cs` (`SaveState`/`LoadState` per-drive
-  block), `src/P2000.Machine/Devices/Fdc/DskImage.cs` (`FromEmbeddedState`, `RestoreDirtyFlag`),
-  `src/P2000.Machine/Devices/Cassette/MdcrDevice.cs` (`SaveState`/`LoadState`),
-  `src/P2000.Machine/Devices/Cassette/MiniTape.cs` (`RestoreDirtyFlag`),
-  `src/P2000.Machine/State/StateBlobCompression.cs` (new), `src/P2000.Machine/State/MachineStateFile.cs`
-  (v8 bump), `tests/P2000.Machine.Tests/State/MachineStateFileTests.cs`. Reference doc §3a's
-  "RESOLVED — mounted media CONTENT travels inside `.state`" block; `docs/MDCR-implementation.md`
-  §7/§8.
+### 2026-07-26 — Milestone 20c IMPLEMENTED: `Machine.CaptureCurrentConfig()` (+ a real prerequisite gap found and closed: neither device tracked its own mount path at all)
+- **Found before building anything (the actual blocker for this milestone):** the milestone's own
+  spec assumes reading "the LIVE devices' current mounted path" is a simple query —
+  `Upd765.GetDisk(i)`'s mounted path, `MdcrDevice`'s mounted path. Neither existed. Grepped the
+  whole `src/` tree for any existing path-tracking concept (`MountedPath`/`MountPath`/`SourcePath`/
+  a private `_path` field) — zero matches. Path tracking lived ONLY at the UI layer
+  (`CassetteDeckVm`/`DiskDriveVm`'s own private `IStorageFile? _backingFile`, used solely to decide
+  Save vs. Save-as), never on the machine-layer device objects themselves. Since
+  `Machine.CaptureCurrentConfig()` lives in `P2000.Machine` (no dependency on `P2000.UI`, and must
+  stay that way per the dependency direction), the device objects had to grow this capability
+  themselves — not delegate up to a ViewModel that doesn't exist at this layer.
+- **Built (prerequisite):** `DskImage.MountedPath` (public settable `string?`) — the
+  `DskImage(string path)` constructor now sets it automatically (`=> MountedPath = path` on the
+  constructor initializer); the bytes-only constructor, `CreateBlank`, and `FromEmbeddedState`
+  all leave it `null` (unbacked), matching the existing "no path = no backing file" convention
+  `IsDirty`/`WriteProtected` already established. `MdcrDevice.MountedPath` (same shape) — `InsertTape`
+  gained an optional `string? path = null` parameter (fully backward-compatible — every existing
+  caller across `Machine.cs`/tests/`CassetteDeckVm` still compiles unchanged) that sets it;
+  `InsertBlankTape`/`EjectTape` both clear it back to `null`. `Machine`'s constructor now passes
+  `Config.CassettePath` through to `Mdcr.InsertTape(bytes, Config.CassettePath)` — disk needed no
+  equivalent change since it already mounts via `new DskImage(drive.ImagePath)`, which now stamps
+  the path for free.
+- **Built (the milestone itself):** `Machine.CaptureCurrentConfig()` — `Model`/`Board`/`RamVariant`/
+  `BankCount`/`MonitorRomPath`/`Slot1CartridgePath`/`RamSeed` echo straight from `Config` (none are
+  live-swappable); `FloppyDrives[i].ImagePath` is rebuilt per configured drive index from
+  `Board?.Fdc?.GetDisk(i)?.MountedPath` (topology — `DriveIndex`/`Enabled`/`Capacity`/`Sides` —
+  still echoes `Config`, only the path is re-derived); `CassettePath` is `Mdcr.HasTape ?
+  Mdcr.MountedPath : null` (a mounted-but-unbacked blank tape correctly still yields `null`, same
+  as no tape at all — `MachineConfig.CassettePath` has no "start with a blank tape" concept to
+  capture toward). Read-only, callable any time the machine is running.
+- **Scope note — only iterates `Config.FloppyDrives`' own configured drive indices, not a raw
+  0-3 sweep:** matches the spec's own framing (a drive already present in config gets a DIFFERENT
+  image live-mounted, never a brand-new drive index appearing out of nowhere — topology is fixed,
+  and nothing in this build lets a client mount into an unconfigured drive slot anyway).
+- **Tests:** `MachineTests` (+5): bare machine captures equivalent to its own config (no drives/
+  cassette); a live disk swap (`Fdc.MountDisk` over an already-config-seeded drive) is reflected
+  in the captured `ImagePath` while `machine.Config.FloppyDrives[i].ImagePath` stays stale at its
+  original construction-time value (the core regression this milestone exists to fix); same for
+  cassette via a live `Mdcr.InsertTape` swap; SLOT1/RAM/board fields always echo the original
+  config; a captured config fed into `new Machine(captured)` mounts the same media (round-trip
+  sanity check). Full `P2000.Machine.Tests`: 501/501 green (was 496).
+- **Applies to:** `src/P2000.Machine/Machine.cs` (`CaptureCurrentConfig`, cassette-mount path
+  wiring), `src/P2000.Machine/Devices/Fdc/DskImage.cs` (`MountedPath`),
+  `src/P2000.Machine/Devices/Cassette/MdcrDevice.cs` (`MountedPath`, `InsertTape` overload),
+  `tests/P2000.Machine.Tests/MachineTests.cs`. Reference doc §3a's "RESOLVED — startup
+  configuration" block.
 - **Synced:** no (implementation-only — the design decision itself was already synced into the
   reference doc's own 2026-07-26 "RESOLVED" entry before this milestone was built).
-
-### 2026-07-26 — Milestone 20b IMPLEMENTED: MachineConfig.CassettePath (config-seeded cassette mount)
-- **Built:** `MachineConfig.CassettePath` (nullable string) — closes the exact asymmetry the
-  reference doc §3a "RESOLVED — cassette gets the same treatment" flagged: `null` (default)
-  leaves the deck bare, unchanged; a set path is read via `File.ReadAllBytes` and mounted through
-  `Mdcr.InsertTape` in `Machine`'s constructor, mirroring `Slot1CartridgePath`'s and
-  `FloppyDriveConfig.ImagePath`'s existing mount-at-construction pattern exactly (no new
-  tape-loading logic — the same host-API path runtime insert already uses). Added to
-  `MachineConfigFile`'s DTO (`ToDto`/`FromDto` + `ConfigDto.CassettePath`) — additive/nullable,
-  **no `.cfg` version bump**, same precedent as the `RamSeed` fix (2026-07-23 entry above): an old
-  file with no `cassettePath` key still deserializes to `null`, identical to today's behaviour.
-- **Found (adjacent gap, fixed in the same pass):** `P2000.UI`'s `EmulationRunner.Reconfigure`
-  manually copies `MachineConfig` fields (no `with` expression on the class) when it needs to
-  inject a fresh `RamSeed` — this field-copy had not been touched for M20's `FloppyDrives` either
-  and would have silently dropped a config's `CassettePath` on any reconfigure call that also
-  needed a fresh RAM seed. Added `CassettePath = config.CassettePath` alongside the existing
-  `FloppyDrives`/`Slot1CartridgePath` copies.
-- **Tests:** `MachineTests` (+3): null path stays bare (CIP set, no tape); a set path mounts at
-  construction (CIP clears, `HasTape` true); runtime eject/re-insert still works live after a
-  config-seeded mount (the runtime swap capability is additive, not exclusive, per reference doc
-  §3a). `MachineConfigFileTests` (+2): explicit `CassettePath` round-trips through `.cfg`; absent
-  `CassettePath` still defaults to `null`. Full `P2000.Machine.Tests`: 487/487 green (was 484 net
-  of the +3 here vs. some renumbering); `P2000.UI.Tests`: 149/149, unaffected.
-- **Applies to:** `src/P2000.Machine/MachineConfig.cs` (`CassettePath`), `src/P2000.Machine/Machine.cs`
-  (constructor mount), `src/P2000.Machine/State/MachineConfigFile.cs` (DTO), `src/P2000.UI/Runner/EmulationRunner.cs`
-  (`Reconfigure` field-copy), `tests/P2000.Machine.Tests/MachineTests.cs`,
-  `tests/P2000.Machine.Tests/State/MachineConfigFileTests.cs`. Reference doc §3a (both "RESOLVED
-  2026-07-26" blocks).
-- **Synced:** no (implementation-only — the design decision itself was already synced into the
-  reference doc's own 2026-07-26 "RESOLVED" entry before this milestone was built).
-
 
 ### 2026-07-24 — CONFIRMED: Format A Track's real P2000 command bytes + execution mechanism (owner-supplied disassembly of the standalone JWSFormat.bin formatter)
 - **Trigger — owner:** delivered `docs/jwsformat.asm`, a personally-produced disassembly of

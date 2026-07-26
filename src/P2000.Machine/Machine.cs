@@ -153,7 +153,7 @@ public sealed class Machine
         Keyboard = new KeyboardDevice(CpOut);
         Mdcr = new MdcrDevice(CpOut);
         if (Config.CassettePath is not null)
-            Mdcr.InsertTape(File.ReadAllBytes(Config.CassettePath));
+            Mdcr.InsertTape(File.ReadAllBytes(Config.CassettePath), Config.CassettePath);
         Sound = new SoundDevice(() => Video.FieldTState);
 
         Ports.RegisterWrite(CPoutLatch.Port,  CpOut.Write);
@@ -731,6 +731,58 @@ public sealed class Machine
         Sound.LoadState(reader);
         Interrupts.LoadState(reader);
         Board?.LoadState(reader);
+    }
+
+    /// <summary>
+    /// Derives a fresh <see cref="MachineConfig"/> from this machine's CURRENT LIVE state
+    /// (project CLAUDE.md milestone 20c; reference doc §3a "RESOLVED — startup configuration").
+    /// A third derivation direction alongside the two already established (config → machine at
+    /// construction; machine+devices → <c>.state</c> capture) — this one goes machine → a fresh,
+    /// accurate config.
+    ///
+    /// <b>Why this differs from just returning <see cref="Config"/>:</b> <see cref="Config"/> is
+    /// the object this machine was BUILT from — it goes stale the instant a disk or cassette is
+    /// mounted/ejected/swapped LIVE (the runtime-swap capability §3a already locks in for both).
+    /// <see cref="MachineConfig.Model"/>/<see cref="MachineConfig.Board"/>/
+    /// <see cref="MachineConfig.RamVariant"/>/<see cref="MachineConfig.BankCount"/>/
+    /// <see cref="MachineConfig.MonitorRomPath"/>/<see cref="MachineConfig.Slot1CartridgePath"/>/
+    /// <see cref="MachineConfig.RamSeed"/> are echoed straight from <see cref="Config"/> since
+    /// none of them are live-swappable (SLOT1 has no hot-swap). <see cref="FloppyDriveConfig.ImagePath"/>
+    /// (per configured drive) and <see cref="MachineConfig.CassettePath"/> are read from the LIVE
+    /// devices instead — <see cref="Devices.Fdc.DskImage.MountedPath"/>/<see cref="Devices.Cassette.MdcrDevice.MountedPath"/>
+    /// — so a captured config reflects what's actually mounted right now, not what was true at
+    /// construction time.
+    ///
+    /// Read-only query, no mutation; callable at any time the machine is running.
+    /// </summary>
+    public MachineConfig CaptureCurrentConfig()
+    {
+        var floppyDrives = new List<FloppyDriveConfig>(Config.FloppyDrives.Count);
+        var fdc = Board?.Fdc;
+        foreach (var drive in Config.FloppyDrives)
+        {
+            floppyDrives.Add(new FloppyDriveConfig
+            {
+                DriveIndex = drive.DriveIndex,
+                Enabled = drive.Enabled,
+                Capacity = drive.Capacity,
+                Sides = drive.Sides,
+                ImagePath = fdc?.GetDisk(drive.DriveIndex)?.MountedPath,
+            });
+        }
+
+        return new MachineConfig
+        {
+            Model = Config.Model,
+            Board = Config.Board,
+            RamVariant = Config.RamVariant,
+            BankCount = Config.BankCount,
+            MonitorRomPath = Config.MonitorRomPath,
+            Slot1CartridgePath = Config.Slot1CartridgePath,
+            RamSeed = Config.RamSeed,
+            FloppyDrives = floppyDrives,
+            CassettePath = Mdcr.HasTape ? Mdcr.MountedPath : null,
+        };
     }
 
     // ---- CPU register serialization (Z80.Core has no IStateWriter dependency) -------------

@@ -62,10 +62,19 @@ public sealed class DskImage
     /// must reproduce whatever dirty state was captured, not always come back clean.</summary>
     internal void RestoreDirtyFlag(bool dirty) => IsDirty = dirty;
 
+    /// <summary>The host file this image was last mounted from or saved to; <c>null</c> for an
+    /// unbacked image (fresh off "New (blank) disk," or mounted directly from bytes with no
+    /// known path) — project CLAUDE.md milestone 20c, the field <c>Machine.CaptureCurrentConfig()</c>
+    /// reads to reflect what's ACTUALLY mounted rather than a stale construction-time value.
+    /// Settable so a host Save-as (a new file) or a
+    /// live UI mount (which reads bytes itself but knows the real path) can update it after
+    /// construction; the <see cref="DskImage(string)"/> constructor sets it automatically.</summary>
+    public string? MountedPath { get; set; }
+
     /// <summary>Mounts a raw <c>.dsk</c> image from disk, auto-detecting geometry from the
     /// on-disk label (an emulator-side UX improvement beyond real JWSDOS, which does NOT
     /// auto-detect — <c>docs/JWSDOS-format.md</c> §3).</summary>
-    public DskImage(string path) : this(File.ReadAllBytes(path)) { }
+    public DskImage(string path) : this(File.ReadAllBytes(path)) => MountedPath = path;
 
     /// <summary>Mounts directly from bytes (test fixtures, in-memory images).</summary>
     public DskImage(byte[] image)

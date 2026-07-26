@@ -232,13 +232,22 @@ public sealed class MdcrDevice : IDevice
         writer.WriteBool(_phaseLocked);
         writer.WriteInt32(_phaseCount);
         writer.WriteBool(_phaseOld);
-        // Tape position only — the .cas image must be remounted externally (same as ROM
-        // files: not embedded in state snapshots).
+        // Self-contained (project CLAUDE.md milestones 20/20a; reference doc §3a "RESOLVED —
+        // mounted media CONTENT travels inside .state"): the mounted tape's CURRENT SIDE embeds
+        // as compact .cas-format bytes (MDCR-implementation.md §8's serializer, NOT the raw
+        // ~1 MB phase array), gzip-compressed. The other side is not embedded — same one-.cas-
+        // file-is-one-physical-side convention "Save as .cas" already has (MDCR-implementation.md
+        // §6); flipping the tape and saving again captures that side separately.
         writer.WriteBool(_tape != null);
         if (_tape != null)
         {
             writer.WriteInt32(_tape.Position);
             writer.WriteInt32(_tape.Side);
+            writer.WriteBool(_tape.IsDirty);
+            var casBytes = _tape.Save() ?? Array.Empty<byte>();
+            var compressed = StateBlobCompression.Compress(casBytes);
+            writer.WriteInt32(compressed.Length);
+            writer.WriteBytes(compressed);
         }
     }
 
@@ -254,7 +263,21 @@ public sealed class MdcrDevice : IDevice
         {
             var pos = reader.ReadInt32();
             var side = reader.ReadInt32();
-            _tape?.SeekTo(pos, side);
+            var isDirty = reader.ReadBool();
+            var compressed = new byte[reader.ReadInt32()];
+            reader.ReadBytes(compressed);
+            var casBytes = StateBlobCompression.Decompress(compressed);
+
+            _tape = new MiniTape();
+            _tape.SeekTo(0, side); // select the embedded side BEFORE decoding onto it
+            if (casBytes.Length > 0)
+                _tape.LoadCasImage(casBytes);
+            _tape.SeekTo(pos, side); // restore the exact head position on top
+            _tape.RestoreDirtyFlag(isDirty); // LoadCasImage always clears dirty; reapply the captured flag
+        }
+        else
+        {
+            _tape = null;
         }
     }
 

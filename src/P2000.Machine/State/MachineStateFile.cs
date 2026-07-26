@@ -59,8 +59,20 @@ public static class MachineStateFile
     ///     sector read/write) and the Format-only <c>_formatFillByte</c>/<c>_formatSectorSize</c>
     ///     fields. A v6 file's FDC block is a different length and shape entirely — reading it
     ///     under the new layout misaligns every field, not just drops new ones.</item>
+    ///   <item>v8: mounted media CONTENT now travels inside <c>.state</c> (project CLAUDE.md
+    ///     milestones 20/20a; reference doc §3a "RESOLVED — mounted media CONTENT travels inside
+    ///     .state"), making a save self-contained/shareable. <see cref="Devices.Cassette.MdcrDevice"/>'s
+    ///     block gained the mounted tape's <c>IsDirty</c> flag plus its current side's gzip-
+    ///     compressed compact <c>.cas</c>-format bytes (MDCR-implementation.md §8's serializer —
+    ///     NOT the raw ~1 MB phase array), appended after the existing Position/Side fields.
+    ///     <see cref="Devices.Fdc.Upd765"/>'s block gained, per drive, a presence bool and (when
+    ///     present) Tracks/Sides/WriteProtected/IsDirty plus the drive's gzip-compressed raw
+    ///     sector-dump bytes, appended after the existing per-drive cylinder/selected-drive/
+    ///     motor fields. A v7 file has neither addition — reading it under the new layout would
+    ///     either misalign (Mdcr, mid-block) or under-read (Fdc, trailing fields silently
+    ///     absent) rather than just miss new content.</item>
     /// </list></summary>
-    public const int CurrentVersion = 7;
+    public const int CurrentVersion = 8;
 
     /// <summary>Oldest <c>.state</c> version accepted by this build. Older files are rejected
     /// because the device-stream layout (or, for v4→v5, the embedded config JSON shape) changed
@@ -70,8 +82,10 @@ public static class MachineStateFile
     /// to a per-drive collection; v5→v6: FDC block gained two int32 fields mid-stream for the
     /// live current-sector value; v6→v7: FDC block's result buffer resized 2→7 bytes and gained
     /// the _transferKind/_formatFillByte/_formatSectorSize fields — see
-    /// <see cref="CurrentVersion"/>'s v7 note).</summary>
-    private const int MinVersion = 7;
+    /// <see cref="CurrentVersion"/>'s v7 note; v7→v8: mounted cassette/disk media content now
+    /// embeds directly in the Mdcr/Fdc device blocks — see <see cref="CurrentVersion"/>'s v8
+    /// note).</summary>
+    private const int MinVersion = 8;
 
     private static readonly byte[] Magic = "P2ST"u8.ToArray();
 

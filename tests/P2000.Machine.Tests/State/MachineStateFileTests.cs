@@ -323,13 +323,151 @@ public class MachineStateFileTests
         for (var i = 0; i < 400; i++) machine.Tick();
 
         var restored = SaveAndReload(machine);
-        // Re-mount the drives (image bytes are not part of .state — reloaded externally, same
-        // precedent as SLOT1 cartridges); cylinder tracking survives independent of the mount.
-        restored.Fdc!.MountDisk(0, DskImage.CreateBlank(40, 2));
-        restored.Fdc.MountDisk(1, DskImage.CreateBlank(40, 2));
+        // Both drives' image content is now embedded directly in .state (project CLAUDE.md
+        // milestones 20/20a) — no re-mount needed; the restored machine already has both disks.
+        Assert.NotNull(restored.Fdc!.GetDisk(0));
+        Assert.NotNull(restored.Fdc.GetDisk(1));
 
         restored.Ports.Write(0x8D, 0x08); // SENSE INTERRUPT STATUS
         Assert.Equal(0x21, restored.Ports.Read(0x8D)); // ST0: seek-end | unit 1
         Assert.Equal(0x07, restored.Ports.Read(0x8D)); // PCN: drive 1's cylinder survived
+    }
+
+    // ---- Embedded media content (project CLAUDE.md milestones 20/20a; reference doc §3a
+    // "RESOLVED — mounted media CONTENT travels inside .state") --------------------------------
+
+    [Fact]
+    public void StateRoundTrip_DiskContent_IsEmbedded_NoRemountNeeded()
+    {
+        var machine = new Machine(new MachineConfig { Board = InternalBoard.FloppyRam, RamVariant = RamVariant.T102 });
+        machine.Fdc!.Policy = TimingPolicy.Turbo;
+        var disk = DskImage.CreateBlank(40, 1);
+        machine.Fdc.MountDisk(0, disk);
+
+        // Mutate a sector so the embedded bytes are distinguishable from a fresh blank image.
+        var payload = new byte[256];
+        Array.Fill(payload, (byte)0xCC);
+        disk.WriteSector(3, 0, 1, payload);
+
+        var restored = SaveAndReload(machine);
+
+        var restoredDisk = restored.Fdc!.GetDisk(0);
+        Assert.NotNull(restoredDisk);
+        Assert.Equal(40, restoredDisk!.Tracks);
+        Assert.Equal(1, restoredDisk.Sides);
+        Assert.Equal(payload.ToArray(), restoredDisk.ReadSector(3, 0, 1).ToArray());
+    }
+
+    [Fact]
+    public void StateRoundTrip_DiskWriteProtectedAndDirty_ArePreserved()
+    {
+        var machine = new Machine(new MachineConfig { Board = InternalBoard.FloppyRam, RamVariant = RamVariant.T102 });
+        var disk = DskImage.CreateBlank(40, 1);
+        disk.WriteProtected = true;
+        machine.Fdc!.MountDisk(0, disk);
+
+        var restored = SaveAndReload(machine);
+
+        var restoredDisk = restored.Fdc!.GetDisk(0);
+        Assert.NotNull(restoredDisk);
+        Assert.True(restoredDisk!.WriteProtected);
+        Assert.False(restoredDisk.IsDirty); // never written to — stays clean
+    }
+
+    [Fact]
+    public void StateRoundTrip_DiskDirtyFlag_SurvivesAsTrue_WhenSetBeforeSave()
+    {
+        var machine = new Machine(new MachineConfig { Board = InternalBoard.FloppyRam, RamVariant = RamVariant.T102 });
+        var disk = DskImage.CreateBlank(40, 1);
+        machine.Fdc!.MountDisk(0, disk);
+        disk.WriteSector(0, 0, 1, new byte[256]); // a real (non-protected) write sets IsDirty
+
+        var restored = SaveAndReload(machine);
+
+        Assert.True(restored.Fdc!.GetDisk(0)!.IsDirty);
+    }
+
+    [Fact]
+    public void StateRoundTrip_NoDiskMounted_RestoresAsAbsent()
+    {
+        var machine = new Machine(new MachineConfig { Board = InternalBoard.FloppyRam, RamVariant = RamVariant.T102 });
+
+        var restored = SaveAndReload(machine);
+
+        Assert.Null(restored.Fdc!.GetDisk(0));
+    }
+
+    [Fact]
+    public void StateRoundTrip_CassetteContent_IsEmbedded_NoRemountNeeded()
+    {
+        var machine = new Machine();
+        var casImage = new byte[1280];
+        casImage[0x30] = (byte)'P'; // arbitrary recognisable header byte
+        machine.Mdcr.InsertTape(casImage);
+
+        var restored = SaveAndReload(machine);
+
+        Assert.True(restored.Mdcr.HasTape);
+        var savedBack = restored.Mdcr.SaveTape();
+        Assert.NotNull(savedBack);
+        Assert.Equal((byte)'P', savedBack![0x30]);
+    }
+
+    [Fact]
+    public void StateRoundTrip_CassetteDirtyFlag_IsPreserved()
+    {
+        var machine = new Machine();
+        machine.Mdcr.InsertTape(new byte[1280]); // freshly loaded — not dirty
+        Assert.False(machine.Mdcr.IsDirty);
+
+        var restored = SaveAndReload(machine);
+
+        Assert.False(restored.Mdcr.IsDirty);
+    }
+
+    [Fact]
+    public void StateRoundTrip_NoCassetteMounted_RestoresAsAbsent()
+    {
+        var machine = new Machine();
+
+        var restored = SaveAndReload(machine);
+
+        Assert.False(restored.Mdcr.HasTape);
+    }
+
+    [Fact]
+    public void StateRoundTrip_NoCassetteMounted_OverridesConfigSeededCassette()
+    {
+        // Embedded state is authoritative over the embedded config (reference doc §3a): a
+        // machine built from a CassettePath-seeded config, then ejected before saving, must
+        // restore with NO tape — not silently re-mount from the config's path.
+        var path = Path.Combine(Path.GetTempPath(), $"cassette-state-{Guid.NewGuid():N}.cas");
+        File.WriteAllBytes(path, new byte[1280]);
+        try
+        {
+            var machine = new Machine(new MachineConfig { CassettePath = path });
+            machine.Mdcr.EjectTape();
+
+            var restored = SaveAndReload(machine);
+
+            Assert.False(restored.Mdcr.HasTape);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public void Load_VersionSeven_Throws()
+    {
+        // v7 files' Mdcr/Fdc blocks have neither the embedded-media additions v8 expects
+        // (project CLAUDE.md milestones 20/20a) — reading them under the new layout would
+        // misalign (Mdcr) or under-read (Fdc) rather than just miss the new content.
+        var ms = new MemoryStream();
+        ms.Write("P2ST"u8);
+        ms.Write(new byte[] { 7, 0, 0, 0 }); // version = 7
+        ms.Position = 0;
+        Assert.Throws<InvalidDataException>(() => MachineStateFile.Load(ms));
     }
 }

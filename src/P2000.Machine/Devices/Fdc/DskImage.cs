@@ -57,6 +57,11 @@ public sealed class DskImage
     /// Does not touch the image's content.</summary>
     public void MarkClean() => IsDirty = false;
 
+    /// <summary>Sets <see cref="IsDirty"/> directly — <c>.state</c> restore only (project
+    /// CLAUDE.md milestones 20/20a), the inverse of <see cref="MarkClean"/>: a restored image
+    /// must reproduce whatever dirty state was captured, not always come back clean.</summary>
+    internal void RestoreDirtyFlag(bool dirty) => IsDirty = dirty;
+
     /// <summary>Mounts a raw <c>.dsk</c> image from disk, auto-detecting geometry from the
     /// on-disk label (an emulator-side UX improvement beyond real JWSDOS, which does NOT
     /// auto-detect — <c>docs/JWSDOS-format.md</c> §3).</summary>
@@ -94,6 +99,19 @@ public sealed class DskImage
     {
         _data = Array.Empty<byte>();
     }
+
+    /// <summary>Reconstructs a disk image from previously-embedded <c>.state</c> bytes plus
+    /// explicitly-known geometry (project CLAUDE.md milestones 20/20a's self-contained
+    /// <c>.state</c>) — bypasses the on-disk label auto-detect the <c>string</c>/<c>byte[]</c>
+    /// constructors use, since a blank/unformatted image (no label yet) would otherwise
+    /// misdetect a negative track count. The live instance being saved already knows its own
+    /// <see cref="Tracks"/>/<see cref="Sides"/>; restore should trust that, not re-derive it.</summary>
+    internal static DskImage FromEmbeddedState(byte[] data, int tracks, int sides) => new()
+    {
+        _data = data,
+        Tracks = tracks,
+        Sides = sides,
+    };
 
     private int SectorOffset(int cylinder, int head, int sector) =>
         head * Tracks * BytesPerTrack + cylinder * BytesPerTrack + (sector - 1) * BytesPerSector;

@@ -882,6 +882,26 @@ public sealed class Upd765 : IDevice
         w.WriteInt32(_selectedDrive);
         w.WriteBool(_motorOn);
         w.WriteBool(_enabled);
+
+        // Self-contained (project CLAUDE.md milestones 20/20a; reference doc §3a "RESOLVED —
+        // mounted media CONTENT travels inside .state"): each drive's mounted image embeds its
+        // full raw sector-dump bytes directly, gzip-compressed — already what DskImage holds in
+        // memory, no new serialization. Tracks/Sides are captured explicitly (not re-derived from
+        // the on-disk label on restore) because a blank/unformatted image has no label yet.
+        for (var i = 0; i < _drives.Length; i++)
+        {
+            var disk = _drives[i];
+            w.WriteBool(disk != null);
+            if (disk == null) continue;
+
+            w.WriteInt32(disk.Tracks);
+            w.WriteInt32(disk.Sides);
+            w.WriteBool(disk.WriteProtected);
+            w.WriteBool(disk.IsDirty);
+            var compressed = StateBlobCompression.Compress(disk.GetBytes());
+            w.WriteInt32(compressed.Length);
+            w.WriteBytes(compressed);
+        }
     }
 
     public void LoadState(IStateReader r)
@@ -923,5 +943,31 @@ public sealed class Upd765 : IDevice
         _selectedDrive = r.ReadInt32();
         _motorOn = r.ReadBool();
         _enabled = r.ReadBool();
+
+        // Embedded media content is authoritative on restore — a mounted-path hint (if the
+        // config carries one) is never re-read here; a drive created via "New (blank) disk" with
+        // no backing file embeds and restores fine with no path at all (reference doc §3a).
+        for (var i = 0; i < _drives.Length; i++)
+        {
+            var present = r.ReadBool();
+            if (!present)
+            {
+                _drives[i] = null;
+                continue;
+            }
+
+            var tracks = r.ReadInt32();
+            var sides = r.ReadInt32();
+            var writeProtected = r.ReadBool();
+            var isDirty = r.ReadBool();
+            var compressed = new byte[r.ReadInt32()];
+            r.ReadBytes(compressed);
+            var bytes = StateBlobCompression.Decompress(compressed);
+
+            var disk = DskImage.FromEmbeddedState(bytes, tracks, sides);
+            disk.WriteProtected = writeProtected;
+            disk.RestoreDirtyFlag(isDirty);
+            _drives[i] = disk;
+        }
     }
 }

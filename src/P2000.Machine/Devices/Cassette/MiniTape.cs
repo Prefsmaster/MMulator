@@ -67,6 +67,12 @@ public sealed class MiniTape
     /// Does not touch tape content.</summary>
     public void MarkSaved() => _dirty = false;
 
+    /// <summary>Sets <see cref="IsDirty"/> directly — <c>.state</c> restore only (project
+    /// CLAUDE.md milestones 20/20a), needed because <see cref="LoadCasImage"/> always clears it
+    /// (a freshly-loaded tape has nothing unsaved yet) but a restored tape must reproduce
+    /// whatever dirty state was actually captured.</summary>
+    internal void RestoreDirtyFlag(bool dirty) => _dirty = dirty;
+
     // ---- Head operations (one phase at a time) ------------------------------------
 
     public bool Read() => _phases[_side][_position];

@@ -1318,6 +1318,63 @@ marked synced. Do NOT edit the reference doc from this project.
 - **Synced:** yes (2026-07-05, into P2000T-reference.md + device guides)
 -->
 
+### 2026-07-26 — Milestones 20/20a IMPLEMENTED: self-contained .state (embedded disk + cassette media content), .state bumped v7→v8
+- **Built (disk, `Upd765`):** each of the 4 drive slots' `.state` block now embeds, when a disk is
+  mounted: `Tracks`, `Sides`, `WriteProtected`, `IsDirty`, and the drive's full raw sector-dump
+  bytes (`DskImage.GetBytes()`), gzip-compressed (`State/StateBlobCompression.cs`, new file — a
+  thin `GZipStream` wrapper shared by both devices, per the reference doc's "apply gzip/deflate
+  over the embedded blob(s), not a per-device decision"). Restore reconstructs via a new
+  `DskImage.FromEmbeddedState(bytes, tracks, sides)` factory that bypasses the on-disk-label
+  auto-detect the `string`/`byte[]` constructors use — **found while implementing:** a
+  blank/unformatted `DskImage.CreateBlank` image has no label at all, so re-running auto-detect
+  on restore would compute `Tracks = 0 - 1 = -1` (the label offsets read as zero) instead of
+  preserving the real geometry the live instance already knows. `DskImage.IsDirty`'s existing
+  `private set` needed a new `internal RestoreDirtyFlag(bool)` (the inverse of `MarkClean()`) since
+  nothing previously needed to set it back to `true` from outside the class.
+- **Built (cassette, `MdcrDevice`):** the `.state` block now embeds, when a tape is mounted,
+  `IsDirty` plus the CURRENT SIDE's compact `.cas`-format bytes via `MiniTape.Save()` (item 1's
+  already-existing serializer — no new one built), gzip-compressed, appended after the existing
+  `Position`/`Side` fields. Restore: `new MiniTape()` → `SeekTo(0, side)` (selects the correct side
+  BEFORE decoding onto it — `LoadCasImage` writes into whichever side is currently selected) →
+  `LoadCasImage(casBytes)` → `SeekTo(pos, side)` again (restores the exact head position on top,
+  since `LoadCasImage` itself always resets position to 1) → `RestoreDirtyFlag(isDirty)` (new
+  `internal` method on `MiniTape`, same reasoning as `DskImage`'s — `LoadCasImage` unconditionally
+  clears dirty, so the captured flag must be reapplied after). **Deliberately NOT embedding the
+  non-current side** — matches the existing one-`.cas`-file-is-one-physical-side convention
+  "Save as `.cas`" already has (MDCR-implementation.md §6); flipping the tape and saving again
+  captures that side separately. Not a limitation introduced here, an existing one carried through.
+- **Found (real behavior fix, not just a passive addition) — embedded state is now authoritative
+  over the embedded config, closing a real gap:** `MdcrDevice.LoadState`'s `hasTape == false`
+  branch previously did nothing, silently leaving whatever `_tape` the freshly-rebuilt-from-config
+  `Machine` had already mounted (e.g. via the new `CassettePath`, milestone 20b above) in place.
+  Since `.state` is now self-contained, a snapshot taken with no tape must restore to no tape even
+  if the embedded config would otherwise have config-seeded one — fixed by explicitly setting
+  `_tape = null` in that branch. Exactly the "mounted file PATH is now a hint, not a dependency;
+  embedded bytes are authoritative" rule from reference doc §3a, applied to the "no tape" case too.
+- **`.state` bumped v7→v8** (`MachineStateFile.CurrentVersion`/`MinVersion`): both device blocks'
+  byte layout changed (new trailing fields on Mdcr's tape branch; a whole new per-drive section
+  appended to Fdc's block) — v7 files rejected with a clear version-mismatch error.
+- **Tests:** `MachineStateFileTests` (+9): disk content/geometry embeds and round-trips without a
+  remount; `WriteProtected`+clean `IsDirty` round-trip; `IsDirty=true` (from a real write) round-
+  trips; no-disk-mounted restores as absent; cassette `.cas` bytes embed and round-trip (via
+  `SaveTape()` after restore); cassette `IsDirty` round-trips; no-cassette-mounted restores as
+  absent; **no-cassette-mounted overrides a `CassettePath`-seeded config** (the authoritative-
+  state-over-config fix above); `Load_VersionSeven_Throws`. Updated the existing
+  `StateRoundTrip_MultipleDrivesAtDifferentCylinders_ArePreserved` test — its old "image bytes are
+  not part of .state, re-mount after load" comment and manual re-mount are now stale/redundant;
+  removed both, replaced with a `GetDisk(n) is not null` assertion. Full `P2000.Machine.Tests`:
+  496/496 green (was 487); `P2000.UI.Tests`: 149/149, unaffected.
+- **Applies to:** `src/P2000.Machine/Devices/Fdc/Upd765.cs` (`SaveState`/`LoadState` per-drive
+  block), `src/P2000.Machine/Devices/Fdc/DskImage.cs` (`FromEmbeddedState`, `RestoreDirtyFlag`),
+  `src/P2000.Machine/Devices/Cassette/MdcrDevice.cs` (`SaveState`/`LoadState`),
+  `src/P2000.Machine/Devices/Cassette/MiniTape.cs` (`RestoreDirtyFlag`),
+  `src/P2000.Machine/State/StateBlobCompression.cs` (new), `src/P2000.Machine/State/MachineStateFile.cs`
+  (v8 bump), `tests/P2000.Machine.Tests/State/MachineStateFileTests.cs`. Reference doc §3a's
+  "RESOLVED — mounted media CONTENT travels inside `.state`" block; `docs/MDCR-implementation.md`
+  §7/§8.
+- **Synced:** no (implementation-only — the design decision itself was already synced into the
+  reference doc's own 2026-07-26 "RESOLVED" entry before this milestone was built).
+
 ### 2026-07-26 — Milestone 20b IMPLEMENTED: MachineConfig.CassettePath (config-seeded cassette mount)
 - **Built:** `MachineConfig.CassettePath` (nullable string) — closes the exact asymmetry the
   reference doc §3a "RESOLVED — cassette gets the same treatment" flagged: `null` (default)

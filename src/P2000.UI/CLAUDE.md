@@ -276,15 +276,40 @@ window surfaces the axes; the machine owns their meaning.
     way.
 - **Slot population:** SLOT1 (memory-mapped ROM carts — BASIC etc., `.bin`/`.rom`), SLOT2
   (I/O-mapped hardware), internal extension (floppy/CTC). Reflect `machine.Slot1` etc.
-- **Disk — drive (mechanism) vs. image (media), split like the cassette:** the **floppy
-  drive/controller present?** axis is **topology (reset-to-apply)**; a **disk image in an
-  already-present drive is a runtime swap** — insert/eject live, exactly like a `.cas` in the deck
-  (the FDC/drive will expose a live disk-change the way the cassette exposes CIP). Mounting a
-  `.dsk`/`.img` when the config has **no drive** is therefore a topology change that provisions the
-  drive → cold reset (or prompt first — minor UX call). **Deferred with the FDC;** captured now so
-  the seam matches the cassette rather than baking in an unconditional reset.
-- **Cassette:** `.cas`/`.p2000t` via file dialog / drag-drop. **Live mount (runtime), not
-  reset-to-apply.**
+- **Disk — drive (mechanism) vs. image (media): STALE, UPDATE (owner, 2026-07-26 — see reference
+  doc §3a "CONFIRMED — .cfg already delivers 'plug everything in and flip the switch'"). This
+  bullet predates M20's actual implementation** (`P2000.Machine` CLAUDE.md §17, 2026-07-23
+  finding) **and undersells what's already built:** `MachineConfig.FloppyDrives[i].ImagePath` is a
+  real, already-implemented config field, and `Machine`'s constructor already mounts every
+  configured drive's image AT CONSTRUCTION — so a `.cfg` specifying a drive + its image is not
+  "deferred," it's live today and reset-to-apply already carries it through (loading that `.cfg`
+  and applying it reproduces "power on with this floppy already in the drive," matching the
+  owner's real-hardware comparison). What's still true and unchanged: an already-present drive's
+  image can ALSO be swapped live at runtime (insert/eject, ms.4/14, exactly like the cassette) —
+  that's additive, not instead of the config-level path. **Two real gaps here, flagged rather
+  than assumed either way — Claude Code should check before building anything:**
+  1. **Does the Config window (ms.7/ms.14) actually expose a field to SET each drive's
+     `ImagePath` as part of building/saving a `.cfg`** — or does it only support the runtime
+     mount path (file dialog/drag-drop on an already-built machine, via the Disk Drive window),
+     with no UI affordance to author "drive 0 should start with THIS image" into a `.cfg` at all?
+     If the field exists on `MachineConfig` but the Config window never surfaces it, that's the
+     actual remaining gap for the "preconfigured starting state" story, not a machine one.
+  2. **Does saving a `.cfg` from an already-running machine capture what's CURRENTLY live-mounted
+     in each drive** (and in SLOT1) back into the saved file, or only whatever was explicitly set
+     via the Config window's own fields (which may now be stale if the user mounted something
+     live afterward, per gap 1)? Needs checking against `ConfigWindowVm`'s actual save path
+     before assuming either answer.
+- **Cassette:** `.cas`/`.p2000t` via file dialog / drag-drop. **Live mount stays exactly as-is
+  for the runtime case — but RESOLVED (owner, 2026-07-26, reference doc §3a): the asymmetry with
+  disk is closed at the machine layer.** `MachineConfig.CassettePath` (nullable) is new
+  (`P2000.Machine` CLAUDE.md milestone 20b) — a config can now author "boot with this tape
+  already in the deck," mounted at construction, exactly like `Slot1CartridgePath`/
+  `FloppyDrives[i].ImagePath`. **Same two UI-side gaps as disk (this section, above) apply here
+  too, flagged rather than assumed:** does the Config window expose a field to SET
+  `CassettePath` as part of building/saving a `.cfg`, and does saving a `.cfg` from a running
+  machine capture the CURRENTLY live-mounted tape back into it? Whatever the answer turns out to
+  be for disk's two gaps almost certainly generalizes here — worth fixing both devices in the
+  same pass rather than as two separate investigations.
 - **Display mode + video prefs (§8):** the 4-way mode, integer-scaling, PAL aspect, scanline/CRT
   shader, **show-contention-glitches** toggle, corrupted-cell debug overlay.
 - **Audio:** mute + volume.
@@ -430,7 +455,14 @@ serialization logic.
   build a machine (reset-to-apply).
 - **`.state`:** save-state feature; save at an instruction boundary; restore = `new Machine`
   from the embedded config header then `LoadState`. Surface version-mismatch rejects/migrates
-  from the machine as a user-facing message, don't crash.
+  from the machine as a user-facing message, don't crash. **Now self-contained** (reference doc
+  §3a, 2026-07-26): mounted cassette/disk content embeds directly in the device blocks, so a
+  `.state` file alone is a complete, shareable snapshot — no separate `.cas`/`.dsk` files need to
+  travel with it.
+- **`.uistate` (NEW, 2026-07-26) — the ONE exception to "not a UI concern":** unlike `.cfg`/
+  `.state`, this sidecar IS owned and serialized by `P2000.UI` itself, not the machine (reference
+  doc §3a; ms.14b). Written/read alongside a `.state` save/load, never inside it; missing or
+  version-mismatched is never a load failure, just a default window layout.
 
 ---
 
@@ -879,10 +911,14 @@ builds did. Do not advance while the current milestone is red. Record spec corre
         single signal rather than N independent ones. Don't build N independently-wired motor
         indicators as if the hardware supported that.
       - **Write-protect toggle**, per drive, mirrors ms.13a's cassette write-protect UI exactly
-        (live setter, defaults writable, disabled with no image mounted). Unlike the cassette,
-        this does **not** persist through the image file itself (M20 flag) — surface this as a
-        per-session state, or wait for the machine layer's sidecar-file decision before wiring
-        persistence UI.
+        (live setter, defaults writable, disabled with no image mounted). Still does **not**
+        persist through the `.dsk` file itself (M20 flag, unchanged) — but **UNBLOCKED (owner,
+        2026-07-26, reference doc §3a + `P2000.Machine` CLAUDE.md §13.20):** it now DOES persist
+        through `.state`, the same way cassette write-protect already does — `IsProtected` reads
+        off the live `MdcrDevice`/`DskImage`, which now survives a Save-state → reload round-trip
+        with no separate UI-layer persistence logic, exactly the pattern ms.13a already
+        established for cassette (§13a "no separate UI-layer persistence logic needed, it falls
+        out of the machine-layer fix"). No UI-side work needed here beyond what's already built.
     - **Tests:** `DiskDriveVm`-level tests mirroring `CassetteDeckVmTests`' pattern — mount/eject
       state transitions; directory parse against the `Spel1.dsk`/`jwssytem.dsk` fixtures already
       used at the machine layer (18 real entries, no phantom stale-cluster entries, empty-track
@@ -925,6 +961,37 @@ builds did. Do not advance while the current milestone is red. Record spec corre
       ms.9a semantics — in-memory changes are lost, same as clicking through today's silent
       eject); (e) after an explicit Save/Save-as, eject/replace of the now-clean image shows no
       dialog. → commit.
+14b. **Session UI-state persistence — `.uistate` sidecar (NEW, owner decision 2026-07-26,
+    reference doc §3a "RESOLVED — UI-layer session state").** Fast-follow to ms.8 (Save-state UI),
+    same "milestone + letter" pattern as ms.9a/13a/14a — unblocked now that the owning question is
+    resolved (previously this milestone couldn't be scoped at all, since whether it existed, and
+    where it would live, were both undecided).
+    - **This is entirely a `P2000.UI` concern — no `P2000.Machine` change.** `Machine.SaveState`/
+      `LoadState` and the `.state` format are untouched; `.uistate` is a sibling file this project
+      alone reads and writes, named to match its `.state` (`mygame.state` + `mygame.uistate`).
+    - **Contents:** which satellite windows are currently open (and their positions, if worth
+      the fidelity), each memory-watch window's Base/Length/follow-register (§10), the VRAM
+      window's glyph/hex toggle, and any other per-window configuration worth restoring — a
+      `P2000.UI`-owned JSON shape with its own version field, independent of `.state`'s.
+    - **Wiring — extends ms.8's existing Save-state / Load-state actions, not a new menu item:**
+      on Save State, after the machine's `.state` write succeeds, also serialize the current
+      window/watch layout to the sibling `.uistate` path. On Load State, after the machine's
+      `.state` load succeeds, look for a sibling `.uistate`; if present and its version is
+      readable, reopen/reposition windows and reconfigure memory watches from it; if absent or
+      version-mismatched, proceed with whatever windows are currently open — **never block or
+      fail the `.state` load over a missing/bad sidecar.**
+    - **Not in scope (flag, don't build):** any attempt to make `.uistate` required, versioned in
+      lockstep with `.state`, or embedded — reference doc §3a's resolution specifically rejected
+      that shape. Also not in scope: restoring debugger breakpoints (a machine-owned concern,
+      §3.2 — if breakpoints should survive a state load, that's the machine's `BreakpointStore`
+      persisting via `.state` itself, a separate question from this milestone's UI-layout scope).
+    - **Tests:** (a) Save State with several memory-watch windows open produces a `.uistate` that,
+      on Load State, reopens the same windows at the same Base/Length; (b) Load State with no
+      sibling `.uistate` (or an older/foreign one) succeeds with default window layout, no error
+      dialog; (c) a `.uistate` whose version is newer than this build understands is ignored the
+      same way, not a crash; (d) `.state` alone (no `.uistate` ever written) still round-trips the
+      machine correctly — confirms the two files are truly independent, not silently coupled.
+      → commit.
 
 ---
 
@@ -993,6 +1060,53 @@ full historical log (every entry, unedited) now lives in
 genuinely open, plus the last few active days, for continuity. Everything fully resolved and
 already synced lives only in the archive now — check there before assuming something's
 missing.
+
+### 2026-07-26 — Investigation (§7's two flagged gaps): both CONFIRMED real, read-only pass, nothing built yet
+- **Trigger:** §7's disk bullet and its cassette follow-on flagged two open questions rather than
+  assuming either answer, per the owner's explicit "check before building anything" instruction.
+  Answered by reading `ConfigWindowVm.cs` end to end (no code changed this pass).
+- **Question 1, disk — CONFIRMED gap:** `ConfigWindowVm` has NO field that lets the Config window
+  set a drive's initial `ImagePath` into a saved `.cfg`. `FloppyDriveRowVm.ToConfig()`
+  (`ConfigWindowVm.cs:30-37`) hardcodes `ImagePath = null` with its own comment confirming this is
+  deliberate: *"initial media is mounted live from the Disk Drives window, not here."* The window
+  only exposes Capacity/Sides per row (topology) — never a path. So `MachineConfig.FloppyDrives[i].ImagePath`
+  is a real, already-mountable field at the machine layer (M20), but nothing in this window can
+  ever populate it; the only way to get an image into a saved `.cfg` today is to hand-edit the
+  JSON after saving.
+- **Question 1, cassette — CONFIRMED gap, same shape:** `ConfigWindowVm` has no `CassettePath`
+  property, command, or `BuildConfig()`/`LoadFromCurrentConfig()`/`LoadCfgAsync()` reference at
+  all — grepped the whole project (`CassettePath` only appears in `P2000.Machine` and this doc).
+  The new machine-layer `MachineConfig.CassettePath` (machine ms.20b) is exactly as unreachable
+  from the Config window as disk's `ImagePath`.
+- **Question 2 — CONFIRMED: `SaveCfgAsync` never captures anything live-mounted, for either
+  device.** `SaveCfgAsync` → `BuildConfig()` (`ConfigWindowVm.cs:207-243`) serializes ONLY the
+  ViewModel's own bound properties — `RamVariant`/`Board`/`Slot1CartridgePath`/`MonitorRomPath`/
+  `FloppyDriveRows` (each row's `ImagePath` always null, per Q1). Those properties are populated
+  exactly twice: `LoadFromCurrentConfig()` (called once, at VM construction, from
+  `_runner.Machine.Config`) and `LoadCfgAsync()` (from a loaded `.cfg` file). Neither path, nor
+  anything else in the VM, ever re-reads what's CURRENTLY mounted in a running machine's drives or
+  cassette deck (`DiskDriveVm`/`CassetteDeckVm` are entirely separate ViewModels the Config window
+  never queries). So: mount a disk or tape live via their own deck/drive windows, then open Config
+  and hit "Save .cfg" — the saved file reflects whatever was true at machine-build time (or the
+  last `.cfg` loaded), never the live mount just made. **One partial asymmetry worth noting:**
+  `Slot1CartridgePath` IS a real bound field and DOES get saved — but this doesn't contradict the
+  finding, because SLOT1 has no live-swap capability at all (reset-to-apply only, locked §2.7), so
+  "what's live" and "what was last explicitly configured" can never diverge for SLOT1 the way they
+  can for disk/cassette; the field being present doesn't mean the VM does anything different for
+  it than for the two devices that lack a field entirely.
+- **Conclusion (matches the owner's own framing, not previously assumed either way):** this is UI
+  work, not a machine-layer gap — both `MachineConfig.FloppyDrives[i].ImagePath` and
+  `MachineConfig.CassettePath` are real, functioning, already-mounted-at-construction fields
+  (M20/M20b). What's missing is entirely in `P2000.UI`: (a) a way to set a drive's/the cassette's
+  path as part of building a `.cfg` in the Config window, and (b) if a "capture what's currently
+  live" convenience is wanted, an explicit action that reads `DiskDriveVm`/`CassetteDeckVm`'s
+  current mount state into the Config window before saving — NOT automatic/implicit, since that
+  would be a surprising side effect of opening the window. Scoping the actual fix (new fields +
+  browse/clear commands mirroring `Slot1CartridgePath`'s existing pattern, plus whether a
+  "capture current" action belongs on the Config window or the deck/drive windows themselves) is
+  future work — not decided or built in this pass, per the "check before building" instruction.
+- **Applies to:** `src/P2000.UI/CLAUDE.md` §7 (both flagged bullets) / `src/P2000.UI/ViewModels/ConfigWindowVm.cs`.
+- **Synced:** no (investigation only, no design decision made yet for the human to sync).
 
 ### 2026-07-24 — Milestone 14a IMPLEMENTED: cassette + disk unsaved-changes warning
 - **Machine-layer signal was already built and green (M20a, `P2000.Machine` CLAUDE.md §13.20a)

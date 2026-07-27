@@ -242,7 +242,15 @@ public sealed class Machine
             foreach (var drive in Config.FloppyDrives)
             {
                 if (!drive.Enabled || drive.ImagePath is null) continue;
-                Board.Fdc.MountDisk(drive.DriveIndex, new DskImage(drive.ImagePath));
+                // DskImage.Mount validates the JWSDOS label against the file's actual length
+                // rather than trusting it unconditionally, falling back to this drive's own
+                // configured Capacity/Sides (project CLAUDE.md milestone 20d). The mismatch
+                // result (if any) is stashed on the chip via GetMismatch — nothing can show a
+                // dialog at machine-assembly time, so P2000.UI picks it up later (ms.14e).
+                var sides = drive.Sides == DiskSides.Double ? 2 : 1;
+                var (image, mismatch) = DskImage.Mount(File.ReadAllBytes(drive.ImagePath), drive.Capacity, sides);
+                image.MountedPath = drive.ImagePath;
+                Board.Fdc.MountDisk(drive.DriveIndex, image, mismatch);
             }
         }
 

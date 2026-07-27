@@ -12,6 +12,49 @@ namespace P2000.Machine.Tests.Devices.Fdc;
 /// </summary>
 public class Upd765Tests
 {
+    // ---- Geometry-mismatch plumbing (project CLAUDE.md milestone 20d) -----------------------
+
+    [Fact]
+    public void GetMismatch_NothingMounted_IsNull()
+    {
+        var fdc = new Upd765();
+        Assert.Null(fdc.GetMismatch(0));
+    }
+
+    [Fact]
+    public void MountDisk_TwoArgOverload_LeavesMismatchNull()
+    {
+        // The plain MountDisk(drive, image) overload (every pre-existing test/call site) must
+        // keep working unchanged — no mismatch to report is the correct default, not an error.
+        var fdc = new Upd765();
+        fdc.MountDisk(0, DskImage.CreateBlank(40, 2));
+        Assert.Null(fdc.GetMismatch(0));
+    }
+
+    [Fact]
+    public void MountDisk_ThreeArgOverload_StoresTheGivenMismatch()
+    {
+        var fdc = new Upd765();
+        var (image, mismatch) = DskImage.Mount(new byte[32_768], configuredTracks: 40, configuredSides: 2);
+
+        fdc.MountDisk(0, image, mismatch);
+
+        Assert.Equal(mismatch, fdc.GetMismatch(0));
+    }
+
+    [Fact]
+    public void EjectDisk_ClearsTheStoredMismatch()
+    {
+        var fdc = new Upd765();
+        var (image, mismatch) = DskImage.Mount(new byte[32_768], configuredTracks: 40, configuredSides: 2);
+        fdc.MountDisk(0, image, mismatch);
+
+        fdc.EjectDisk(0);
+
+        Assert.Null(fdc.GetMismatch(0));
+        Assert.Null(fdc.GetDisk(0));
+    }
+
     // ---- Presence probe ---------------------------------------------------------------------
 
     [Fact]

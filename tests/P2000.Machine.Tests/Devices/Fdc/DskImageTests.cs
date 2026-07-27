@@ -285,4 +285,184 @@ public class DskImageTests
 
         foreach (var b in disk.ReadSector(0, 0, 1)) Assert.Equal(0x00, b);
     }
+
+    // ---- Mount(): geometry-mismatch detection (project CLAUDE.md milestone 20d; reference doc
+    // §5d "RESOLVED — the label-based auto-detect above is JWSDOS-specific and was silently
+    // over-trusted") ------------------------------------------------------------------------------
+
+    private static int LengthFor(int tracks, int sides) =>
+        tracks * sides * DskImage.SectorsPerTrack * DskImage.BytesPerSector;
+
+    [Fact]
+    public void Mount_ValidJwsdosLabel_WinsOverAMismatchedConfig_NoMismatch()
+    {
+        // The label is checked FIRST — it wins even when the drive is configured for something
+        // else entirely, as long as it's self-consistent (project CLAUDE.md milestone 20d
+        // test (a)).
+        var image = BuildSyntheticImage(tracks: 40, sides: 2);
+
+        var (disk, mismatch) = DskImage.Mount(image, configuredTracks: 35, configuredSides: 1);
+
+        Assert.Equal(40, disk.Tracks);
+        Assert.Equal(2, disk.Sides);
+        Assert.Equal(DiskGeometryMismatchKind.None, mismatch.Kind);
+    }
+
+    [Fact]
+    public void Mount_NoValidLabel_LengthMatchesConfiguredGeometry_MountsUsingConfig_NoMismatch()
+    {
+        // A PDOS-style image: no JWSDOS label at all (the label bytes just happen to be
+        // zero — no on-disk convention put anything meaningful there), but its length exactly
+        // matches the drive's configured geometry — the Basic24k boot-floppy regression guard
+        // (project CLAUDE.md milestone 20d test (b)).
+        var image = new byte[LengthFor(40, 2)]; // all-zero: no label
+
+        var (disk, mismatch) = DskImage.Mount(image, configuredTracks: 40, configuredSides: 2);
+
+        Assert.Equal(40, disk.Tracks);
+        Assert.Equal(2, disk.Sides);
+        Assert.Equal(DiskGeometryMismatchKind.None, mismatch.Kind);
+    }
+
+    [Fact]
+    public void Mount_LabeledImage_MatchingBothLabelAndConfig_NoMismatch_RegressionGuard()
+    {
+        // The ordinary, everyday case — a real JWSDOS image whose label matches its own drive's
+        // configured geometry too — must not start flagging previously-fine mounts (project
+        // CLAUDE.md milestone 20d test (h)).
+        var image = BuildSyntheticImage(tracks: 40, sides: 2);
+
+        var (disk, mismatch) = DskImage.Mount(image, configuredTracks: 40, configuredSides: 2);
+
+        Assert.Equal(DiskGeometryMismatchKind.None, mismatch.Kind);
+        Assert.Equal(40, disk.Tracks);
+        Assert.Equal(2, disk.Sides);
+    }
+
+    [Fact]
+    public void Mount_LengthMatchesADifferentCanonicalGeometry_ReportsSingleCandidate()
+    {
+        // File is exactly 35-track/SS sized (143,360 B — unique, no collision), but the drive
+        // is configured for 40-track/SS (163,840 B) — project CLAUDE.md milestone 20d test (c).
+        var image = new byte[LengthFor(35, 1)];
+
+        var (disk, mismatch) = DskImage.Mount(image, configuredTracks: 40, configuredSides: 1);
+
+        Assert.Equal(DiskGeometryMismatchKind.Candidate, mismatch.Kind);
+        Assert.Equal(new[] { (35, 1) }, mismatch.Candidates);
+        Assert.False(mismatch.CanPad); // a candidate mismatch is never a padding case
+        // Mounted anyway, using the CONFIGURED geometry — never blocks.
+        Assert.Equal(40, disk.Tracks);
+        Assert.Equal(1, disk.Sides);
+    }
+
+    [Fact]
+    public void Mount_LengthMatchesTwoCanonicalGeometries_ReportsBothCandidates()
+    {
+        // 327,680 bytes is BOTH 40-track/DS and 80-track/SS — the confirmed collision. Configure
+        // the drive as neither (project CLAUDE.md milestone 20d test (d)).
+        var image = new byte[LengthFor(40, 2)]; // == LengthFor(80, 1)
+
+        var (disk, mismatch) = DskImage.Mount(image, configuredTracks: 35, configuredSides: 1);
+
+        Assert.Equal(DiskGeometryMismatchKind.Candidate, mismatch.Kind);
+        Assert.Equal(2, mismatch.Candidates.Count);
+        Assert.Contains((40, 2), mismatch.Candidates);
+        Assert.Contains((80, 1), mismatch.Candidates);
+    }
+
+    [Fact]
+    public void Mount_LengthMatchesNoCanonicalGeometry_ReportsNoCandidates_CorrectByteCounts()
+    {
+        // The owner's own real test case: a 32,768-byte file mounted where the drive expects
+        // 327,680 bytes (project CLAUDE.md milestone 20d test (e)).
+        var image = new byte[32_768];
+
+        var (disk, mismatch) = DskImage.Mount(image, configuredTracks: 40, configuredSides: 2);
+
+        Assert.Equal(DiskGeometryMismatchKind.NoCandidate, mismatch.Kind);
+        Assert.Empty(mismatch.Candidates);
+        Assert.Equal(32_768, mismatch.ActualLength);
+        Assert.Equal(LengthFor(40, 2), mismatch.ExpectedLength);
+        Assert.True(mismatch.CanPad); // shorter than expected -> padding makes sense
+    }
+
+    [Fact]
+    public void Mount_LengthLongerThanNoCandidateMatch_CannotPad()
+    {
+        // The file is longer than the geometry in use but still matches no canonical
+        // combination at all — reference doc §5d point 5: no pad option when there's nothing
+        // to fill, just an informational "unused trailing bytes" case.
+        var image = new byte[LengthFor(35, 1) + 1]; // one byte too many for ANY canonical size
+
+        var (disk, mismatch) = DskImage.Mount(image, configuredTracks: 35, configuredSides: 1);
+
+        Assert.Equal(DiskGeometryMismatchKind.NoCandidate, mismatch.Kind);
+        Assert.False(mismatch.CanPad);
+    }
+
+    [Fact]
+    public void ExtendTo_PadsShortImage_PreservesOriginalBytes_FillsRestWithZero()
+    {
+        // Project CLAUDE.md milestone 20d test (f).
+        var original = new byte[100];
+        for (var i = 0; i < 100; i++) original[i] = (byte)(i + 1); // non-zero pattern throughout
+        var (disk, _) = DskImage.Mount(original, configuredTracks: 40, configuredSides: 2);
+
+        disk.ExtendTo(LengthFor(40, 2));
+
+        var bytes = disk.GetBytes();
+        Assert.Equal(LengthFor(40, 2), bytes.Length);
+        for (var i = 0; i < 100; i++) Assert.Equal((byte)(i + 1), bytes[i]);
+        for (var i = 100; i < bytes.Length; i++) Assert.Equal(0x00, bytes[i]);
+    }
+
+    [Fact]
+    public void ExtendTo_AlreadyAtOrPastTargetLength_IsANoOp()
+    {
+        var disk = DskImage.CreateBlank(tracks: 40, sides: 2);
+        var before = disk.GetBytes();
+
+        disk.ExtendTo(100); // far shorter than the image already is
+
+        Assert.Equal(before, disk.GetBytes());
+    }
+
+    [Fact]
+    public void ReadSector_BeyondUnpaddedShortImage_ReturnsZeroFill_NotException()
+    {
+        // Project CLAUDE.md milestone 20d test (g).
+        var image = new byte[100];
+        var (disk, _) = DskImage.Mount(image, configuredTracks: 40, configuredSides: 2);
+
+        var sector = disk.ReadSector(cylinder: 10, head: 0, sector: 1); // far beyond the 100 real bytes
+
+        Assert.All(sector.ToArray(), b => Assert.Equal(0x00, b));
+    }
+
+    [Fact]
+    public void ReadSector_PartiallyBeyondUnpaddedShortImage_MixesRealBytesAndZeroFill()
+    {
+        var image = new byte[100];
+        for (var i = 0; i < 100; i++) image[i] = 0xAA;
+        var (disk, _) = DskImage.Mount(image, configuredTracks: 40, configuredSides: 2);
+
+        // Cylinder/head/sector 0/0/1 starts at raw offset 0 — the first 100 bytes are real, the
+        // rest of the 256-byte sector runs past the end of the unpadded image.
+        var sector = disk.ReadSector(cylinder: 0, head: 0, sector: 1).ToArray();
+
+        for (var i = 0; i < 100; i++) Assert.Equal(0xAA, sector[i]);
+        for (var i = 100; i < 256; i++) Assert.Equal(0x00, sector[i]);
+    }
+
+    [Fact]
+    public void WriteSector_BeyondUnpaddedShortImage_IsSilentlyDropped_NotException()
+    {
+        var image = new byte[100];
+        var (disk, _) = DskImage.Mount(image, configuredTracks: 40, configuredSides: 2);
+
+        disk.WriteSector(cylinder: 10, head: 0, sector: 1, new byte[256]); // must not throw
+
+        Assert.False(disk.IsDirty); // nothing was actually written
+    }
 }

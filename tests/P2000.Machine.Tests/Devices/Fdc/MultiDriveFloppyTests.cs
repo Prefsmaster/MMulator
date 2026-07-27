@@ -133,6 +133,68 @@ public class MultiDriveFloppyTests
         }
     }
 
+    // ---- Geometry-mismatch surfaced from a .cfg-authored construction-time mount (project
+    // CLAUDE.md milestone 20d) ---------------------------------------------------------------
+
+    [Fact]
+    public void Machine_ConfigAuthoredMount_CorrectlySizedImage_ReportsNoMismatch()
+    {
+        var temp = Path.GetTempFileName();
+        try
+        {
+            File.WriteAllBytes(temp, BuildSyntheticImage(tracks: 40, sides: 1));
+            var machine = new Machine(new MachineConfig
+            {
+                Board = InternalBoard.FloppyRam,
+                RamVariant = RamVariant.T102,
+                FloppyDrives = new[]
+                {
+                    new FloppyDriveConfig { DriveIndex = 0, ImagePath = temp, Capacity = 40, Sides = DiskSides.Single },
+                },
+            });
+
+            var mismatch = machine.Fdc!.GetMismatch(0);
+            Assert.NotNull(mismatch);
+            Assert.Equal(DiskGeometryMismatchKind.None, mismatch!.Value.Kind);
+        }
+        finally
+        {
+            File.Delete(temp);
+        }
+    }
+
+    [Fact]
+    public void Machine_ConfigAuthoredMount_MismatchedImage_SurfacesMismatchViaFdc()
+    {
+        // The Basic24k-style regression: a PDOS/short image mounted at boot via .cfg — nothing
+        // can show a dialog at machine-assembly time, so the mismatch must be retrievable later
+        // (project CLAUDE.md milestone 20d / UI ms.14e).
+        var temp = Path.GetTempFileName();
+        try
+        {
+            File.WriteAllBytes(temp, new byte[32_768]); // genuinely short, no label
+            var machine = new Machine(new MachineConfig
+            {
+                Board = InternalBoard.FloppyRam,
+                RamVariant = RamVariant.T102,
+                FloppyDrives = new[]
+                {
+                    new FloppyDriveConfig { DriveIndex = 0, ImagePath = temp, Capacity = 40, Sides = DiskSides.Double },
+                },
+            });
+
+            Assert.NotNull(machine.Fdc!.GetDisk(0)); // still mounted — never blocks
+            var mismatch = machine.Fdc.GetMismatch(0);
+            Assert.NotNull(mismatch);
+            Assert.Equal(DiskGeometryMismatchKind.NoCandidate, mismatch!.Value.Kind);
+            Assert.Equal(32_768, mismatch.Value.ActualLength);
+        }
+        finally
+        {
+            File.Delete(temp);
+        }
+    }
+
     [Fact]
     public void Machine_DisabledDrive_IsNeverMounted_EvenWithImagePathSet()
     {

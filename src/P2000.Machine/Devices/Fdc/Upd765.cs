@@ -128,6 +128,15 @@ public sealed class Upd765 : IDevice
 
     private readonly DskImage?[] _drives = new DskImage?[4];
 
+    /// <summary>Per-drive geometry-mismatch result from the most recent
+    /// <see cref="DskImage.Mount"/>-based mount (project CLAUDE.md milestone 20d); <c>null</c>
+    /// when nothing was mounted through that path (a plain <see cref="MountDisk(int,DskImage)"/>
+    /// call, or no disk mounted at all). Cleared on eject. <see cref="GetMismatch"/> is how
+    /// `P2000.UI` (ms.14e) picks up a construction-time (<c>.cfg</c>-authored) mismatch the first
+    /// time a window observes this drive, since nothing could show a dialog at machine-assembly
+    /// time.</summary>
+    private readonly DiskGeometryMismatch?[] _mismatches = new DiskGeometryMismatch?[4];
+
     private Phase _phase = Phase.Idle;
     private readonly List<byte> _commandBuffer = new();
     private int _expectedLength;
@@ -173,11 +182,31 @@ public sealed class Upd765 : IDevice
 
     /// <summary>Mounts a disk image on the given drive (0-3; the ROM driver only ever
     /// addresses drive 1 per the confirmed command bytes, but the chip itself is drive-agnostic).</summary>
-    public void MountDisk(int drive, DskImage image) => _drives[drive] = image;
+    public void MountDisk(int drive, DskImage image) => MountDisk(drive, image, null);
 
-    public void EjectDisk(int drive) => _drives[drive] = null;
+    /// <summary>Mounts a disk image together with the <see cref="DskImage.Mount"/> result that
+    /// produced it (project CLAUDE.md milestone 20d) — the overload real mount call sites
+    /// (a `.cfg`'s <c>ImagePath</c> at machine construction, a live UI mount) use so
+    /// <see cref="GetMismatch"/> has something to report. Pass <c>null</c> (same as the other
+    /// overload) when there's no mismatch result to carry, e.g. a direct in-memory mount.</summary>
+    public void MountDisk(int drive, DskImage image, DiskGeometryMismatch? mismatch)
+    {
+        _drives[drive] = image;
+        _mismatches[drive] = mismatch;
+    }
+
+    public void EjectDisk(int drive)
+    {
+        _drives[drive] = null;
+        _mismatches[drive] = null;
+    }
 
     public DskImage? GetDisk(int drive) => _drives[drive];
+
+    /// <summary>The geometry-mismatch result from this drive's most recent
+    /// <see cref="DskImage.Mount"/>-based mount, or <c>null</c> if there is none to report (project
+    /// CLAUDE.md milestone 20d).</summary>
+    public DiskGeometryMismatch? GetMismatch(int drive) => _mismatches[drive];
 
     // ---- Host status surface (P2000.UI milestone 14 — disk drive window) ------------------
 

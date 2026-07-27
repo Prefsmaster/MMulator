@@ -72,11 +72,17 @@ public sealed class DskImage
     public string? MountedPath { get; set; }
 
     /// <summary>Mounts a raw <c>.dsk</c> image from disk, auto-detecting geometry from the
-    /// on-disk label (an emulator-side UX improvement beyond real JWSDOS, which does NOT
-    /// auto-detect — <c>docs/JWSDOS-format.md</c> §3).</summary>
+    /// on-disk label UNCONDITIONALLY — kept for callers that already know they have a genuine,
+    /// well-formed JWSDOS image (test fixtures, real captured disks) and don't need the
+    /// mismatch-aware dance <see cref="Mount"/> does. Real user-facing mount paths (a `.cfg`'s
+    /// <c>ImagePath</c> at machine construction, a live UI mount) go through <see cref="Mount"/>
+    /// instead (project CLAUDE.md milestone 20d) — it validates the label against the file's
+    /// actual length before trusting it, since a non-JWSDOS image (PDOS, e.g.) has nothing
+    /// meaningful at these offsets. Throws if the file is too short to even contain the label.</summary>
     public DskImage(string path) : this(File.ReadAllBytes(path)) => MountedPath = path;
 
-    /// <summary>Mounts directly from bytes (test fixtures, in-memory images).</summary>
+    /// <summary>Mounts directly from bytes, unconditionally trusting the label — see the
+    /// <see cref="DskImage(string)"/> doc comment for when to use this vs. <see cref="Mount"/>.</summary>
     public DskImage(byte[] image)
     {
         if (image.Length < TrackCountOffset + 1)
@@ -87,6 +93,88 @@ public sealed class DskImage
         _data = image;
         Sides = image[SideIndicatorOffset] == (byte)'D' ? 2 : 1;
         Tracks = image[TrackCountOffset] - 1;
+    }
+
+    /// <summary>The six canonical Capacity×Sides combinations JWSDOS itself supports
+    /// (<c>docs/JWSDOS-format.md</c> §3) — the fixed set <see cref="Mount"/>'s candidate-matching
+    /// checks against when neither the label nor the configured geometry validates.</summary>
+    private static readonly (int Tracks, int Sides)[] CanonicalGeometries =
+    {
+        (35, 1), (35, 2), (40, 1), (40, 2), (80, 1), (80, 2),
+    };
+
+    /// <summary>
+    /// Mounts a raw <c>.dsk</c> image, validating the on-disk JWSDOS label against the file's
+    /// ACTUAL length rather than trusting it unconditionally, and falling back to the drive's
+    /// configured geometry when the label is absent or doesn't validate (project CLAUDE.md
+    /// milestone 20d; reference doc §5d "RESOLVED — the label-based auto-detect... was silently
+    /// over-trusted" — triggered by a real PDOS boot floppy, which has nothing at the label
+    /// offsets at all, and a genuinely short mount that produced zero feedback).
+    ///
+    /// <b>Never throws, never fails to mount</b> — every path returns a usable <see cref="DskImage"/>.
+    /// The returned <see cref="DiskGeometryMismatch"/> says whether the chosen geometry's implied
+    /// byte length actually matches the file (<see cref="DiskGeometryMismatchKind.None"/>), or —
+    /// if not — whether the file's exact length matches some OTHER canonical geometry
+    /// (<see cref="DiskGeometryMismatchKind.Candidate"/>, 1 or 2 matches: 40-track/DS and
+    /// 80-track/SS collide at 327,680 bytes) or none at all
+    /// (<see cref="DiskGeometryMismatchKind.NoCandidate"/>, a genuinely short/odd-sized file).
+    /// The caller (`P2000.UI`, ms.14e) decides whether/how to surface that; this method only
+    /// detects.
+    /// </summary>
+    public static (DskImage Image, DiskGeometryMismatch Mismatch) Mount(
+        byte[] bytes, int configuredTracks, int configuredSides)
+    {
+        var actualLength = bytes.Length;
+
+        // 1. Trust the label ONLY if it's self-consistent — its implied length must equal the
+        // file's actual length exactly. This single check is what makes it safe to read blind
+        // on a non-JWSDOS file: random sector bytes forming a combination that ALSO happens to
+        // byte-length-match is vanishingly unlikely.
+        if (TryReadLabel(bytes, out var labelTracks, out var labelSides) &&
+            (long)labelTracks * labelSides * BytesPerTrack == actualLength)
+        {
+            return (new DskImage { _data = bytes, Tracks = labelTracks, Sides = labelSides },
+                DiskGeometryMismatch.None(actualLength));
+        }
+
+        // 2. Otherwise, the drive's configured geometry is the real fallback — promoted from
+        // "blank-media seed only" to this, since most real images aren't JWSDOS-labeled.
+        var configuredLength = configuredTracks * configuredSides * BytesPerTrack;
+        var image = new DskImage { _data = bytes, Tracks = configuredTracks, Sides = configuredSides };
+        if (configuredLength == actualLength)
+            return (image, DiskGeometryMismatch.None(actualLength));
+
+        // 3./4. The configured geometry doesn't match either — check the other canonical
+        // combinations for an exact length match (0, 1, or 2 candidates).
+        var candidates = new List<(int Tracks, int Sides)>();
+        foreach (var (tracks, sides) in CanonicalGeometries)
+        {
+            if (tracks == configuredTracks && sides == configuredSides) continue; // already ruled out
+            if ((long)tracks * sides * BytesPerTrack == actualLength)
+                candidates.Add((tracks, sides));
+        }
+
+        var kind = candidates.Count > 0 ? DiskGeometryMismatchKind.Candidate : DiskGeometryMismatchKind.NoCandidate;
+        // Mounted regardless — using the configured geometry — per the "nothing here blocks a
+        // mount" rule; the mismatch result is informational, not gating.
+        return (image, new DiskGeometryMismatch(kind, actualLength, configuredLength, candidates));
+    }
+
+    /// <summary>Reads the JWSDOS geometry label's raw bytes without validating them against
+    /// anything — <see cref="Mount"/>'s own length-consistency check is what makes this safe to
+    /// call blind on a non-JWSDOS file. False (label absent) only when the file is too short to
+    /// even contain the label bytes.</summary>
+    private static bool TryReadLabel(byte[] data, out int tracks, out int sides)
+    {
+        if (data.Length < TrackCountOffset + 1)
+        {
+            tracks = 0;
+            sides = 0;
+            return false;
+        }
+        sides = data[SideIndicatorOffset] == (byte)'D' ? 2 : 1;
+        tracks = data[TrackCountOffset] - 1;
+        return true;
     }
 
     /// <summary>Creates a blank (all-zero), unformatted image of the given geometry — no
@@ -126,17 +214,49 @@ public sealed class DskImage
         head * Tracks * BytesPerTrack + cylinder * BytesPerTrack + (sector - 1) * BytesPerSector;
 
     /// <summary>Reads one 256-byte sector. <paramref name="sector"/> is 1-based (µPD765
-    /// convention).</summary>
-    public ReadOnlySpan<byte> ReadSector(int cylinder, int head, int sector) =>
-        _data.AsSpan(SectorOffset(cylinder, head, sector), BytesPerSector);
+    /// convention). A sector address beyond the image's actual byte length (an unpadded short
+    /// mount, continued anyway — project CLAUDE.md milestone 20d) reads as <c>0x00</c> fill,
+    /// never an exception — mirrors the cartridge's confirmed "open-bus reads <c>0xFF</c> past a
+    /// short image" shape (reference doc §5c), using disk's own fill byte instead.</summary>
+    public ReadOnlySpan<byte> ReadSector(int cylinder, int head, int sector)
+    {
+        var offset = SectorOffset(cylinder, head, sector);
+        if (offset + BytesPerSector <= _data.Length)
+            return _data.AsSpan(offset, BytesPerSector);
+
+        var buffer = new byte[BytesPerSector]; // defaults to 0x00
+        if (offset < _data.Length)
+            _data.AsSpan(offset, _data.Length - offset).CopyTo(buffer); // partially in range
+        return buffer;
+    }
 
     /// <summary>Writes one 256-byte sector. No-op (silently discarded) when
     /// <see cref="WriteProtected"/> — mirrors <see cref="Cassette.MiniTape"/>'s write-protect
-    /// behaviour for the cassette.</summary>
+    /// behaviour for the cassette — or when the target sector falls beyond the image's actual
+    /// byte length (an unpadded short mount): there's nowhere to write the bytes without
+    /// implicitly growing the image, which only <see cref="ExtendTo"/> does explicitly (project
+    /// CLAUDE.md milestone 20d).</summary>
     public void WriteSector(int cylinder, int head, int sector, ReadOnlySpan<byte> data)
     {
         if (WriteProtected) return;
-        data[..BytesPerSector].CopyTo(_data.AsSpan(SectorOffset(cylinder, head, sector)));
+        var offset = SectorOffset(cylinder, head, sector);
+        if (offset + BytesPerSector > _data.Length) return;
+        data[..BytesPerSector].CopyTo(_data.AsSpan(offset));
+        IsDirty = true;
+    }
+
+    /// <summary>Extends the in-memory image to <paramref name="targetLength"/> bytes, filling
+    /// new space with <c>0x00</c> — the same fill byte real FORMAT A TRACK writes into
+    /// unformatted sectors (<c>jwsformat.asm</c> disassembly, reference doc §5d), reused here
+    /// rather than inventing a second "blank" convention (project CLAUDE.md milestone 20d).
+    /// Purely in-memory, per the existing buffered-write model — nothing touches the host file
+    /// until an explicit Save/Save-as. No-op if the image is already at least that long.</summary>
+    public void ExtendTo(int targetLength)
+    {
+        if (targetLength <= _data.Length) return;
+        var extended = new byte[targetLength]; // defaults to 0x00
+        _data.CopyTo(extended, 0);
+        _data = extended;
         IsDirty = true;
     }
 
@@ -201,4 +321,43 @@ public readonly record struct DiskDirectoryEntry(
     ushort EndSector)
 {
     public string FullName => Extension.Length > 0 ? $"{Filename}.{Extension}" : Filename;
+}
+
+/// <summary>Which shape of geometry mismatch <see cref="DskImage.Mount"/> found, if any (project
+/// CLAUDE.md milestone 20d).</summary>
+public enum DiskGeometryMismatchKind
+{
+    /// <summary>The chosen geometry's implied byte length matches the file exactly — the common
+    /// case, nothing to report.</summary>
+    None,
+
+    /// <summary>The file's exact length matches one or two OTHER canonical Capacity×Sides
+    /// combinations (35/40/80-track × SS/DS) — 40-track/DS and 80-track/SS collide at 327,680
+    /// bytes, so this can carry two candidates.</summary>
+    Candidate,
+
+    /// <summary>The file's length matches NO canonical combination at all — genuinely short or
+    /// odd-sized (e.g. a partial/incomplete mount).</summary>
+    NoCandidate,
+}
+
+/// <summary>Result of <see cref="DskImage.Mount"/>'s geometry decision (project CLAUDE.md
+/// milestone 20d; reference doc §5d "RESOLVED — the label-based auto-detect... was silently
+/// over-trusted"). Never gates the mount — <see cref="DskImage.Mount"/> always returns a usable
+/// image regardless of <see cref="Kind"/>; this is purely informational for a caller (`P2000.UI`,
+/// ms.14e) that wants to offer the user a choice.</summary>
+public readonly record struct DiskGeometryMismatch(
+    DiskGeometryMismatchKind Kind,
+    int ActualLength,
+    int ExpectedLength,
+    IReadOnlyList<(int Tracks, int Sides)> Candidates)
+{
+    public static DiskGeometryMismatch None(int length) =>
+        new(DiskGeometryMismatchKind.None, length, length, Array.Empty<(int, int)>());
+
+    /// <summary>True only for a <see cref="DiskGeometryMismatchKind.NoCandidate"/> mismatch where
+    /// the file is SHORTER than the geometry in use — the only case "extend to full size" makes
+    /// sense for (nothing to pad when the file is already at or beyond the expected length; a
+    /// longer file just has unused trailing bytes, reference doc §5d point 5).</summary>
+    public bool CanPad => Kind == DiskGeometryMismatchKind.NoCandidate && ActualLength < ExpectedLength;
 }

@@ -1276,6 +1276,99 @@ is NO machine-layer runner milestone here — it's promoted in with the external
       produces a machine with the SAME media mounted as the one it was captured from (round-trip
       sanity check). → commit.
 
+20d. **Disk geometry detection — validate the JWSDOS label instead of trusting it, and detect
+    real size mismatches** (NEW, owner decision 2026-07-27, reference doc §5d's "RESOLVED... the
+    label-based auto-detect above is JWSDOS-specific and was silently over-trusted" — read that
+    block in full before starting). Triggered by real testing with a PDOS boot floppy (no label
+    at all) and a genuinely short/incomplete image (32,768 bytes mounted where the configured
+    drive expected 327,680).
+    - **Replace the current "label wins unconditionally" mount logic with:** (1) read the label
+      if the file is long enough to contain it; compute the byte length it implies; only trust
+      it if that length equals the actual file length exactly — otherwise treat as unlabeled.
+      (2) If unlabeled (or label didn't validate), use the drive's configured Capacity/Sides as
+      the geometry — this is the SAME config axis that already existed, just promoted from
+      "blank-media seed only" to "the real fallback for any non-JWSDOS-labeled image," since
+      that's most real images. (3) If the resulting geometry's implied byte length still doesn't
+      match the actual file length, this is now a **reportable mismatch**, not a silent mount.
+    - **New query surface for the mount to report back to its caller (`P2000.UI`, which owns the
+      dialog — this milestone builds detection only, not UI):** whatever geometry ended up
+      chosen, the actual file length, whether it validated cleanly, and — if not — the list of
+      OTHER canonical Capacity×Sides combinations (of the 6: 35/40/80-track × SS/DS) whose
+      implied byte length exactly equals the actual file length (may be empty, one, or two —
+      40-track/DS and 80-track/SS collide at 327,680 bytes, both valid candidates for that
+      exact size). Shape this as a simple result type `DskImage`/`Upd765`'s mount API can return
+      alongside the mounted image itself, not an exception and not a blocking call.
+    - **`DskImage` gains a pad/extend operation:** given a target byte length, extend the
+      in-memory sector array to that length, filling new bytes with `0x00` — the SAME fill byte
+      already confirmed for FORMAT A TRACK's own unformatted-sector fill (`jwsformat.asm`
+      disassembly, §5d above) — reuse it rather than inventing a second "blank" convention.
+      Purely in-memory, per the existing buffered-write model — nothing touches the host file
+      until an explicit Save/Save-as, exactly like every other disk mutation.
+    - **Out-of-range reads get a defined behavior for the first time:** a sector address beyond
+      the mounted image's actual byte length (an unpadded short mount, mounted anyway) reads as
+      `0x00`, never an exception — mirrors the cartridge's already-confirmed "open-bus reads
+      `0xFF` past a short image" shape (§5c), using disk's own fill byte rather than the
+      cartridge's.
+    - **Nothing here blocks a mount** — every path ends in a mounted image; the new query surface
+      exists so `P2000.UI` can inform/offer choices (reconfigure-and-remount, continue, pad), not
+      to gate the mount itself.
+    - **Tests:** (a) a file whose length matches its own JWSDOS label mounts using the label,
+      silently, no mismatch reported (unchanged fast path); (b) a PDOS-style file with no valid
+      label but whose length exactly matches the drive's configured Capacity/Sides mounts
+      silently using the config, no mismatch reported (the Basic24k boot-floppy regression
+      guard); (c) a file whose length matches a DIFFERENT canonical geometry than the one
+      configured reports exactly that candidate (single-candidate case); (d) a 327,680-byte file
+      with a drive configured as neither 40-track/DS nor 80-track/SS reports BOTH as candidates;
+      (e) a file matching no canonical geometry at all reports a mismatch with no candidates and
+      the correct actual/expected byte counts; (f) padding a short image to a target length
+      leaves original bytes untouched at their original offsets and fills the rest with `0x00`;
+      (g) reading a sector beyond an unpadded short image's real data returns `0x00`, not an
+      exception; (h) a file exactly matching its configured geometry (the common case, unchanged
+      today) reports no mismatch at all — regression guard that this milestone doesn't start
+      flagging previously-fine mounts. → commit.
+
+21. **IMD (ImageDisk) read/write — the emulator's new native/preferred disk container** (NEW,
+    owner decision 2026-07-27, reference doc §3a "RESOLVED — adopt IMD... as the emulator's
+    native/preferred disk container" — read that block in full before starting, it has the
+    research/citations behind why IMD and not HFE/TD0/a bespoke format). Legacy `.dsk` support
+    (milestone 20d) is UNCHANGED by this — this is a new, additional container, not a
+    replacement of raw-`.dsk` mounting.
+    - **Add an IMD reader:** parse the published IMD spec (linked in the reference doc block) —
+      text header (terminated by its own EOF marker), per-track descriptors (cylinder, head,
+      sector count, sector-size code), the sector-order map (physical position of each logical
+      sector — this is the interleave data), and sector data blocks (including IMD's own
+      "all sectors this value" compression marker, since real IMD files use it for
+      unformatted/blank regions — don't assume every sector is stored explicitly). Detect an
+      IMD file by its own text header (content-based), not by file extension.
+    - **Add an IMD writer:** serialize a `DskImage`'s current content (tracks/sides/sector data)
+      into the same structure. **Sector-order map: write a plain sequential order for now** —
+      nothing in this project currently generates or tracks real interleave, so there is no
+      genuine order data to preserve yet; the map still needs to exist and round-trip correctly
+      (an IMD file with a trivial sequential map is a completely valid, standard IMD file, not a
+      degenerate one). Do NOT attempt to model rotational-latency-aware timing off this map in
+      this milestone — that's a separate, explicitly deferred future step.
+    - **`DskImage` needs a way to know and report which format it came from** (raw `.dsk` vs.
+      IMD) so `P2000.UI` (milestone 14f) can decide default Save behavior without re-sniffing the
+      file itself — a simple enum/flag is enough, set at mount/load time, updated on a
+      format-changing Save As.
+    - **Write-protect is explicitly OUT of scope for the IMD reader/writer itself** — per the
+      reference doc block, it's a config/`.state` concern (already resolved, ms.20/20a),
+      identical for both `.dsk`- and IMD-backed drives. Do not add a write-protect field to the
+      IMD serialization.
+    - **`.state` needs NO change** — its own disk-block embedding (ms.20/20a) already stores raw
+      content + explicit Tracks/Sides directly, independent of whatever host file format (if any)
+      the image originally came from; this milestone doesn't touch that.
+    - **Tests:** (a) a real-world IMD file (construct one matching the published spec's own
+      examples, or a small hand-built fixture) round-trips through read→write→read
+      byte-identical; (b) a file using IMD's "all sectors same value" compression marker reads
+      correctly as a fully-populated track (regression guard against assuming explicit-only
+      storage); (c) writing a `DskImage` built from a plain `.dsk` mount (milestone 20d) produces
+      a valid IMD file with a correct header/track descriptors and a sequential sector-order map;
+      (d) `DskImage`'s format flag correctly reports `.dsk` vs. IMD after each mount path; (e) an
+      IMD file's geometry is used AS-IS, no label-validation or config-fallback logic from
+      ms.20d runs against it (regression guard that IMD mounting stays fully deterministic, not
+      routed through the mismatch machinery meant for ambiguous raw dumps). → commit.
+
 ---
 
 ## 14. Deferred (build the seams now, implement later)
@@ -1349,6 +1442,81 @@ marked synced. Do NOT edit the reference doc from this project.
 - **Synced:** yes (2026-07-05, into P2000T-reference.md + device guides)
 -->
 
+### 2026-07-27 — Milestone 20d IMPLEMENTED: validate the JWSDOS label, detect real geometry mismatches
+- **Trigger:** real end-to-end testing with a genuine PDOS boot floppy (Basic24k's own boot disk —
+  no JWSDOS label at all) and a genuinely short mount (32,768 bytes into a drive configured for
+  327,680) that produced zero feedback — reference doc §5d "RESOLVED — the label-based
+  auto-detect above is JWSDOS-specific and was silently over-trusted."
+- **Built — `DskImage.Mount(bytes, configuredTracks, configuredSides)`, a new static factory
+  alongside (NOT replacing) the existing `DskImage(string)`/`DskImage(byte[])` constructors:**
+  those two constructors keep their original unconditional-label-trusting behavior UNCHANGED
+  (including the throw-if-too-short-for-the-label-bytes case) — dozens of existing tests and
+  fixtures across `DskImageTests`/`Upd765Tests`/`MultiDriveFloppyTests`/`RealFixtureTests`
+  construct real/synthetic images directly via them and don't need the mismatch dance. `Mount`
+  is the new entry point for the two REAL mount call sites instead: `Machine`'s constructor (a
+  `.cfg`'s `FloppyDrives[i].ImagePath`) and `DiskDriveVm.MountBytes` (the live UI mount, wired in
+  UI ms.14e). Algorithm: (1) read the label only if the file is long enough to contain it, and
+  only trust it if its implied byte length equals the file's actual length exactly; (2) otherwise
+  fall back to the drive's configured Capacity/Sides — promoted from "blank-media seed only" to
+  the real fallback for any non-JWSDOS image; (3) if THAT doesn't match either, check the file's
+  exact length against the other 5 canonical Capacity×Sides combinations (35/40/80-track × SS/DS)
+  and report whichever match (0, 1, or 2 — 40-track/DS and 80-track/SS collide at 327,680 bytes).
+  **Never throws, never fails to mount** — every path returns a usable `DskImage`, mounted using
+  whichever geometry won (label, or configured as the fallback).
+- **New result type:** `DiskGeometryMismatchKind` (`None`/`Candidate`/`NoCandidate`) +
+  `DiskGeometryMismatch` (`Kind`, `ActualLength`, `ExpectedLength`, `Candidates`, plus a computed
+  `CanPad` — true only for a `NoCandidate` mismatch where the file is actually SHORTER than
+  expected, since a longer-but-still-no-match file has nothing to pad, just unused trailing bytes
+  per reference doc §5d point 5).
+- **Built — `DskImage.ExtendTo(targetLength)`:** pads the in-memory sector array with `0x00` —
+  the SAME fill byte confirmed for FORMAT A TRACK's unformatted-sector fill (`jwsformat.asm`
+  disassembly, §5d), reused rather than inventing a second convention. Purely in-memory, per the
+  existing buffered-write model (no-op if already long enough; sets `IsDirty`, same as any other
+  content mutation).
+- **Built — out-of-range reads/writes now have defined behavior for the first time:**
+  `ReadSector` past the image's actual byte length (an unpadded short mount, continued anyway)
+  returns `0x00` fill instead of throwing — mirrors the cartridge's confirmed "open-bus reads
+  `0xFF` past a short image" shape (§5c), using disk's own fill byte. A sector straddling the
+  boundary returns real bytes for the in-range prefix and fill for the rest. `WriteSector`
+  out-of-range is silently dropped (same as write-protected — there's nowhere to put the bytes
+  without implicitly growing the image, which only `ExtendTo` does explicitly).
+- **Built — `Upd765` carries the mismatch per drive:** a new `MountDisk(drive, image, mismatch)`
+  overload (the existing 2-arg `MountDisk(drive, image)` is unchanged, now just forwards `null`)
+  plus `GetMismatch(drive)`; `EjectDisk` clears it. This is how a construction-time (`.cfg`-
+  authored) mismatch survives past machine assembly — nothing can show a dialog at that point, so
+  `P2000.UI` (ms.14e) polls `GetMismatch` the first time a window observes the drive.
+- **`Machine`'s constructor updated:** `Board.Fdc.MountDisk(drive.DriveIndex, new DskImage(drive.ImagePath))`
+  → `DskImage.Mount(File.ReadAllBytes(drive.ImagePath), drive.Capacity, sides)` then
+  `MountDisk(drive.DriveIndex, image, mismatch)`, with `image.MountedPath` stamped explicitly
+  afterward (`Mount`'s object-initializer construction path doesn't go through the
+  `DskImage(string)` constructor, so nothing sets it automatically the way that constructor does).
+- **Tests:** `DskImageTests` (+12): label wins over a mismatched config when it validates; an
+  unlabeled (all-zero-label) file whose length matches the configured geometry mounts silently
+  (the Basic24k regression guard); a labeled file matching its own config too (ordinary case,
+  regression guard against flagging previously-fine mounts); single-candidate and two-candidate
+  (the 40DS/80SS collision) mismatches; a no-candidate mismatch reports correct actual/expected
+  byte counts and `CanPad=true`; a no-candidate mismatch that's LONGER than expected reports
+  `CanPad=false`; `ExtendTo` preserves original bytes and zero-fills the rest, and no-ops when
+  already long enough; out-of-range reads (fully and partially beyond the data) return zero-fill;
+  out-of-range writes are silently dropped, not thrown. `Upd765Tests` (+4): the mismatch
+  plumbing itself (null by default, 2-arg overload leaves it null, 3-arg overload stores it,
+  eject clears it). `MultiDriveFloppyTests` (+2): a `.cfg`-authored mount surfaces `None` for a
+  correctly-sized image and `NoCandidate` (with the real byte counts) for a genuinely short one,
+  through `Machine`'s constructor end-to-end. Full `P2000.Machine.Tests`: 519/519 green (was 501).
+- **Flag (per the reference doc block's own note, not silently skipped):** `docs/JWSDOS-format.md`
+  wasn't available to edit this pass — it still documents the geometry label without noting that
+  it must now be validated against actual file length before use (this milestone). Whoever next
+  touches that file should add a short note pointing at this resolution.
+- **Applies to:** `src/P2000.Machine/Devices/Fdc/DskImage.cs` (`Mount`, `ExtendTo`, `ReadSector`/
+  `WriteSector` bounds handling, `DiskGeometryMismatch`/`DiskGeometryMismatchKind`),
+  `src/P2000.Machine/Devices/Fdc/Upd765.cs` (`MountDisk` overload, `GetMismatch`),
+  `src/P2000.Machine/Machine.cs` (constructor mount path), `tests/P2000.Machine.Tests/Devices/Fdc/DskImageTests.cs`,
+  `tests/P2000.Machine.Tests/Devices/Fdc/Upd765Tests.cs`,
+  `tests/P2000.Machine.Tests/Devices/Fdc/MultiDriveFloppyTests.cs`. Reference doc §5d's "RESOLVED
+  — the label-based auto-detect above is JWSDOS-specific" block.
+- **Synced:** no (implementation-only — the design decision itself was already synced into the
+  reference doc's own 2026-07-27 "RESOLVED" entry before this milestone was built).
+
 ### 2026-07-26 — Milestone 20c IMPLEMENTED: `Machine.CaptureCurrentConfig()` (+ a real prerequisite gap found and closed: neither device tracked its own mount path at all)
 - **Found before building anything (the actual blocker for this milestone):** the milestone's own
   spec assumes reading "the LIVE devices' current mounted path" is a simple query —
@@ -1395,8 +1563,9 @@ marked synced. Do NOT edit the reference doc from this project.
   `src/P2000.Machine/Devices/Cassette/MdcrDevice.cs` (`MountedPath`, `InsertTape` overload),
   `tests/P2000.Machine.Tests/MachineTests.cs`. Reference doc §3a's "RESOLVED — startup
   configuration" block.
-- **Synced:** no (implementation-only — the design decision itself was already synced into the
-  reference doc's own 2026-07-26 "RESOLVED" entry before this milestone was built).
+- **Synced:** yes (2026-07-27, into `docs/P2000T-reference.md` §3a, "RESOLVED — startup
+  configuration" block — new "IMPLEMENTED (machine milestone 20c...)" paragraph documents this
+  `MountedPath` prerequisite and `CaptureCurrentConfig()` exactly as built).
 
 ### 2026-07-24 — CONFIRMED: Format A Track's real P2000 command bytes + execution mechanism (owner-supplied disassembly of the standalone JWSFormat.bin formatter)
 - **Trigger — owner:** delivered `docs/jwsformat.asm`, a personally-produced disassembly of

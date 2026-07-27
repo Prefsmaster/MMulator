@@ -90,19 +90,18 @@ public sealed partial class ConfigWindowVm : ObservableObject
     [ObservableProperty] private string _statusMessage = "";
 
     /// <summary>The last <c>.cfg</c> path this window loaded from or saved to — what
-    /// <see cref="PinAsStartupConfig"/> pins, since pinning designates an already-named, already-
-    /// saved file, not whatever happens to be in the fields right now (project CLAUDE.md
-    /// milestone 14c).</summary>
-    [ObservableProperty]
-    [NotifyPropertyChangedFor(nameof(CanPinStartup))]
-    private string? _lastCfgPath;
+    /// <see cref="PinAsStartupConfigAsync"/> pins directly, without re-prompting, since pinning
+    /// designates an already-named, already-saved file, not whatever happens to be in the fields
+    /// right now (project CLAUDE.md milestone 14c). <c>null</c> no longer disables the Pin
+    /// button (owner report, 2026-07-27: gating it was counter-intuitive right after Apply,
+    /// before any Save/Load) — <see cref="PinAsStartupConfigAsync"/> prompts for a save first
+    /// when this is still null.</summary>
+    [ObservableProperty] private string? _lastCfgPath;
 
     /// <summary>True when <see cref="AppPreferences.StartupCfgPath"/> is pinned — auto-remember
     /// (writing <c>last-session.cfg</c> on quit) stops overwriting it until unpinned (project
     /// CLAUDE.md milestone 14c).</summary>
     [ObservableProperty] private bool _isStartupPinned;
-
-    public bool CanPinStartup => LastCfgPath is not null;
 
     public IReadOnlyList<RamVariant> RamVariants { get; } =
         [RamVariant.T38, RamVariant.T54, RamVariant.T102];
@@ -167,14 +166,6 @@ public sealed partial class ConfigWindowVm : ObservableObject
             }
         }
     }
-
-    /// <summary>[NotifyPropertyChangedFor] on <see cref="LastCfgPath"/> updates
-    /// <see cref="CanPinStartup"/>'s bindable value, but a `[RelayCommand(CanExecute = …)]`
-    /// command's enabled state is a SEPARATE thing CommunityToolkit does not re-check
-    /// automatically — it only re-evaluates when told to. Without this, "Always start with this
-    /// configuration" stayed ghosted forever after a successful Load/Save .cfg (found via owner
-    /// report, 2026-07-27).</summary>
-    partial void OnLastCfgPathChanged(string? value) => PinAsStartupConfigCommand.NotifyCanExecuteChanged();
 
     partial void OnFloppyDriveCountChanged(int value) => ResizeFloppyDriveRows(value);
 
@@ -306,12 +297,22 @@ public sealed partial class ConfigWindowVm : ObservableObject
     // ── Startup pinning (project CLAUDE.md milestone 14c) ───────────────────────
 
     /// <summary>"Always start with this configuration": pins <see cref="LastCfgPath"/> — the
-    /// last file THIS window explicitly loaded or saved, not whatever's currently in the fields —
-    /// as the startup default. Auto-remember stops overwriting it until <see cref="UnpinStartupConfig"/>.</summary>
-    [RelayCommand(CanExecute = nameof(CanPinStartup))]
-    private void PinAsStartupConfig()
+    /// last file THIS window explicitly loaded or saved — as the startup default, so auto-remember
+    /// stops overwriting it until <see cref="UnpinStartupConfig"/>. Always enabled, not gated on
+    /// having saved/loaded a `.cfg` first (owner report, 2026-07-27: a machine fresh off Apply has
+    /// no `LastCfgPath` yet, and a permanently-ghosted button with no explanation was
+    /// counter-intuitive) — when nothing's been saved yet, this prompts the SAME Save `.cfg`
+    /// dialog <see cref="SaveCfgAsync"/> uses, then pins whatever the user just saved. Cancelling
+    /// that dialog leaves nothing pinned, same as cancelling any other save.</summary>
+    [RelayCommand]
+    private async Task PinAsStartupConfigAsync()
     {
-        if (LastCfgPath is null) return;
+        if (LastCfgPath is null)
+        {
+            await SaveCfgAsync();
+            if (LastCfgPath is null) return; // user cancelled the save dialog
+        }
+
         var prefs = AppPreferencesFile.Load();
         prefs.StartupCfgPath = LastCfgPath;
         prefs.StartupCfgIsPinned = true;

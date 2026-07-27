@@ -1108,6 +1108,35 @@ genuinely open, plus the last few active days, for continuity. Everything fully 
 already synced lives only in the archive now — check there before assuming something's
 missing.
 
+### 2026-07-27 — FOLLOW-UP FIX: Pin button redesigned to never be permanently ghosted
+- **Trigger — owner follow-up:** the previous fix (below) made the Pin button correctly enable
+  after a successful Load/Save `.cfg`, but the owner pointed out a real UX gap: starting from a
+  BARE machine, configuring it, then clicking Apply (a reset, not a save) left the button
+  ghosted again with no explanation — a user who doesn't already know "you must Save/Load first"
+  has no way to discover that. Owner's own framing: "it is better that it becomes available
+  after a reset, but then prompts for a save config action."
+- **Redesigned, not just re-triggered:** removed `[RelayCommand(CanExecute = nameof(CanPinStartup))]`
+  entirely — `PinAsStartupConfigCommand` is now unconditionally enabled (`CanPinStartup` and the
+  `OnLastCfgPathChanged`/`NotifyCanExecuteChanged` plumbing from the previous fix are both gone,
+  superseded rather than layered on). The command itself (renamed `PinAsStartupConfigAsync`,
+  generated command name unchanged since CommunityToolkit strips the `Async` suffix — no XAML
+  binding change needed) now checks `LastCfgPath` internally: if null, it calls
+  `SaveCfgAsync()` — the exact same Save `.cfg` dialog the button next to it uses — and only
+  proceeds to pin if that save succeeded (`LastCfgPath` now set); cancelling the save dialog
+  leaves nothing pinned, same as cancelling any other save. If `LastCfgPath` was already set
+  (a prior Load/Save in this window session), pins directly with no re-prompt.
+- **Tests:** `StartupConfigurationTests` (+2): `PinAsStartupConfigCommand.CanExecute(null)` is
+  `true` even with `LastCfgPath` still null (the direct regression guard for the ghosted-button
+  report); pinning with `LastCfgPath` already set pins directly (awaited via `ExecuteAsync`
+  rather than fire-and-forget `Execute`, since the command is now `async`). The "no
+  `LastCfgPath` → prompts and pins" branch itself still needs a real StorageProvider dialog to
+  exercise (same headless limitation `SaveCfgAsync` already has) — not separately covered here.
+  Full `P2000.UI.Tests`: 172/172 green (was 170).
+- **Applies to:** `src/P2000.UI/ViewModels/ConfigWindowVm.cs` (`PinAsStartupConfigAsync`),
+  `src/P2000.UI/Views/ConfigWindow.axaml` (hint/tooltip text),
+  `tests/P2000.UI.Tests/State/StartupConfigurationTests.cs`.
+- **Synced:** no (bug fix against an already-synced design).
+
 ### 2026-07-27 — FIXED: three bugs in milestone 14c, found via real owner usage (BASIC24k cartridge + boot floppy)
 - **Trigger:** owner's first real end-to-end run of the "power on preconfigured" story — loaded
   `Basic24k.bin` into SLOT1, mounted a boot floppy live via the Disk Drives window, booted into

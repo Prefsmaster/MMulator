@@ -222,6 +222,44 @@ public class StartupConfigurationTests
         }
     }
 
+    // ---- Pin button ghosted right after Apply (owner report, 2026-07-27) ---------------------
+
+    [Fact]
+    public void PinAsStartupConfigCommand_IsAlwaysEnabled_EvenWithNoSavedCfgYet()
+    {
+        // A machine fresh off Apply (or a freshly-opened Config window) has no LastCfgPath yet —
+        // the button must NOT be permanently ghosted in that state (owner report: this was
+        // counter-intuitive with no explanation). PinAsStartupConfigAsync itself prompts for a
+        // save in that case rather than being disabled.
+        using var scope = new PreferencesDirectoryScope();
+        var runner = new EmulationRunner(); // never Start()ed — not disposed
+        var configVm = new ConfigWindowVm(runner);
+
+        Assert.Null(configVm.LastCfgPath);
+        Assert.True(configVm.PinAsStartupConfigCommand.CanExecute(null));
+    }
+
+    [Fact]
+    public async Task PinAsStartupConfig_WithAlreadySavedCfg_PinsDirectly_NoRePrompt()
+    {
+        using var scope = new PreferencesDirectoryScope();
+        var runner = new EmulationRunner(); // never Start()ed — not disposed
+        var configVm = new ConfigWindowVm(runner);
+
+        // Simulates a prior successful Save/Load .cfg (which sets LastCfgPath) without needing
+        // a real StorageProvider dialog headlessly.
+        var cfgPath = System.IO.Path.Combine(scope.Path, "already-saved.cfg");
+        MachineConfigFile.SaveToFile(new MachineConfig(), cfgPath);
+        configVm.LastCfgPath = cfgPath;
+
+        await configVm.PinAsStartupConfigCommand.ExecuteAsync(null);
+
+        Assert.True(configVm.IsStartupPinned);
+        var prefs = AppPreferencesFile.Load();
+        Assert.True(prefs.StartupCfgIsPinned);
+        Assert.Equal(cfgPath, prefs.StartupCfgPath);
+    }
+
     // ---- (f) SaveCfgAsync regression guard -----------------------------------------------------
 
     [Fact]

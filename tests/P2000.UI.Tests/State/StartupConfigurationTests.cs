@@ -200,7 +200,7 @@ public class StartupConfigurationTests
             });
 
             var vm = new DisplayWindowVm();
-            var configVm = new ConfigWindowVm(vm.Runner);
+            var configVm = new ConfigWindowVm(vm.Runner, vm.DiskVm);
             Assert.True(configVm.IsStartupPinned); // reflects the pinned state at construction
 
             configVm.UnpinStartupConfigCommand.Execute(null);
@@ -234,7 +234,7 @@ public class StartupConfigurationTests
         // save in that case rather than being disabled.
         using var scope = new PreferencesDirectoryScope();
         var runner = new EmulationRunner(); // never Start()ed — not disposed
-        var configVm = new ConfigWindowVm(runner);
+        var configVm = new ConfigWindowVm(runner, new DiskDriveWindowVm(runner));
 
         Assert.Null(configVm.LastCfgPath);
         Assert.True(configVm.PinAsStartupConfigCommand.CanExecute(null));
@@ -245,7 +245,7 @@ public class StartupConfigurationTests
     {
         using var scope = new PreferencesDirectoryScope();
         var runner = new EmulationRunner(); // never Start()ed — not disposed
-        var configVm = new ConfigWindowVm(runner);
+        var configVm = new ConfigWindowVm(runner, new DiskDriveWindowVm(runner));
 
         // Simulates a prior successful Save .cfg (which sets LastCfgPath) without needing a real
         // StorageProvider dialog headlessly — the file's content must be exactly what
@@ -272,7 +272,7 @@ public class StartupConfigurationTests
         // must not silently pin the now-stale file.
         using var scope = new PreferencesDirectoryScope();
         var runner = new EmulationRunner(); // never Start()ed — not disposed
-        var configVm = new ConfigWindowVm(runner);
+        var configVm = new ConfigWindowVm(runner, new DiskDriveWindowVm(runner));
 
         var staleCfgPath = System.IO.Path.Combine(scope.Path, "stale.cfg");
         // Deliberately mismatched from the live machine's actual config (different RamVariant),
@@ -318,7 +318,7 @@ public class StartupConfigurationTests
         // both populate the same fields, including the RamSeed/BankCount pass-through this fix
         // adds. LastCfgPath is set directly here since the real Load .cfg dialog needs a
         // StorageProvider this test run doesn't have.
-        var configVm = new ConfigWindowVm(runner) { LastCfgPath = savedPath };
+        var configVm = new ConfigWindowVm(runner, new DiskDriveWindowVm(runner)) { LastCfgPath = savedPath };
 
         // Apply with NO field edits — must reproduce the exact same config, RamSeed included.
         configVm.ApplyCommand.Execute(null);
@@ -367,6 +367,63 @@ public class StartupConfigurationTests
         {
             File.Delete(diskPath);
             File.Delete(casPath);
+        }
+    }
+
+    // ---- Proactive geometry-mismatch surfacing (project CLAUDE.md milestone 14g) -------------
+    // Test (e) of the milestone's own list: a .cfg saved with an unresolved mismatch surfaces the
+    // dialog machinery immediately at launch, even though the Disk Drives window is never opened.
+
+    private static int LengthFor(int tracks, int sides) =>
+        tracks * sides * DskImage.SectorsPerTrack * DskImage.BytesPerSector;
+
+    [Fact]
+    public void StartupConfigAutoLoad_WithUnresolvedMismatch_SurfacesImmediately_AfterSubscribing()
+    {
+        using var scope = new PreferencesDirectoryScope();
+        var tempPath = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"ms14g-mismatch-{Guid.NewGuid():N}.dsk");
+        try
+        {
+            // 35-track/SS length -> a real Candidate mismatch against the drive's configured
+            // 40-track/Single geometry below.
+            File.WriteAllBytes(tempPath, new byte[LengthFor(35, 1)]);
+
+            var pinnedCfgPath = System.IO.Path.Combine(scope.Path, "mismatched.cfg");
+            MachineConfigFile.SaveToFile(new MachineConfig
+            {
+                Board = InternalBoard.FloppyRam,
+                RamVariant = RamVariant.T102,
+                FloppyDrives = new[]
+                {
+                    new FloppyDriveConfig { DriveIndex = 0, Capacity = 40, Sides = DiskSides.Single, ImagePath = tempPath },
+                },
+            }, pinnedCfgPath);
+            AppPreferencesFile.Save(new AppPreferences { StartupCfgPath = pinnedCfgPath, StartupCfgIsPinned = true });
+
+            // Constructing DisplayWindowVm builds its EmulationRunner, which auto-loads the pinned
+            // startup .cfg (MakeConfig -> TryLoadStartupConfig) — the mismatch already exists on
+            // Upd765 by the time this constructor returns, but nothing has raised it into a dialog
+            // yet (DiskDriveWindowVm's own construction-time raise, inside DisplayWindowVm's
+            // constructor, necessarily fires before anything outside could possibly be listening).
+            var vm = new DisplayWindowVm();
+
+            DiskDriveVm? raisedDrive = null;
+            DiskGeometryMismatch? raisedMismatch = null;
+            // Mirrors DisplayWindow.OnDataContextChanged's own "subscribe THEN raise" sequence —
+            // the fix under test: RaiseAnyPendingMismatches re-queries Upd765.GetMismatch directly,
+            // so it doesn't matter that the pending-mismatch mechanism already fired into the void.
+            vm.DiskVm.GeometryMismatchDetected += (d, m) => { raisedDrive = d; raisedMismatch = m; };
+            vm.DiskVm.RaiseAnyPendingMismatches();
+
+            Assert.NotNull(raisedDrive);
+            Assert.Equal(0, raisedDrive!.DriveIndex);
+            Assert.Equal(DiskGeometryMismatchKind.Candidate, raisedMismatch!.Value.Kind);
+
+            vm.Dispose();
+        }
+        finally
+        {
+            File.Delete(tempPath);
         }
     }
 }

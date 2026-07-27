@@ -1481,6 +1481,11 @@ marked synced. Do NOT edit the reference doc from this project.
 - **Note:** `DetectMismatch` intentionally does NOT sniff IMD (`ImdFormat.IsImdFile`) — IMD is
   fully self-describing and never mismatches, so there's nothing for a preview to detect there;
   a caller previewing an IMD file must check `IsImdFile` itself first if it cares.
+- **Follow-up (same day, found while building UI ms.14g on top of this):** `ImdFormat` itself is
+  `internal` — `P2000.UI`'s offline-preview code (which needs exactly the "check `IsImdFile` first"
+  escape hatch the note above calls for) can't reach it. Added a small public passthrough,
+  `DskImage.IsImdFile(byte[] bytes) => ImdFormat.IsImdFile(bytes)`, rather than making `ImdFormat`
+  itself public (keeps the format-detail-parsing type internal; only the yes/no sniff is exposed).
 - **Applies to:** `src/P2000.Machine/Devices/Fdc/DskImage.cs`; tests in
   `tests/P2000.Machine.Tests/Devices/Fdc/DskImageTests.cs`.
 - **Synced:** no (pending human sync into `docs/P2000T-reference.md` §3a).

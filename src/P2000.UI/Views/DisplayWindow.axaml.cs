@@ -1,6 +1,8 @@
 using Avalonia.Controls;
 using Avalonia.Input;
 using Avalonia.Platform.Storage;
+using P2000.Machine;
+using P2000.Machine.Devices.Fdc;
 using P2000.UI.State;
 using P2000.UI.ViewModels;
 
@@ -41,6 +43,7 @@ public partial class DisplayWindow : Window
             _vm.ShowMessageRequested        -= ShowErrorDialog;
             _vm.StateSaved                  -= OnStateSaved;
             _vm.StateLoaded                 -= OnStateLoaded;
+            _vm.DiskVm.GeometryMismatchDetected -= ShowGeometryMismatchDialog;
         }
 
         _vm = DataContext as DisplayWindowVm;
@@ -66,6 +69,16 @@ public partial class DisplayWindow : Window
             _vm.ShowMessageRequested        += ShowErrorDialog;
             _vm.StateSaved                  += OnStateSaved;
             _vm.StateLoaded                 += OnStateLoaded;
+
+            // Proactive geometry-mismatch surfacing (project CLAUDE.md milestone 14g) —
+            // subscribed here, on the ALWAYS-present main window, so a mismatch from the
+            // startup-config auto-load (or a later ConfigWindowVm.Apply) shows a dialog even if
+            // the Disk Drives satellite window is never opened this session. Subscribe THEN
+            // raise, same ordering DiskDriveWindowVm itself already uses per-drive — the startup
+            // machine's mismatches were already computed by the time DiskVm finished
+            // constructing, but nothing could have raised them into a dialog before this line.
+            _vm.DiskVm.GeometryMismatchDetected += ShowGeometryMismatchDialog;
+            _vm.DiskVm.RaiseAnyPendingMismatches();
         }
 
         base.OnDataContextChanged(e);
@@ -102,6 +115,94 @@ public partial class DisplayWindow : Window
         await dialog.ShowDialog(this);
     }
 
+    // ── Geometry-mismatch dialog (project CLAUDE.md milestone 14g proactive surfacing) ──────
+    // Same shape as DiskDriveWindow's own dialog (ms.14e) — duplicated here (matching this
+    // project's existing per-window dialog convention, e.g. ShowErrorDialog above) so a mismatch
+    // from an Apply or the startup auto-load shows up even when the Disk Drives window itself was
+    // never opened. Non-blocking: the image (or config) is already applied by the time this shows.
+
+    private async void ShowGeometryMismatchDialog(DiskDriveVm drive, DiskGeometryMismatch mismatch)
+    {
+        var dialog = new Window
+        {
+            Title = "MMulator — Disk Geometry Mismatch",
+            Width = 480,
+            SizeToContent = SizeToContent.Height,
+            CanResize = false,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+        };
+
+        var configuredName = GeometryName(drive.Capacity, drive.Sides == DiskSides.Double ? 2 : 1);
+        string message;
+        var buttons = new Avalonia.Controls.StackPanel
+        {
+            Orientation = Avalonia.Layout.Orientation.Horizontal,
+            Spacing = 8,
+            HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Center,
+        };
+
+        if (mismatch.Kind == DiskGeometryMismatchKind.Candidate)
+        {
+            var names = string.Join(" or ", mismatch.Candidates.Select(c => GeometryName(c.Tracks, c.Sides)));
+            message = $"Drive {drive.DriveIndex}: this file's size matches {names}, but the " +
+                      $"drive is configured for {configuredName}.";
+
+            foreach (var (tracks, sides) in mismatch.Candidates)
+            {
+                var button = new Button { Content = $"Use {GeometryName(tracks, sides)} + remount", MinWidth = 100 };
+                var diskSides = sides == 2 ? DiskSides.Double : DiskSides.Single;
+                button.Click += (_, _) =>
+                {
+                    drive.ReconfigureAndRemount(tracks, diskSides);
+                    dialog.Close();
+                };
+                buttons.Children.Add(button);
+            }
+        }
+        else
+        {
+            var percent = mismatch.ExpectedLength > 0 ? mismatch.ActualLength * 100 / mismatch.ExpectedLength : 0;
+            message = $"Drive {drive.DriveIndex}: {mismatch.ActualLength:N0} bytes mounted; the " +
+                      $"drive expects {mismatch.ExpectedLength:N0} bytes for {configuredName} — " +
+                      $"about {percent}% of the expected data is present.";
+
+            if (mismatch.CanPad)
+            {
+                var pad = new Button { Content = "Extend to full size", MinWidth = 120 };
+                ToolTip.SetTip(pad, "Fills the missing space with blank sectors — it does NOT recover any missing data.");
+                pad.Click += (_, _) =>
+                {
+                    drive.ExtendMountedDiskToFullSize(mismatch.ExpectedLength);
+                    dialog.Close();
+                };
+                buttons.Children.Add(pad);
+            }
+        }
+
+        var continueBtn = new Button { Content = "Continue mounting as-is", MinWidth = 100 };
+        continueBtn.Click += (_, _) => { drive.ContinueWithCurrentMount(); dialog.Close(); };
+        var cancelBtn = new Button { Content = "Cancel", MinWidth = 80 };
+        cancelBtn.Click += (_, _) => { drive.CancelMount(); dialog.Close(); };
+        buttons.Children.Add(continueBtn);
+        buttons.Children.Add(cancelBtn);
+
+        dialog.Content = new Avalonia.Controls.StackPanel
+        {
+            Margin = new Avalonia.Thickness(20),
+            Spacing = 16,
+            Children =
+            {
+                new TextBlock { Text = message, TextWrapping = Avalonia.Media.TextWrapping.Wrap },
+                buttons,
+            }
+        };
+
+        await dialog.ShowDialog(this);
+    }
+
+    private static string GeometryName(int tracks, int sides) =>
+        $"{tracks}-track/{(sides == 2 ? "double-sided" : "single-sided")}";
+
     // ── Satellite windows ─────────────────────────────────────────────────────
 
     private void ShowDeckWindow()
@@ -135,7 +236,7 @@ public partial class DisplayWindow : Window
         }
         _configWindow = new ConfigWindow
         {
-            DataContext = new ConfigWindowVm(_vm!.Runner)
+            DataContext = new ConfigWindowVm(_vm!.Runner, _vm!.DiskVm)
         };
         _configWindow.Show(this);
     }

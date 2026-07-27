@@ -65,7 +65,19 @@ public sealed partial class DiskDriveWindowVm : ObservableObject
 
     private void OnFrameReady(uint[] _, bool __, bool[] ___) => RebuildIfMachineChanged();
 
-    private void RebuildIfMachineChanged()
+    /// <summary>Rebuilds <see cref="Drives"/> against whatever machine <see cref="_runner"/>
+    /// currently holds, but ONLY if it's actually a different instance from last time
+    /// (<see cref="_lastMachine"/>) — a no-op on every other 50 Hz <see cref="OnFrameReady"/> tick.
+    /// Made <c>internal</c> (project CLAUDE.md milestone 14g) so <see cref="ConfigWindowVm.Apply"/>
+    /// can force this synchronously right after <c>EmulationRunner.Reconfigure</c> returns, instead
+    /// of waiting for the next async <c>FrameReady</c> tick — <c>Reconfigure</c> already blocks
+    /// until the swap lands, so by the time <c>Apply</c> resumes, <see cref="_runner"/>'s
+    /// <c>Machine</c> genuinely IS a new reference and this rebuild is real, not skipped. Each
+    /// freshly-constructed <see cref="DiskDriveVm"/>'s own <c>RaisePendingMismatchIfAny</c> call
+    /// below (already-existing ms.14e behavior) is what actually surfaces a `.cfg`-authored
+    /// mismatch as a dialog in this case — <see cref="RaiseAnyPendingMismatches"/> is a SEPARATE,
+    /// additional mechanism for the one case this doesn't cover (see its own doc comment).</summary>
+    internal void RebuildIfMachineChanged()
     {
         if (ReferenceEquals(_runner.Machine, _lastMachine)) return;
         _lastMachine = _runner.Machine;
@@ -99,6 +111,45 @@ public sealed partial class DiskDriveWindowVm : ObservableObject
             vm.RaisePendingMismatchIfAny();
         }
         SelectedDrive = Drives.Count > 0 ? Drives[0] : null;
+    }
+
+    /// <summary>Walks the CURRENT <see cref="Drives"/> and freshly re-queries each one's
+    /// <c>Upd765.GetMismatch()</c> directly — deliberately bypassing <see cref="DiskDriveVm.PendingMismatch"/>/
+    /// <c>RaisePendingMismatchIfAny</c> — raising <see cref="GeometryMismatchDetected"/> for any
+    /// real mismatch found (project CLAUDE.md milestone 14g's proactive-surfacing decision).
+    ///
+    /// <b>Why this exists as a SEPARATE mechanism from the pending-mismatch one:</b> a mismatch
+    /// captured at a <see cref="DiskDriveVm"/>'s OWN construction is raised (or silently dropped,
+    /// if raised with no subscriber attached yet) exactly once, at construction time — this is
+    /// what happens for the STARTUP-config case: <see cref="DiskDriveWindowVm"/> itself is
+    /// constructed (and rebuilds <see cref="Drives"/>, consuming every drive's
+    /// <c>PendingMismatch</c>) as part of <c>DisplayWindowVm</c>'s OWN constructor, before
+    /// <c>DisplayWindow</c>'s code-behind has had a chance to subscribe to
+    /// <see cref="GeometryMismatchDetected"/> — so that first raise necessarily fires into a dead
+    /// event with nobody listening, and <c>PendingMismatch</c> is already null by the time anyone
+    /// could call this. <c>Upd765.GetMismatch()</c> itself is NOT a one-shot/consumed signal
+    /// though (machine ms.20d: "the mismatch stays on record for the session") — so a fresh,
+    /// direct re-query here is always valid regardless of what already happened (or didn't) via
+    /// the pending-mismatch path. Call once, right after subscribing, from
+    /// <c>DisplayWindow.OnDataContextChanged</c> — mirrors the same "subscribe THEN raise" ordering
+    /// <see cref="RebuildIfMachineChanged"/> already uses per-drive.
+    ///
+    /// Does NOT call <see cref="RebuildIfMachineChanged"/> first (unlike the Apply path, which
+    /// calls that directly instead of this method) — by the time this runs, <see cref="Drives"/>
+    /// is already correct for the startup machine, and forcing another rebuild here would
+    /// double-fire the SAME mismatch via <see cref="DiskDriveVm.RaisePendingMismatchIfAny"/>'s own
+    /// (by-then-subscribed) side effect.</summary>
+    public void RaiseAnyPendingMismatches()
+    {
+        var fdc = _runner.Machine.Fdc;
+        if (fdc is null) return;
+
+        foreach (var drive in Drives)
+        {
+            var mismatch = fdc.GetMismatch(drive.DriveIndex);
+            if (mismatch is { Kind: not DiskGeometryMismatchKind.None } m)
+                GeometryMismatchDetected?.Invoke(drive, m);
+        }
     }
 
     private void OnDriveMessage(string message) => ShowMessageRequested?.Invoke(message);

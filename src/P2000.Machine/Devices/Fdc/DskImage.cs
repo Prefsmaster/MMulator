@@ -182,6 +182,14 @@ public sealed class DskImage
     public static DiskGeometryMismatch DetectMismatch(byte[] bytes, int configuredTracks, int configuredSides) =>
         DetectMismatchCore(bytes, configuredTracks, configuredSides).Mismatch;
 
+    /// <summary>True if <paramref name="bytes"/> is an IMD (ImageDisk) file by CONTENT (its own
+    /// text header) — the same sniff <see cref="Mount"/> uses internally before running any label/
+    /// config/candidate logic, exposed publicly (project CLAUDE.md milestone 20e) so a caller using
+    /// <see cref="DetectMismatch"/> on a not-yet-mounted file (which does NOT sniff IMD itself, see
+    /// its own doc comment) can skip the preview correctly for an IMD-shaped file — IMD is fully
+    /// self-describing and never mismatches.</summary>
+    public static bool IsImdFile(byte[] bytes) => ImdFormat.IsImdFile(bytes);
+
     private static (int Tracks, int Sides, DiskGeometryMismatch Mismatch) DetectMismatchCore(
         byte[] bytes, int configuredTracks, int configuredSides)
     {

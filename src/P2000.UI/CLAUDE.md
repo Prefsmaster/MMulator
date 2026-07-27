@@ -1144,6 +1144,57 @@ builds did. Do not advance while the current milestone is red. Record spec corre
       wouldn't match the drive's current Capacity/Sides config (regression guard that IMD stays
       fully self-describing/deterministic). → commit.
 
+14g. **Config window disk-image picking — unify with the live mount, preview-check the offline
+    case, and surface mismatches proactively** (NEW, owner decision 2026-07-27, reference doc
+    §3a's "RESOLVED — the Config window's own disk-image picking gets the same geometry-mismatch
+    protection..." block — read it in full, it explains the "media mount isn't topology"
+    reasoning behind the split below; depends on machine milestone 20e's `DetectMismatch`).
+    - **Live case — delegate to the exact same mount action the Disk Drives window uses, don't
+      re-implement it:** when this `ConfigWindowVm` is backed by a running machine AND the row's
+      `DriveIndex` already exists in the live topology (`Board.Fdc` has a drive there), browsing
+      a new image for that row's `ImagePath` must call straight into the SAME mount path
+      `DiskDriveVm.MountBytes` uses (same `DskImage.Mount`, same `GeometryMismatchDetected`
+      event/dialog) — not a second, parallel implementation. Practically: `ConfigWindowVm`/
+      `FloppyDriveRowVm` needs a way to reach the corresponding live `DiskDriveVm` for its row's
+      index (via `DisplayWindowVm`'s existing drive collection, ms.14 — don't have the Config
+      window reach around it or duplicate machine access). After a successful live mount, the
+      row's displayed `ImagePath` reflects what's now actually mounted (read back the same way
+      `SaveCfgAsync`'s `CaptureCurrentConfig()` call already does), rather than tracking a
+      separately-authored pending value for that row. **Capacity/Sides fields are UNCHANGED** —
+      still genuine topology, still require Apply; only `ImagePath` picking gets this treatment.
+    - **Offline case (no live machine, or the row's drive isn't live yet) — lightweight,
+      non-blocking preview:** call `DskImage.DetectMismatch` (ms.20e) against the row's
+      currently-set Capacity/Sides on every new file pick. A mismatch shows an analogous
+      dialog — candidate: "update this row's Capacity/Sides to `<candidate>`" / "keep current
+      settings anyway" / "choose a different file"; no-candidate: state actual/expected byte
+      counts, offer "use anyway" / "choose a different file". **No pad option** — this window
+      never touches file bytes, per the owner's explicit decision; real remediation stays with
+      the Disk Drives window once the image is actually mounted.
+    - **Bidirectional:** changing a row's Capacity/Sides AFTER a path is already set re-runs the
+      SAME preview check against the new values — don't let a stale or newly-introduced mismatch
+      sit unchecked just because the edit came from the other field.
+    - **Proactive surfacing — generalizes beyond this window, closes the loop for real:**
+      `Upd765.GetMismatch`'s existing construction-time signal (ms.14e) currently only gets
+      raised once `DiskDriveWindowVm` subscribes to a drive — i.e. only if/when that window
+      happens to be opened. Fix this at its source rather than just for this feature: whatever
+      owns "a Reconfigure just landed" (`ConfigWindowVm.Apply`'s success path) and "the
+      startup-config auto-load just landed" (`EmulationRunner`'s startup path, ms.14c) should
+      walk every drive's `GetMismatch()` immediately afterward and raise the SAME dialog
+      machinery a live mount already uses — regardless of whether the Disk Drives window is
+      open. This turns the offline-authored case's preview warning into a guarantee: pick a
+      mismatched image with no machine running, save the `.cfg`, and whenever that config is
+      next actually applied (by anyone, including a future session's startup auto-load), the
+      real mismatch surfaces immediately, not silently.
+    - **Tests:** (a) picking a new image for a row backed by a live, already-existing drive
+      performs a real live mount and can raise the geometry-mismatch dialog, identically to the
+      Disk Drives window's own test for the same scenario; (b) the SAME action for a row with no
+      live drive (or no machine running) only ever previews, never mounts; (c) changing
+      Capacity/Sides after a path is set re-triggers the preview check (both introducing and
+      resolving a mismatch); (d) Apply on a config with an unresolved offline mismatch surfaces
+      the dialog immediately after the reconfigure succeeds, with no Disk Drives window open;
+      (e) the startup-config auto-load path surfaces the same way for a `.cfg` saved with an
+      unresolved mismatch, immediately at launch. → commit.
+
 ---
 
 ## 15. Deferred (build the seams now, implement later)
@@ -1202,6 +1253,70 @@ project.
 - **Synced:** yes (YYYY-MM-DD)
 -->
 
+### 2026-07-27 — Milestone 14g IMPLEMENTED: Config-window disk picking unified + proactive surfacing
+- **Depends on machine milestone 20e** (`DskImage.DetectMismatch`/`DskImage.IsImdFile`, same day).
+  Reference doc §3a "RESOLVED — the Config window's own disk-image picking gets the same
+  geometry-mismatch protection...".
+- **Live delegation:** `ConfigWindowVm` now takes a second constructor parameter, the SAME
+  `DiskDriveWindowVm` instance `DisplayWindowVm.DiskVm` already owns (not a second instance) — the
+  Config window's own `new ConfigWindowVm(_vm!.Runner)` call site became
+  `new ConfigWindowVm(_vm!.Runner, _vm!.DiskVm)`. `FloppyDriveRowVm.BrowseImageAsync` now calls a
+  new `ConfigWindowVm.PickImageForRowAsync(row, IStorageFile)`: if `_diskDrives.Drives` already has
+  a live `DiskDriveVm` for the row's index, it calls straight into that VM's own `MountBytes` — the
+  identical mount path (and `GeometryMismatchDetected` event) the Disk Drives window itself uses,
+  no second implementation. The row's `ImagePath` is then read back from
+  `Fdc.GetDisk(index)?.MountedPath`, mirroring `Machine.CaptureCurrentConfig()`.
+- **Offline preview:** no live drive for the row → `DskImage.DetectMismatch` against the row's
+  Capacity/Sides, skipping `DskImage.IsImdFile` files (self-describing, never mismatches — machine
+  ms.20e's own `DetectMismatch` deliberately doesn't sniff IMD itself, so this project does).
+  Raises a new `ConfigWindowVm.OfflineMismatchDetected` event; `ConfigWindow`'s own code-behind
+  shows an analogous dialog (candidate: update the row's Capacity/Sides; no-candidate: state byte
+  counts) with NO pad option, per the owner's explicit decision — this window never touches file
+  bytes.
+- **Bidirectional:** `FloppyDriveRowVm`'s `OnCapacityChanged`/`OnSidesChanged` partial hooks
+  fire-and-forget an async recheck (`ConfigWindowVm.RecheckOfflineMismatchAsync`) that re-reads the
+  row's current `ImagePath` from disk and re-runs the preview. `LoadFloppyDrivesFrom` now sets
+  `ImagePath` BEFORE `Capacity`/`Sides` (was: Capacity/Sides then ImagePath) so those hooks recheck
+  against the just-loaded path, not a stale previous one.
+- **Proactive surfacing — the trickiest part, two genuinely different timing problems, not one:**
+  - **Apply case:** `DiskDriveWindowVm.RebuildIfMachineChanged` (previously `private`) is now
+    `internal`; `ConfigWindowVm.Apply()` calls it directly right after `EmulationRunner.Reconfigure`
+    returns (which already blocks until the swap lands), forcing a synchronous rebuild instead of
+    waiting for the next async `FrameReady` tick. Each freshly-built `DiskDriveVm`'s OWN
+    construction-time `RaisePendingMismatchIfAny()` (pre-existing ms.14e behavior) is what actually
+    raises the dialog here — no new mechanism needed for this half, since `DisplayWindow` is
+    subscribed to `DiskVm.GeometryMismatchDetected` for the app's whole lifetime.
+  - **Startup case — genuinely needed a new mechanism:** `DiskDriveWindowVm` itself is constructed
+    as part of `DisplayWindowVm`'s OWN constructor (`DiskVm = new DiskDriveWindowVm(Runner)`),
+    which necessarily runs BEFORE `DisplayWindow`'s code-behind has subscribed to anything (that
+    only happens once `OnDataContextChanged` fires, after the VM constructor returns). So a
+    startup-config mismatch's construction-time `RaisePendingMismatchIfAny()` fires into a
+    dead event — and once fired, `DiskDriveVm.PendingMismatch` is null forever after, so
+    re-subscribing later and looking at it again finds nothing. **Found:** `Upd765.GetMismatch()`
+    itself is NOT a one-shot/consumed signal (ms.20d/14e: "the mismatch stays on record for the
+    session") — only the VM's own `PendingMismatch` field is. Added
+    `DiskDriveWindowVm.RaiseAnyPendingMismatches()`, which freshly re-queries
+    `Fdc.GetMismatch(driveIndex)` directly for every CURRENT `Drives` entry, bypassing
+    `PendingMismatch` entirely. `DisplayWindow.OnDataContextChanged` calls this once, right after
+    subscribing to `DiskVm.GeometryMismatchDetected` — mirrors the same "subscribe THEN raise"
+    ordering `RebuildIfMachineChanged` already uses per-drive. **Deliberately does NOT also call
+    `RebuildIfMachineChanged`** — for the Apply case that would double-fire the same mismatch (once
+    via the pending-mechanism during the forced rebuild, once via this fresh loop); the two
+    mechanisms are used by exactly one call site each, never together.
+  - Both `ConfigWindow` and `DisplayWindow`'s code-behind now carry a `ShowGeometryMismatchDialog`-
+    shaped method (`DisplayWindow`'s is a near copy of `DiskDriveWindow`'s own, matching this
+    project's existing per-window dialog-duplication convention — e.g. `ShowErrorDialog` already
+    exists 3×).
+- **Tests:** all 5 of the milestone's own listed cases, in `ConfigWindowVmTests.cs` (a, b, c, d)
+  and `StartupConfigurationTests.cs` (e) — a fake `IStorageFile` was added (only `Name`/`Path`/
+  `OpenReadAsync` implemented) since no test fake for it existed yet. Full `P2000.UI.Tests`:
+  192/192 green (was 187).
+- **Applies to:** `ConfigWindowVm.cs` (constructor, `FloppyDriveRowVm`, `PickImageForRowAsync`,
+  `RecheckOfflineMismatchAsync`, `PickStorageFileAsync`), `DiskDriveWindowVm.cs`
+  (`RebuildIfMachineChanged` visibility, `RaiseAnyPendingMismatches`), `DisplayWindow.axaml.cs`,
+  `ConfigWindow.axaml.cs`.
+- **Synced:** no (pending human sync into `docs/P2000T-reference.md` §3a).
+
 ### 2026-07-27 — Milestone 14f IMPLEMENTED: Save/Save As format choice (IMD as the offered target)
 - **Depends on machine milestone 21** (`ImdFormat`/`DskImage.Format`/`GetImdBytes`, this same
   day). Reference doc §3a "RESOLVED — adopt IMD... as the emulator's native/preferred disk
@@ -1248,7 +1363,9 @@ project.
   `src/P2000.UI/ViewModels/DiskDriveWindowVm.cs` (relay), `src/P2000.UI/Views/DiskDriveWindow.axaml.cs`
   (`ShowSaveAsFormatDialog`, drag-drop `.imd` acceptance),
   `tests/P2000.UI.Tests/ViewModels/DiskDriveVmTests.cs`. Reference doc §3a.
-- **Synced:** not yet — awaiting the human's next sync pass.
+- **Synced:** yes (2026-07-27, into `docs/P2000T-reference.md` §3a — new "IMPLEMENTED (UI
+  milestone 14f...)" paragraph, including the `.imd` file-dialog/drag-drop filter addition the
+  milestone text itself didn't spell out).
 
 **2026-07-24 — trimmed for size.** This log had grown to ~1300 lines. Every entry was
 checked against `P2000T-reference.md` — several stale "Synced: no" flags were corrected

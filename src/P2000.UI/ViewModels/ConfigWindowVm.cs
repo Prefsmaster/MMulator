@@ -3,6 +3,7 @@ using Avalonia.Platform.Storage;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using P2000.Machine;
+using P2000.Machine.Devices.Fdc;
 using P2000.Machine.State;
 using P2000.UI.Runner;
 using P2000.UI.State;
@@ -18,6 +19,8 @@ namespace P2000.UI.ViewModels;
 /// <see cref="FloppyDriveConfig"/> shape).</summary>
 public sealed partial class FloppyDriveRowVm : ObservableObject
 {
+    private readonly ConfigWindowVm _owner;
+
     public int DriveIndex { get; }
 
     [ObservableProperty] private int _capacity = 40;
@@ -26,13 +29,20 @@ public sealed partial class FloppyDriveRowVm : ObservableObject
     /// <summary>Manually-authored initial image path (project CLAUDE.md milestone 14c) — for
     /// hand-authoring a <c>.cfg</c> (e.g. a "starter kit" for someone else) without a machine
     /// running to capture from. Complementary to, not a substitute for,
-    /// <see cref="ConfigWindowVm.SaveCfgAsync"/> now capturing whatever's actually live-mounted.</summary>
+    /// <see cref="ConfigWindowVm.SaveCfgAsync"/> now capturing whatever's actually live-mounted.
+    /// Picking a new image goes through <see cref="ConfigWindowVm.PickImageForRowAsync"/> (project
+    /// CLAUDE.md milestone 14g) — a LIVE delegation or an OFFLINE preview, depending on whether
+    /// this row's drive currently exists in the machine's live topology.</summary>
     [ObservableProperty] private string _imagePath = "";
 
     public static IReadOnlyList<int> Capacities { get; } = [35, 40, 80];
     public static IReadOnlyList<DiskSides> SidesOptions { get; } = [DiskSides.Single, DiskSides.Double];
 
-    public FloppyDriveRowVm(int driveIndex) => DriveIndex = driveIndex;
+    public FloppyDriveRowVm(int driveIndex, ConfigWindowVm owner)
+    {
+        DriveIndex = driveIndex;
+        _owner = owner;
+    }
 
     public FloppyDriveConfig ToConfig() => new()
     {
@@ -46,13 +56,31 @@ public sealed partial class FloppyDriveRowVm : ObservableObject
     [RelayCommand]
     private async Task BrowseImageAsync()
     {
-        var path = await ConfigWindowVm.PickFileAsync($"Drive {DriveIndex} initial image (.dsk / .img)",
+        var file = await ConfigWindowVm.PickStorageFileAsync($"Drive {DriveIndex} initial image (.dsk / .img)",
             [new FilePickerFileType("P2000T Disk") { Patterns = ["*.dsk", "*.img"] }]);
-        if (path is not null) ImagePath = path;
+        if (file is not null) await _owner.PickImageForRowAsync(this, file);
     }
 
     [RelayCommand]
     private void ClearImage() => ImagePath = "";
+
+    /// <summary>"Update this row's Capacity/Sides to match" — the offline preview dialog's
+    /// candidate-resolution action (project CLAUDE.md milestone 14g), the offline analogue of
+    /// <see cref="Views.DiskDriveWindow"/>'s live <c>ReconfigureAndRemount</c> button. Setting
+    /// either property re-triggers the SAME preview check against the (now-matching) file, which
+    /// resolves to <see cref="DiskGeometryMismatchKind.None"/> — closing the loop.</summary>
+    public void UpdateGeometryTo(int tracks, DiskSides sides)
+    {
+        Capacity = tracks;
+        Sides = sides;
+    }
+
+    // Bidirectional recheck (project CLAUDE.md milestone 14g): editing Capacity/Sides AFTER a
+    // path is already set re-runs the offline preview against the new values. No-op for a row
+    // backed by a live drive (RecheckOfflineMismatchAsync itself gates on that) and no-op while
+    // ImagePath is still empty (nothing to preview yet).
+    partial void OnCapacityChanged(int value) => _ = _owner.RecheckOfflineMismatchAsync(this);
+    partial void OnSidesChanged(DiskSides value) => _ = _owner.RecheckOfflineMismatchAsync(this);
 }
 
 /// <summary>ViewModel for the config window (milestone 5, extended by milestone 14 for the
@@ -67,6 +95,23 @@ public sealed partial class FloppyDriveRowVm : ObservableObject
 public sealed partial class ConfigWindowVm : ObservableObject
 {
     private readonly EmulationRunner _runner;
+
+    /// <summary>The SAME <see cref="DiskDriveWindowVm"/> the Disk Drives satellite window uses
+    /// (shared via <c>DisplayWindowVm.DiskVm</c>, not a second instance) — project CLAUDE.md
+    /// milestone 14g. Reused for two things: (1) <see cref="FindLiveDrive"/> locates the live
+    /// <see cref="DiskDriveVm"/> for a row's drive index so picking a new image can delegate
+    /// straight into its own <c>MountBytes</c>, the exact same mount path the Disk Drives window
+    /// itself uses; (2) <see cref="Apply"/> forces its rebuild synchronously right after a
+    /// reconfigure so a `.cfg`-authored mismatch surfaces immediately, regardless of whether the
+    /// Disk Drives window has ever been opened.</summary>
+    private readonly DiskDriveWindowVm _diskDrives;
+
+    /// <summary>Raised when browsing a new image for an OFFLINE row (no live drive backing it —
+    /// project CLAUDE.md milestone 14g) previews a real geometry mismatch via
+    /// <see cref="DskImage.DetectMismatch"/>. The live case never raises this — it goes through
+    /// <see cref="_diskDrives"/>'s own <c>GeometryMismatchDetected</c> instead, via the SAME
+    /// <see cref="DiskDriveVm.MountBytes"/> path the Disk Drives window uses.</summary>
+    public event Action<FloppyDriveRowVm, DiskGeometryMismatch>? OfflineMismatchDetected;
 
     /// <summary>Carried through from whatever was last loaded (a `.cfg` file or the running
     /// machine's own config) so <see cref="Apply"/> doesn't silently discard them — neither has a
@@ -139,9 +184,10 @@ public sealed partial class ConfigWindowVm : ObservableObject
 
     public ObservableCollection<FloppyDriveRowVm> FloppyDriveRows { get; } = new();
 
-    public ConfigWindowVm(EmulationRunner runner)
+    public ConfigWindowVm(EmulationRunner runner, DiskDriveWindowVm diskDrives)
     {
         _runner = runner;
+        _diskDrives = diskDrives;
         LoadFromCurrentConfig();
         IsStartupPinned = AppPreferencesFile.Load().StartupCfgIsPinned;
     }
@@ -177,9 +223,13 @@ public sealed partial class ConfigWindowVm : ObservableObject
         {
             if (byIndex.TryGetValue(row.DriveIndex, out var d))
             {
+                // ImagePath set FIRST: Capacity/Sides' own OnChanged hooks re-run the offline
+                // preview check (project CLAUDE.md milestone 14g) against whatever ImagePath is
+                // CURRENT at that moment — setting it last would recheck against the row's STALE
+                // previous path instead of the one this load just brought in.
+                row.ImagePath = d.ImagePath ?? "";
                 row.Capacity = d.Capacity;
                 row.Sides = d.Sides;
-                row.ImagePath = d.ImagePath ?? "";
             }
         }
     }
@@ -191,7 +241,7 @@ public sealed partial class ConfigWindowVm : ObservableObject
         while (FloppyDriveRows.Count > count)
             FloppyDriveRows.RemoveAt(FloppyDriveRows.Count - 1);
         while (FloppyDriveRows.Count < count)
-            FloppyDriveRows.Add(new FloppyDriveRowVm(FloppyDriveRows.Count));
+            FloppyDriveRows.Add(new FloppyDriveRowVm(FloppyDriveRows.Count, this));
     }
 
     partial void OnBoardChanged(InternalBoard value)
@@ -208,6 +258,14 @@ public sealed partial class ConfigWindowVm : ObservableObject
         {
             var config = BuildConfig();
             _runner.Reconfigure(config);
+            // Proactive mismatch surfacing (project CLAUDE.md milestone 14g): force the Disk
+            // Drives VM to rebuild against the JUST-reconfigured machine right now, rather than
+            // waiting for its next async FrameReady tick. Each freshly-built DiskDriveVm's own
+            // construction-time RaisePendingMismatchIfAny (already-existing ms.14e behavior) is
+            // what surfaces a `.cfg`-authored mismatch as a dialog here — regardless of whether
+            // the Disk Drives window has ever been opened this session, since DisplayWindow
+            // subscribes to DiskDrives.GeometryMismatchDetected unconditionally at startup.
+            _diskDrives.RebuildIfMachineChanged();
             StatusMessage = "Applied — machine cold-reset.";
         }
         catch (ArgumentException ex)
@@ -218,6 +276,93 @@ public sealed partial class ConfigWindowVm : ObservableObject
             // UI thread with an unhandled exception.
             StatusMessage = $"Could not apply: {ex.Message}";
         }
+    }
+
+    // ── Disk-image picking: live delegation vs. offline preview (project CLAUDE.md milestone
+    // 14g) ───────────────────────────────────────────────────────────────────────────────────
+    // "Mounting media has always been a runtime swap, not topology" (reference doc §3a) — a row
+    // backed by an already-existing live drive delegates straight into that drive's OWN mount
+    // path; a row with no live drive to mount into (composing a brand-new .cfg, or a board not
+    // yet Applied) stays a lightweight, non-blocking preview. Capacity/Sides remain genuine
+    // topology either way — only ImagePath picking gets this treatment.
+
+    private DiskDriveVm? FindLiveDrive(int driveIndex) =>
+        _diskDrives.Drives.FirstOrDefault(d => d.DriveIndex == driveIndex);
+
+    /// <summary>Entry point for <see cref="FloppyDriveRowVm.BrowseImageAsync"/> after a file is
+    /// picked. Live case: reads the bytes and calls straight into the matching
+    /// <see cref="DiskDriveVm.MountBytes"/> — the SAME mount path (<c>DskImage.Mount</c>, the same
+    /// <c>GeometryMismatchDetected</c> event) the Disk Drives window itself uses; the row's
+    /// <see cref="FloppyDriveRowVm.ImagePath"/> is then read back from what's actually mounted,
+    /// same as <c>Machine.CaptureCurrentConfig()</c> does. Offline case: just records the path and
+    /// runs the preview check.</summary>
+    internal async Task PickImageForRowAsync(FloppyDriveRowVm row, IStorageFile file)
+    {
+        var liveDrive = FindLiveDrive(row.DriveIndex);
+
+        byte[] bytes;
+        try
+        {
+            await using var stream = await file.OpenReadAsync();
+            using var ms = new MemoryStream();
+            await stream.CopyToAsync(ms);
+            bytes = ms.ToArray();
+        }
+        catch (Exception ex)
+        {
+            StatusMessage = $"Could not read {file.Name}: {ex.Message}";
+            return;
+        }
+
+        if (liveDrive is not null)
+        {
+            var name = Path.GetFileNameWithoutExtension(file.Name);
+            liveDrive.MountBytes(bytes, name, file);
+            row.ImagePath = _runner.Machine.Fdc?.GetDisk(row.DriveIndex)?.MountedPath ?? file.Path.LocalPath;
+        }
+        else
+        {
+            row.ImagePath = file.Path.LocalPath;
+            await PreviewOfflineMismatchAsync(row, bytes);
+        }
+    }
+
+    /// <summary>Bidirectional recheck (project CLAUDE.md milestone 14g): re-runs the offline
+    /// preview against a row's CURRENT <see cref="FloppyDriveRowVm.ImagePath"/> whenever its
+    /// Capacity/Sides change. No-op for a row backed by a live drive (nothing to preview — the
+    /// image is already mounted for real) or with no path set yet.</summary>
+    internal async Task RecheckOfflineMismatchAsync(FloppyDriveRowVm row)
+    {
+        if (string.IsNullOrWhiteSpace(row.ImagePath)) return;
+        if (FindLiveDrive(row.DriveIndex) is not null) return;
+
+        byte[] bytes;
+        try
+        {
+            bytes = await File.ReadAllBytesAsync(row.ImagePath);
+        }
+        catch
+        {
+            return; // unreadable path -> nothing to preview; Apply surfaces real problems later
+        }
+
+        await PreviewOfflineMismatchAsync(row, bytes);
+    }
+
+    /// <summary>The actual preview check: <see cref="DskImage.DetectMismatch"/> (machine ms.20e)
+    /// against the row's currently-set Capacity/Sides, skipping IMD files (self-describing, never
+    /// mismatches — <see cref="DskImage.DetectMismatch"/> itself doesn't sniff IMD, so a caller
+    /// must). Raises <see cref="OfflineMismatchDetected"/> for a real mismatch, never for
+    /// <see cref="DiskGeometryMismatchKind.None"/>.</summary>
+    private Task PreviewOfflineMismatchAsync(FloppyDriveRowVm row, byte[] bytes)
+    {
+        if (DskImage.IsImdFile(bytes)) return Task.CompletedTask;
+
+        var sides = row.Sides == DiskSides.Double ? 2 : 1;
+        var mismatch = DskImage.DetectMismatch(bytes, row.Capacity, sides);
+        if (mismatch.Kind != DiskGeometryMismatchKind.None)
+            OfflineMismatchDetected?.Invoke(row, mismatch);
+        return Task.CompletedTask;
     }
 
     [RelayCommand]
@@ -408,6 +553,24 @@ public sealed partial class ConfigWindowVm : ObservableObject
             FileTypeFilter = types,
         });
         return files.Count > 0 ? files[0].Path.LocalPath : null;
+    }
+
+    /// <summary>Same file-dialog plumbing as <see cref="PickFileAsync"/>, but returns the
+    /// <see cref="IStorageFile"/> itself rather than just its path — needed for a disk-image
+    /// pick (project CLAUDE.md milestone 14g) so the LIVE case can pass it straight into
+    /// <see cref="DiskDriveVm.MountBytes"/> (which stamps <c>DskImage.MountedPath</c> from it),
+    /// exactly like a live mount via the Disk Drives window already does.</summary>
+    internal static async Task<IStorageFile?> PickStorageFileAsync(string title, IReadOnlyList<FilePickerFileType> types)
+    {
+        var topLevel = GetTopLevel();
+        if (topLevel is null) return null;
+        var files = await topLevel.StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
+        {
+            Title = title,
+            AllowMultiple = false,
+            FileTypeFilter = types,
+        });
+        return files.Count > 0 ? files[0] : null;
     }
 
     private static Avalonia.Controls.TopLevel? GetTopLevel() =>

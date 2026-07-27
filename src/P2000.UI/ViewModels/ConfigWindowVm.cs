@@ -68,6 +68,21 @@ public sealed partial class ConfigWindowVm : ObservableObject
 {
     private readonly EmulationRunner _runner;
 
+    /// <summary>Carried through from whatever was last loaded (a `.cfg` file or the running
+    /// machine's own config) so <see cref="Apply"/> doesn't silently discard them — neither has a
+    /// bound UI field of its own. Without this, EVERY Apply passed <c>RamSeed = null</c> to
+    /// <see cref="EmulationRunner.Reconfigure"/>, which then generates a FRESH random seed even
+    /// when nothing was actually changed (a "real cold start" is only meant to happen when
+    /// authoring a genuinely new config from scratch, not on every Load→Apply round-trip) —
+    /// found via owner report, 2026-07-27: "load a config, apply, unpin, pin again asks for
+    /// save" even with no edits, because the live machine's re-rolled `RamSeed` could never match
+    /// whatever concrete seed the saved file actually had.</summary>
+    private ulong? _ramSeed;
+
+    /// <summary>Same reasoning as <see cref="_ramSeed"/> — <see cref="MachineConfig.BankCount"/>
+    /// has no bound UI field either.</summary>
+    private int? _bankCount;
+
     [ObservableProperty] private RamVariant _ramVariant;
 
     /// <summary>Internal-slot board (project CLAUDE.md §7): none / RAM-only / floppy+RAM.
@@ -142,6 +157,8 @@ public sealed partial class ConfigWindowVm : ObservableObject
         MonitorRomPath = cfg.MonitorRomPath ?? "";
         CassettePath = cfg.CassettePath ?? "";
         LoadFloppyDrivesFrom(cfg.FloppyDrives);
+        _ramSeed = cfg.RamSeed;
+        _bankCount = cfg.BankCount;
         StatusMessage = "";
     }
 
@@ -251,6 +268,8 @@ public sealed partial class ConfigWindowVm : ObservableObject
             MonitorRomPath = cfg.MonitorRomPath ?? "";
             CassettePath = cfg.CassettePath ?? "";
             LoadFloppyDrivesFrom(cfg.FloppyDrives);
+            _ramSeed = cfg.RamSeed;
+            _bankCount = cfg.BankCount;
             LastCfgPath = path;
             StatusMessage = $"Loaded {Path.GetFileName(path)} — press Apply to use it.";
         }
@@ -365,10 +384,12 @@ public sealed partial class ConfigWindowVm : ObservableObject
         Model = MachineModel.P2000T,
         RamVariant = RamVariant,
         Board = Board,
+        BankCount = _bankCount,
         Slot1CartridgePath = NullIfEmpty(Slot1CartridgePath),
         MonitorRomPath = NullIfEmpty(MonitorRomPath),
         CassettePath = NullIfEmpty(CassettePath),
         FloppyDrives = FloppyDriveRows.Select(r => r.ToConfig()).ToList(),
+        RamSeed = _ramSeed,
     };
 
     private static string? NullIfEmpty(string s) =>

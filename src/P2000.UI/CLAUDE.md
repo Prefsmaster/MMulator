@@ -1108,6 +1108,42 @@ genuinely open, plus the last few active days, for continuity. Everything fully 
 already synced lives only in the archive now — check there before assuming something's
 missing.
 
+### 2026-07-27 — FOLLOW-UP FIX 3: Apply was silently re-rolling RamSeed/BankCount, causing false "stale config" mismatches
+- **Trigger — owner follow-up:** "When I load a config, apply, then unpin, pin it also asks for
+  a save, even though I did not modify the loaded config..." — reported right after follow-up
+  fix 2 (below) shipped the live-vs-saved comparison, and correctly suspected it was overzealous.
+- **Root cause — a genuine gap in `ConfigWindowVm`, not a flaw in the comparison itself:**
+  `BuildConfig()` (what `Apply` feeds to `Reconfigure`) never set `RamSeed` or `BankCount` —
+  neither has a bound UI field, so both silently defaulted to `null` on EVERY Apply, regardless of
+  what was loaded. `EmulationRunner.Reconfigure`'s own `EnsureRamSeed` treats a `null` seed as "a
+  real cold start" and rolls a fresh random one (project CLAUDE.md §17, 2026-07-21/22 finding) —
+  correct behavior when authoring a topology from scratch, but wrong when re-applying an
+  UNCHANGED loaded config, since a previously-Saved `.cfg` always has a concrete, non-null
+  `RamSeed` baked in (`SaveCfgAsync` echoes `Machine.CaptureCurrentConfig()`, which never returns
+  null there). Net effect: Load → Apply → Pin ALWAYS saw a mismatch on `RamSeed` alone, even with
+  zero field edits, because the live machine's seed got silently re-rolled the moment Apply ran.
+- **Fixed:** `ConfigWindowVm` now carries `RamSeed`/`BankCount` through as plain (non-bound)
+  private fields — captured in `LoadFromCurrentConfig()` and `LoadCfgAsync()` from whatever
+  config was read, included in `BuildConfig()`. A freshly-authored config (never loaded from
+  anywhere) still gets `RamSeed = null` → a genuine fresh cold-start seed on Apply, unchanged from
+  today; only a config that WAS loaded/synced from somewhere now preserves its exact seed across
+  an Apply with no edits — matching `Reconfigure`'s own doc comment, which already described this
+  as the intended behavior ("pass a config with RamSeed already set... to keep that value
+  instead") but nothing upstream of it ever did so. `BankCount` gets the identical treatment
+  pre-emptively (same shape of gap, not yet reported but would hit the same class of bug for
+  anyone using a non-default bank count).
+- **Tests:** `StartupConfigurationTests` (+1):
+  `PinAsStartupConfig_LoadThenApplyWithNoEdits_DoesNotPromptForSave` — reconfigures a runner to a
+  concrete `RamSeed`, saves that captured config to a file, opens a `ConfigWindowVm` against the
+  already-running machine (`LoadFromCurrentConfig`, the headlessly-testable equivalent of Load
+  `.cfg` — the real Load dialog needs a StorageProvider this test run doesn't have), Applies with
+  NO field edits, then Pins — asserts no re-save is needed AND that `RamSeed` survived Apply
+  unchanged. Full `P2000.UI.Tests`: 174/174 green (was 173).
+- **Applies to:** `src/P2000.UI/ViewModels/ConfigWindowVm.cs` (`_ramSeed`, `_bankCount`,
+  `LoadFromCurrentConfig`, `LoadCfgAsync`, `BuildConfig`),
+  `tests/P2000.UI.Tests/State/StartupConfigurationTests.cs`.
+- **Synced:** no (bug fix against an already-synced design).
+
 ### 2026-07-27 — FOLLOW-UP FIX 2: pinning now detects a stale saved file, not just "nothing saved yet"
 - **Trigger — owner follow-up (asked as a question, confirming it was a real gap):** "user loads
   prior config, tweaks it a bit, clicks apply. When active config doesn't match the saved config,

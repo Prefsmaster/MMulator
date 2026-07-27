@@ -1,3 +1,4 @@
+using Avalonia.Headless.XUnit;
 using P2000.Machine;
 using P2000.Machine.Devices.Fdc;
 using P2000.Machine.State;
@@ -288,6 +289,45 @@ public class StartupConfigurationTests
         var prefs = AppPreferencesFile.Load();
         Assert.False(prefs.StartupCfgIsPinned);
         Assert.Null(prefs.StartupCfgPath);
+    }
+
+    [AvaloniaFact]
+    public async Task PinAsStartupConfig_LoadThenApplyWithNoEdits_DoesNotPromptForSave()
+    {
+        // Owner follow-up report, 2026-07-27: "When I load a config, apply, then unpin, pin it
+        // also asks for a save, even though I did not modify the loaded config." Root cause:
+        // ConfigWindowVm.BuildConfig() (used by Apply) never carried RamSeed/BankCount forward —
+        // neither has a bound UI field — so EVERY Apply passed RamSeed=null to Reconfigure, which
+        // then rolled a FRESH random seed even with zero edits, guaranteeing a mismatch against
+        // whatever concrete seed the previously-saved file actually had.
+        using var scope = new PreferencesDirectoryScope();
+        var runner = new EmulationRunner();
+        runner.Start();
+        await Task.Delay(60);
+
+        // Simulates "the machine is currently running a specific, previously-saved config" —
+        // a concrete RamSeed, the way any real Save .cfg produces (never null).
+        runner.Reconfigure(new MachineConfig { RamVariant = RamVariant.T54, RamSeed = 0xC0FFEE });
+        await Task.Delay(60);
+
+        var savedPath = System.IO.Path.Combine(scope.Path, "saved.cfg");
+        MachineConfigFile.SaveToFile(runner.Machine.CaptureCurrentConfig(), savedPath);
+
+        // Opening the Config window against this already-running machine (LoadFromCurrentConfig,
+        // called from the constructor) is the headlessly-testable equivalent of "Load .cfg" —
+        // both populate the same fields, including the RamSeed/BankCount pass-through this fix
+        // adds. LastCfgPath is set directly here since the real Load .cfg dialog needs a
+        // StorageProvider this test run doesn't have.
+        var configVm = new ConfigWindowVm(runner) { LastCfgPath = savedPath };
+
+        // Apply with NO field edits — must reproduce the exact same config, RamSeed included.
+        configVm.ApplyCommand.Execute(null);
+        await Task.Delay(60);
+
+        await configVm.PinAsStartupConfigCommand.ExecuteAsync(null);
+
+        Assert.True(configVm.IsStartupPinned); // no re-save prompt needed — the fix under test
+        Assert.Equal(0xC0FFEEUL, runner.Machine.Config.RamSeed); // RamSeed survived Apply unchanged
     }
 
     // ---- (f) SaveCfgAsync regression guard -----------------------------------------------------

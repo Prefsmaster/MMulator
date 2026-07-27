@@ -401,6 +401,112 @@ public class DskImageTests
         Assert.False(mismatch.CanPad);
     }
 
+    // --- DetectMismatch (project CLAUDE.md milestone 20e — Mount's mismatch detection extracted
+    // into a standalone, reusable function, no DskImage ever constructed) -------------------------
+    // Each test below mirrors one of the Mount tests above and asserts DetectMismatch returns the
+    // IDENTICAL DiskGeometryMismatch Mount would have produced for the same inputs.
+
+    [Fact]
+    public void DetectMismatch_ValidJwsdosLabel_WinsOverAMismatchedConfig_NoMismatch()
+    {
+        var image = BuildSyntheticImage(tracks: 40, sides: 2);
+
+        var mismatch = DskImage.DetectMismatch(image, configuredTracks: 35, configuredSides: 1);
+
+        Assert.Equal(DiskGeometryMismatchKind.None, mismatch.Kind);
+    }
+
+    [Fact]
+    public void DetectMismatch_NoValidLabel_LengthMatchesConfiguredGeometry_NoMismatch()
+    {
+        var image = new byte[LengthFor(40, 2)]; // all-zero: no label
+
+        var mismatch = DskImage.DetectMismatch(image, configuredTracks: 40, configuredSides: 2);
+
+        Assert.Equal(DiskGeometryMismatchKind.None, mismatch.Kind);
+    }
+
+    [Fact]
+    public void DetectMismatch_LengthMatchesADifferentCanonicalGeometry_ReportsSingleCandidate()
+    {
+        var image = new byte[LengthFor(35, 1)];
+
+        var mismatch = DskImage.DetectMismatch(image, configuredTracks: 40, configuredSides: 1);
+
+        Assert.Equal(DiskGeometryMismatchKind.Candidate, mismatch.Kind);
+        Assert.Equal(new[] { (35, 1) }, mismatch.Candidates);
+        Assert.False(mismatch.CanPad);
+    }
+
+    [Fact]
+    public void DetectMismatch_LengthMatchesTwoCanonicalGeometries_ReportsBothCandidates()
+    {
+        var image = new byte[LengthFor(40, 2)]; // == LengthFor(80, 1)
+
+        var mismatch = DskImage.DetectMismatch(image, configuredTracks: 35, configuredSides: 1);
+
+        Assert.Equal(DiskGeometryMismatchKind.Candidate, mismatch.Kind);
+        Assert.Equal(2, mismatch.Candidates.Count);
+        Assert.Contains((40, 2), mismatch.Candidates);
+        Assert.Contains((80, 1), mismatch.Candidates);
+    }
+
+    [Fact]
+    public void DetectMismatch_LengthMatchesNoCanonicalGeometry_ReportsNoCandidates_CorrectByteCounts()
+    {
+        var image = new byte[32_768];
+
+        var mismatch = DskImage.DetectMismatch(image, configuredTracks: 40, configuredSides: 2);
+
+        Assert.Equal(DiskGeometryMismatchKind.NoCandidate, mismatch.Kind);
+        Assert.Empty(mismatch.Candidates);
+        Assert.Equal(32_768, mismatch.ActualLength);
+        Assert.Equal(LengthFor(40, 2), mismatch.ExpectedLength);
+        Assert.True(mismatch.CanPad);
+    }
+
+    [Fact]
+    public void DetectMismatch_LengthLongerThanNoCandidateMatch_CannotPad()
+    {
+        var image = new byte[LengthFor(35, 1) + 1];
+
+        var mismatch = DskImage.DetectMismatch(image, configuredTracks: 35, configuredSides: 1);
+
+        Assert.Equal(DiskGeometryMismatchKind.NoCandidate, mismatch.Kind);
+        Assert.False(mismatch.CanPad);
+    }
+
+    [Fact]
+    public void DetectMismatch_MatchesMountsOwnMismatch_ForEveryShape()
+    {
+        // Direct equivalence check across every shape in one place, since Mount's Mismatch return
+        // and DetectMismatch's return must be identical for the same inputs (project CLAUDE.md
+        // milestone 20e test (b)) — no DskImage is constructed by DetectMismatch itself.
+        var cases = new (byte[] Bytes, int ConfiguredTracks, int ConfiguredSides)[]
+        {
+            (BuildSyntheticImage(40, 2), 35, 1),
+            (new byte[LengthFor(40, 2)], 40, 2),
+            (new byte[LengthFor(35, 1)], 40, 1),
+            (new byte[LengthFor(40, 2)], 35, 1),
+            (new byte[32_768], 40, 2),
+            (new byte[LengthFor(35, 1) + 1], 35, 1),
+        };
+
+        foreach (var (bytes, configuredTracks, configuredSides) in cases)
+        {
+            var (_, mountMismatch) = DskImage.Mount(bytes, configuredTracks, configuredSides);
+            var detected = DskImage.DetectMismatch(bytes, configuredTracks, configuredSides);
+
+            // Field-wise, not struct Equals: Candidates is a freshly-allocated List<> on each call,
+            // so reference-based default equality on that field would spuriously fail even when
+            // the two mismatches are identical in every observable way.
+            Assert.Equal(mountMismatch.Kind, detected.Kind);
+            Assert.Equal(mountMismatch.ActualLength, detected.ActualLength);
+            Assert.Equal(mountMismatch.ExpectedLength, detected.ExpectedLength);
+            Assert.Equal(mountMismatch.Candidates, detected.Candidates);
+        }
+    }
+
     [Fact]
     public void ExtendTo_PadsShortImage_PreservesOriginalBytes_FillsRestWithZero()
     {

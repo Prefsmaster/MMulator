@@ -162,6 +162,29 @@ public sealed class DskImage
             return (imdImage, DiskGeometryMismatch.None(bytes.Length));
         }
 
+        var (winningTracks, winningSides, mismatch) = DetectMismatchCore(bytes, configuredTracks, configuredSides);
+        var image = new DskImage { _data = bytes, Tracks = winningTracks, Sides = winningSides };
+        return (image, mismatch);
+    }
+
+    /// <summary>
+    /// Previews whether a `.dsk`-shaped file's bytes agree with <paramref name="configuredTracks"/>/
+    /// <paramref name="configuredSides"/>, WITHOUT constructing a <see cref="DskImage"/> — the exact
+    /// label-read/validate → config-fallback → canonical-candidate-match logic <see cref="Mount"/>
+    /// uses internally, extracted so a caller can preview a mismatch before any live drive/machine
+    /// necessarily exists to mount into (project CLAUDE.md milestone 20e; `P2000.UI` milestone 14g's
+    /// Config-window offline case). Pure refactor of <see cref="Mount"/>'s own detection — does NOT
+    /// sniff IMD (step 0 above): IMD is fully self-describing and never produces a mismatch, so
+    /// there is nothing for a preview to detect there either; a caller previewing an IMD file gets
+    /// <see cref="DiskGeometryMismatch.None"/> for the wrong reason (candidate-matching against
+    /// `.dsk` geometries) unless it checks <c>ImdFormat.IsImdFile</c> itself first.
+    /// </summary>
+    public static DiskGeometryMismatch DetectMismatch(byte[] bytes, int configuredTracks, int configuredSides) =>
+        DetectMismatchCore(bytes, configuredTracks, configuredSides).Mismatch;
+
+    private static (int Tracks, int Sides, DiskGeometryMismatch Mismatch) DetectMismatchCore(
+        byte[] bytes, int configuredTracks, int configuredSides)
+    {
         var actualLength = bytes.Length;
 
         // 1. Trust the label ONLY if it's self-consistent — its implied length must equal the
@@ -171,16 +194,14 @@ public sealed class DskImage
         if (TryReadLabel(bytes, out var labelTracks, out var labelSides) &&
             (long)labelTracks * labelSides * BytesPerTrack == actualLength)
         {
-            return (new DskImage { _data = bytes, Tracks = labelTracks, Sides = labelSides },
-                DiskGeometryMismatch.None(actualLength));
+            return (labelTracks, labelSides, DiskGeometryMismatch.None(actualLength));
         }
 
         // 2. Otherwise, the drive's configured geometry is the real fallback — promoted from
         // "blank-media seed only" to this, since most real images aren't JWSDOS-labeled.
         var configuredLength = configuredTracks * configuredSides * BytesPerTrack;
-        var image = new DskImage { _data = bytes, Tracks = configuredTracks, Sides = configuredSides };
         if (configuredLength == actualLength)
-            return (image, DiskGeometryMismatch.None(actualLength));
+            return (configuredTracks, configuredSides, DiskGeometryMismatch.None(actualLength));
 
         // 3./4. The configured geometry doesn't match either — check the other canonical
         // combinations for an exact length match (0, 1, or 2 candidates).
@@ -195,7 +216,8 @@ public sealed class DskImage
         var kind = candidates.Count > 0 ? DiskGeometryMismatchKind.Candidate : DiskGeometryMismatchKind.NoCandidate;
         // Mounted regardless — using the configured geometry — per the "nothing here blocks a
         // mount" rule; the mismatch result is informational, not gating.
-        return (image, new DiskGeometryMismatch(kind, actualLength, configuredLength, candidates));
+        return (configuredTracks, configuredSides,
+            new DiskGeometryMismatch(kind, actualLength, configuredLength, candidates));
     }
 
     /// <summary>Reads the JWSDOS geometry label's raw bytes without validating them against

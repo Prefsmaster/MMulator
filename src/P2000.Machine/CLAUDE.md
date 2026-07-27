@@ -1369,6 +1369,29 @@ is NO machine-layer runner milestone here — it's promoted in with the external
       ms.20d runs against it (regression guard that IMD mounting stays fully deterministic, not
       routed through the mismatch machinery meant for ambiguous raw dumps). → commit.
 
+20e. **Extract `DskImage.Mount`'s mismatch detection into a standalone, reusable function** (NEW,
+    owner decision 2026-07-27, reference doc §3a's "RESOLVED — the Config window's own
+    disk-image picking gets the same geometry-mismatch protection..." block; small, mechanical,
+    prerequisite for UI milestone 14g's offline/preview case). `P2000.UI`'s Config window needs
+    to run the SAME label-validate → config-fallback → candidate-match logic `Mount` already
+    does, but WITHOUT constructing a full `DskImage` — it's only ever previewing whether a
+    picked file's bytes agree with a row's currently-set Capacity/Sides, before any machine or
+    live drive necessarily exists to mount into.
+    - **Add `DskImage.DetectMismatch(byte[] bytes, DiskCapacity configuredTracks, DiskSides
+      configuredSides) → DiskGeometryMismatch`** — pull the exact detection logic (label read +
+      validate, config fallback, candidate-length matching against the 6 canonical geometries)
+      straight out of `Mount`'s body into this new pure function; `Mount` itself now just calls
+      it and then builds the `DskImage` from whichever geometry won. **Behavior for every
+      existing caller of `Mount` must be byte-for-byte unchanged** — this is a pure refactor
+      (extract method), not a logic change.
+    - **Tests:** (a) every existing `DskImageTests`/`Upd765Tests`/`MultiDriveFloppyTests` case
+      covering `Mount`'s mismatch behavior still passes unmodified (regression guard that the
+      extraction changed nothing observable); (b) `DetectMismatch` called directly, with no
+      `DskImage` ever constructed, returns the identical `DiskGeometryMismatch` `Mount` would
+      have produced for the same inputs, across all of `Mount`'s own existing mismatch-shape
+      test cases (label-valid, config-matches, single-candidate, two-candidate collision,
+      no-candidate short, no-candidate long). → commit.
+
 ---
 
 ## 14. Deferred (build the seams now, implement later)
@@ -1442,6 +1465,26 @@ marked synced. Do NOT edit the reference doc from this project.
 - **Synced:** yes (2026-07-05, into P2000T-reference.md + device guides)
 -->
 
+### 2026-07-27 — Milestone 20e IMPLEMENTED: extracted `DskImage.DetectMismatch`
+- **Trigger:** owner decision to close the Config window's disk-image-picking gap (reference doc
+  §3a "RESOLVED — the Config window's own disk-image picking gets the same geometry-mismatch
+  protection..."), which needs `Mount`'s mismatch logic runnable without constructing a `DskImage`.
+- **Found:** `Mount`'s label/config/candidate decision already cleanly separated into "which
+  geometry wins" + "what mismatch (if any) resulted" — no behavior needed to change, just a
+  shape split. Introduced a private `DetectMismatchCore` returning `(Tracks, Sides, Mismatch)`;
+  `Mount` calls it then builds the `DskImage`, and the new public `DskImage.DetectMismatch(bytes,
+  configuredTracks, configuredSides) → DiskGeometryMismatch` just discards the winning geometry.
+  Kept the signature's parameter types as `int, int` (matching `Mount`'s existing signature and
+  every caller's `sides == DiskSides.Double ? 2 : 1` convention) rather than the reference doc
+  block's illustrative `DiskCapacity`/`DiskSides` typing — no such `DiskCapacity` type exists in
+  this codebase; `Capacity` is a plain `int` on `FloppyDriveConfig`.
+- **Note:** `DetectMismatch` intentionally does NOT sniff IMD (`ImdFormat.IsImdFile`) — IMD is
+  fully self-describing and never mismatches, so there's nothing for a preview to detect there;
+  a caller previewing an IMD file must check `IsImdFile` itself first if it cares.
+- **Applies to:** `src/P2000.Machine/Devices/Fdc/DskImage.cs`; tests in
+  `tests/P2000.Machine.Tests/Devices/Fdc/DskImageTests.cs`.
+- **Synced:** no (pending human sync into `docs/P2000T-reference.md` §3a).
+
 ### 2026-07-27 — Milestone 21 IMPLEMENTED: IMD (ImageDisk) reader/writer
 - **Trigger:** owner decision to adopt IMD as the emulator's native/preferred disk container
   (reference doc §3a "RESOLVED — adopt IMD... as the emulator's native/preferred disk
@@ -1502,7 +1545,10 @@ marked synced. Do NOT edit the reference doc from this project.
   `src/P2000.Machine/Devices/Fdc/DskImage.cs` (`Format`, `SectorOrderMaps`, `Mount`,
   `GetImdBytes`), `tests/P2000.Machine.Tests/Devices/Fdc/ImdFormatTests.cs` (new). Reference doc
   §3a.
-- **Synced:** not yet — awaiting the human's next sync pass.
+- **Synced:** yes (2026-07-27, into `docs/P2000T-reference.md` §3a — new "IMPLEMENTED (machine
+  milestone 21...)" paragraph, including a correction to the reference doc's own "plain
+  sequential order map" scoping now that real-interleave round-trip preservation is confirmed
+  built, plus the spec-source/cylinder-map/sector-size-rejection notes).
 
 ### 2026-07-27 — Two follow-up fixes found while building UI ms.14e on top of ms.20d
 - **`DskImage.ReadDirectory()` crashed on any short/unpadded image — a direct consequence of

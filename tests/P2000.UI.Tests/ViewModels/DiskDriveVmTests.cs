@@ -1,5 +1,6 @@
 using Avalonia.Headless.XUnit;
 using P2000.Machine;
+using P2000.Machine.Devices.Fdc;
 using P2000.UI.Runner;
 using P2000.UI.ViewModels;
 
@@ -122,18 +123,23 @@ public class DiskDriveVmTests
     }
 
     [AvaloniaFact]
-    public async Task MountBytes_TooShortForLabel_ShowsMessage_DoesNotMount()
+    public async Task MountBytes_TooShortForLabel_MountsAnyway_ReportsNoCandidateMismatch()
     {
+        // Project CLAUDE.md milestone 20d/14e: mounting never fails anymore — a too-short file
+        // mounts using the drive's configured geometry and reports a mismatch instead of
+        // rejecting the file outright (the owner's own real 32,768-byte test case).
         var runner = await NewFloppyRunnerAsync();
-        var vm = NewVm(runner);
-        string? shownMessage = null;
-        vm.ShowMessageRequested += m => shownMessage = m;
+        var vm = NewVm(runner); // configured 40-track/single-sided (163,840 bytes)
+        DiskGeometryMismatch? reported = null;
+        vm.GeometryMismatchDetected += m => reported = m;
 
         vm.MountBytes(new byte[10], "BAD");
 
-        Assert.False(vm.HasImage);
-        Assert.NotNull(shownMessage);
-        Assert.Null(runner.Machine.Fdc!.GetDisk(0));
+        Assert.True(vm.HasImage);
+        Assert.NotNull(runner.Machine.Fdc!.GetDisk(0));
+        Assert.NotNull(reported);
+        Assert.Equal(DiskGeometryMismatchKind.NoCandidate, reported!.Value.Kind);
+        Assert.Equal(10, reported.Value.ActualLength);
 
         runner.Dispose();
     }
@@ -517,5 +523,163 @@ public class DiskDriveVmTests
     public void DirectoryHeader_IsFormattedColumnRow()
     {
         Assert.Contains("Filename", DiskDriveVm.DirectoryHeader);
+    }
+
+    // ---- Geometry-mismatch dialog decision logic (project CLAUDE.md milestone 14e; machine
+    // ms.20d). Dialogs themselves aren't headlessly testable (no real StorageProvider/TopLevel —
+    // same limitation SaveCfgAsync already has elsewhere), so these exercise the VM-level
+    // decisions directly: which event fires for a given mismatch shape, and what each of
+    // ReconfigureAndRemount/ContinueWithCurrentMount/ExtendMountedDiskToFullSize/CancelMount
+    // actually does. -------------------------------------------------------------------------
+
+    [AvaloniaFact]
+    public async Task MountBytes_LabeledCorrectlySizedImage_NoMismatchEvent_RegressionGuard()
+    {
+        var runner = await NewFloppyRunnerAsync();
+        var vm = NewVm(runner); // configured 40-track/single-sided
+        var raised = false;
+        vm.GeometryMismatchDetected += _ => raised = true;
+
+        // A genuine JWSDOS label always wins regardless of the drive's configured geometry.
+        vm.MountBytes(BuildSyntheticImage(tracks: 80, sides: 2), "GOOD");
+
+        Assert.False(raised);
+        Assert.True(vm.HasImage);
+
+        runner.Dispose();
+    }
+
+    [AvaloniaFact]
+    public async Task MountBytes_SingleCandidateMismatch_ReportsExactlyOneCandidate()
+    {
+        var runner = await NewFloppyRunnerAsync(); // configured 40-track/single (163,840 B)
+        var vm = NewVm(runner);
+        DiskGeometryMismatch? reported = null;
+        vm.GeometryMismatchDetected += m => reported = m;
+
+        vm.MountBytes(new byte[35 * 1 * 16 * 256], "PDOS"); // 143,360 B — unique to 35-track/SS
+
+        Assert.NotNull(reported);
+        Assert.Equal(DiskGeometryMismatchKind.Candidate, reported!.Value.Kind);
+        Assert.Equal(new[] { (35, 1) }, reported.Value.Candidates);
+
+        runner.Dispose();
+    }
+
+    [AvaloniaFact]
+    public async Task MountBytes_TwoCandidateMismatch_ReportsBoth()
+    {
+        var runner = await NewFloppyRunnerAsync(); // configured 40-track/single — neither collider
+        var vm = NewVm(runner);
+        DiskGeometryMismatch? reported = null;
+        vm.GeometryMismatchDetected += m => reported = m;
+
+        vm.MountBytes(new byte[40 * 2 * 16 * 256], "PDOS"); // == 80*1*16*256 — the confirmed collision
+
+        Assert.NotNull(reported);
+        Assert.Equal(DiskGeometryMismatchKind.Candidate, reported!.Value.Kind);
+        Assert.Equal(2, reported.Value.Candidates.Count);
+        Assert.Contains((40, 2), reported.Value.Candidates);
+        Assert.Contains((80, 1), reported.Value.Candidates);
+
+        runner.Dispose();
+    }
+
+    [AvaloniaFact]
+    public async Task ReconfigureAndRemount_ChangesGeometry_AndClearsTheMismatch()
+    {
+        var runner = await NewFloppyRunnerAsync();
+        var vm = NewVm(runner); // configured 40-track/single
+        vm.MountBytes(new byte[35 * 1 * 16 * 256], "PDOS"); // single-candidate mismatch: (35, 1)
+        DiskGeometryMismatch? reRaised = null;
+        vm.GeometryMismatchDetected += m => reRaised = m;
+
+        vm.ReconfigureAndRemount(35, DiskSides.Single);
+
+        Assert.Equal(35, vm.Capacity);
+        Assert.Equal(DiskSides.Single, vm.Sides);
+        Assert.Equal(35, runner.Machine.Fdc!.GetDisk(0)!.Tracks);
+        Assert.Equal(1, runner.Machine.Fdc.GetDisk(0)!.Sides);
+        Assert.Null(reRaised); // it now matches cleanly — no new mismatch
+        Assert.Equal(DiskGeometryMismatchKind.None, runner.Machine.Fdc.GetMismatch(0)!.Value.Kind);
+
+        runner.Dispose();
+    }
+
+    [AvaloniaFact]
+    public async Task ExtendMountedDiskToFullSize_PadsTheImage_AndClearsTheMismatch()
+    {
+        var runner = await NewFloppyRunnerAsync(); // configured 40-track/single = 163,840 B
+        var vm = NewVm(runner);
+        vm.MountBytes(new byte[32_768], "SHORT"); // no-candidate mismatch
+
+        var mismatch = runner.Machine.Fdc!.GetMismatch(0)!.Value;
+        Assert.Equal(DiskGeometryMismatchKind.NoCandidate, mismatch.Kind);
+
+        vm.ExtendMountedDiskToFullSize(mismatch.ExpectedLength);
+
+        Assert.Equal(mismatch.ExpectedLength, runner.Machine.Fdc.GetDisk(0)!.GetBytes().Length);
+        Assert.Equal(DiskGeometryMismatchKind.None, runner.Machine.Fdc.GetMismatch(0)!.Value.Kind);
+
+        runner.Dispose();
+    }
+
+    [AvaloniaFact]
+    public async Task ContinueWithCurrentMount_LeavesImageAndMismatchUnchanged()
+    {
+        var runner = await NewFloppyRunnerAsync();
+        var vm = NewVm(runner);
+        vm.MountBytes(new byte[32_768], "SHORT");
+        var diskBefore = runner.Machine.Fdc!.GetDisk(0);
+        var mismatchBefore = runner.Machine.Fdc.GetMismatch(0);
+
+        vm.ContinueWithCurrentMount();
+
+        Assert.Same(diskBefore, runner.Machine.Fdc.GetDisk(0)); // untouched
+        Assert.Equal(mismatchBefore, runner.Machine.Fdc.GetMismatch(0)); // preserved, not cleared
+        Assert.True(vm.HasImage);
+
+        runner.Dispose();
+    }
+
+    [AvaloniaFact]
+    public async Task CancelMount_EjectsTheJustMountedImage()
+    {
+        var runner = await NewFloppyRunnerAsync();
+        var vm = NewVm(runner);
+        vm.MountBytes(new byte[32_768], "SHORT");
+
+        vm.CancelMount();
+
+        Assert.False(vm.HasImage);
+        Assert.Null(runner.Machine.Fdc!.GetDisk(0));
+        Assert.Null(runner.Machine.Fdc.GetMismatch(0));
+
+        runner.Dispose();
+    }
+
+    [AvaloniaFact]
+    public async Task PendingMismatch_FromConfigAuthoredMount_OnlyRaisedAfterSubscribing()
+    {
+        // Simulates the .cfg-authored construction-time mount path (machine ms.20d): the
+        // mismatch must survive past construction and be raisable only once something has
+        // actually subscribed (project CLAUDE.md milestone 14e) — raising it synchronously
+        // inside the constructor would fire before DiskDriveWindowVm could possibly listen.
+        var runner = await NewFloppyRunnerAsync();
+        var fdc = runner.Machine.Fdc!;
+        var (image, mismatch) = DskImage.Mount(new byte[32_768], configuredTracks: 40, configuredSides: 1);
+        fdc.MountDisk(0, image, mismatch);
+
+        var vm = new DiskDriveVm(runner, 0, 40, DiskSides.Single);
+        Assert.NotNull(vm.PendingMismatch);
+
+        DiskGeometryMismatch? raised = null;
+        vm.GeometryMismatchDetected += m => raised = m;
+        vm.RaisePendingMismatchIfAny();
+
+        Assert.NotNull(raised);
+        Assert.Null(vm.PendingMismatch); // consumed — a second call is a no-op
+
+        runner.Dispose();
     }
 }

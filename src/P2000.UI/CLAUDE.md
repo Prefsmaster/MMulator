@@ -1040,6 +1040,110 @@ builds did. Do not advance while the current milestone is red. Record spec corre
       to bare with no error dialog; (f) `SaveCfgAsync` after live-mounting a disk/tape now saves
       those paths into the `.cfg` (regression guard for the §7 gap, now closed). → commit.
 
+14d. **Drive-count axis assigns real-hardware indices, not 0-based sequential** (NEW, owner
+    decision 2026-07-27, reference doc §5d — the "RESOLVED... closing the 'worth matching if...'
+    flag" paragraph just above the two µPD765 usage facts). Triggered by the owner's own real
+    boot test: mounting a boot floppy with today's "1 drive" default (internal index 0) silently
+    doesn't boot, because the ROM only ever addresses index 1 (already documented, this milestone
+    just fixes the UI default instead of leaving it as a trap).
+    - **`ConfigWindowVm`'s row-count logic changes from assigning `DriveIndex` 0, 1, 2, … to
+      assigning them in the fixed sequence 1, 2, 3, 0 as `FloppyDriveCount` goes 1→4.** "1 drive"
+      → `[1]`; "2 drives" → `[1, 2]`; "3 drives" → `[1, 2, 3]`; "4 drives" → `[1, 2, 3, 0]`.
+      Display labels stay "Drive 1"/"Drive 2"/"Drive 3"/"Drive 4" in that same left-to-right
+      order — this is purely which `MachineConfig.FloppyDrives[i]` slot each row's `ToConfig()`
+      targets, nothing about the visible ordering or labeling changes.
+    - **`LoadFromCurrentConfig`/`LoadCfgAsync`'s collapse-to-a-count logic must follow the same
+      sequence, not raw index magnitude:** walk `[1, 2, 3, 0]` in order, count = the length of the
+      enabled prefix (index 1 enabled → at least 1; then 2; then 3; then 0). A config with a gap
+      or an out-of-sequence-only drive (e.g. only index 0 set, nothing else — realistic only for
+      a hand-edited `.cfg`, never produced by this window itself) collapses lossily to whatever
+      count reaches it, same accepted limitation already documented for milestone 14's original
+      "highest enabled index + 1" scheme, just restated against the new sequence.
+    - **Not in scope:** anything about the machine layer — `Machine`/`MachineConfig`/`Upd765`
+      already treat `FloppyDrives` as an arbitrary-index collection (machine milestone 20) and
+      need no change; this is purely which indices THIS window's count control chooses to author.
+    - **Tests:** (a) "1 drive" → the single row's `DriveIndex == 1`, not 0; (b) "2 drives" →
+      `[1, 2]`; (c) "4 drives" → `[1, 2, 3, 0]`; (d) round-trip: build a config via this window at
+      each count 1-4, save, reload, count and per-row `ImagePath` match; (e) loading a `.cfg` with
+      only index 1 enabled collapses to count 1 (regression guard replacing the old "index 0 alone
+      → count 1" case, which must no longer be how count-1 configs are produced or expected); (f)
+      loading a `.cfg` with index 0 alone (an irregular hand-edited case) collapses to count 4 with
+      drives 2/3 empty, not a crash. → commit.
+
+14e. **Disk mount — geometry-mismatch dialog** (NEW, owner decision 2026-07-27, reference doc
+    §5d's "RESOLVED... the label-based auto-detect above is JWSDOS-specific" block; depends on
+    machine milestone 20d's mismatch-detection query surface). Triggered by real testing: a PDOS
+    boot floppy (no JWSDOS label) and a genuinely short image (32,768 bytes mounted where the
+    drive expected 327,680) both mounted with zero feedback today.
+    - **`DiskDriveVm.MountBytes`/`MountAsync` (and the `.cfg`-authored construction-time mount
+      path, machine-side) now surface whatever mismatch result ms.20d's mount call returns.** No
+      mismatch → mounts exactly as today, no dialog, no behavior change for the common case
+      (correctly-sized images, JWSDOS-labeled images that validate).
+    - **Candidate-mismatch dialog** (file's length matches a DIFFERENT canonical geometry than
+      the drive's configured Capacity/Sides — one or two candidates, per the 40-track/DS vs.
+      80-track/SS collision): name the match(es) plainly ("this file's size matches 80-track/
+      single-sided; the drive is configured for 40-track/double-sided"). **Owner's own requested
+      resolution — let the user decide, don't guess:** offer **reconfigure the drive to the
+      matching geometry and remount** (one button per candidate when there are two), **continue
+      mounting with the current configuration anyway**, or **cancel**.
+    - **No-candidate mismatch dialog** (file's length matches no canonical geometry at all — the
+      genuinely-short case): state actual vs. expected byte counts plainly. Offer **extend to
+      full size** (calls ms.20d's pad operation — in-memory only, nothing touches the host file
+      until an explicit Save/Save-as; word the dialog honestly: this fills blank space with the
+      same byte real formatting uses, it does NOT recover missing data), **continue mounting
+      as-is**, or **cancel**.
+    - **Never blocks:** every path above ends in a mounted drive (or a cancelled mount if the
+      user explicitly chooses Cancel) — this is strictly better information + optional remedies
+      over today's silent mount, not a new gate.
+    - **Headless-test limitation, same shape as existing StorageProvider-dependent dialogs**
+      (`SaveCfgAsync`'s own documented limitation): the dialog's own display isn't unit-testable
+      without a real window; test the VM-level decision logic (which dialog shape a given
+      mismatch result should trigger, and what each button does) directly against ms.20d's result
+      type instead.
+    - **Tests:** (a) a mismatch-free mount shows no dialog (regression guard for the common case);
+      (b) a single-candidate mismatch offers exactly one reconfigure option plus continue/cancel;
+      (c) a two-candidate mismatch (the 40DS/80SS collision) offers both; (d) reconfigure-and-
+      remount actually changes the drive's Capacity/Sides and re-mounts with the new geometry;
+      (e) a no-candidate mismatch's "extend to full size" pads the in-memory image and clears the
+      mismatch state; (f) "continue as-is" on either dialog shape leaves the image mounted
+      unchanged, mismatch state preserved for the session (e.g. shown as a small persistent
+      badge/status — exact presentation is an implementation choice, not a design fork here).
+      → commit.
+
+14f. **Disk Save / Save As — IMD as the offered target, plain `.dsk` export preserved** (NEW,
+    owner decision 2026-07-27, reference doc §3a "RESOLVED — adopt IMD... as the emulator's
+    native/preferred disk container"; depends on machine milestone 21's IMD reader/writer).
+    - **Plain "Save" never changes format:** saving a `.dsk`-backed drive writes `.dsk`, in
+      place, exactly as today; saving an IMD-backed drive writes IMD, in place. No prompt, no
+      format decision — matches how Save already behaves for cassette/config elsewhere in this
+      UI (`DiskDriveVm`'s own existing Save action, ms.14/20).
+    - **"Save As" is the ONLY path that can change format, and it always asks for a name and
+      destination — never a silent conversion:** for a `.dsk`-backed drive, offer both
+      **"Save as IMD"** (the preferred target — converts) and **"Save as `.dsk`"** (keep the
+      legacy format, just a new file/location). For an IMD-backed drive, offer **"Save as
+      IMD"** and **"Save as plain `.dsk`"** (the export path — state plainly in the dialog that
+      this is lossy: any recorded sector order collapses to plain logical order in the exported
+      file). Whichever option is chosen becomes the drive's new backing format AND path going
+      forward (same `MountedPath`/format-flag update `DiskDriveVm.SaveAsAsync` already does for
+      the path alone, ms.14c's follow-up fixes — extend it to also track format now that there's
+      more than one).
+    - **Mounting an `.imd` file skips ms.14e's mismatch dialog entirely** — machine milestone 21
+      keeps IMD mounting fully deterministic (self-describing, no guessing), so there is nothing
+      for that dialog to ever trigger on for an IMD-backed mount. Only raw `.dsk` mounts can hit
+      ms.14e's flow.
+    - **Write-protect UI is unaffected** — it already lives in this project's own config/`.state`
+      layer (ms.14/20/20a), identical regardless of which format backs the drive; nothing here
+      adds a per-format write-protect control.
+    - **Tests:** (a) plain Save on a `.dsk`-backed drive still writes `.dsk` at the same path, no
+      dialog; (b) plain Save on an IMD-backed drive writes IMD at the same path, no dialog;
+      (c) Save As on a `.dsk`-backed drive offers both IMD and `.dsk` targets, and choosing IMD
+      updates the drive's tracked format; (d) Save As on an IMD-backed drive offers both IMD and
+      plain-`.dsk` export, and the exported `.dsk` is a valid raw sector dump machine milestone
+      20d could re-mount cleanly (round-trip regression guard, accepting the lossy-order caveat);
+      (e) mounting a real IMD file never shows ms.14e's mismatch dialog, even when its geometry
+      wouldn't match the drive's current Capacity/Sides config (regression guard that IMD stays
+      fully self-describing/deterministic). → commit.
+
 ---
 
 ## 15. Deferred (build the seams now, implement later)
@@ -1108,6 +1212,63 @@ genuinely open, plus the last few active days, for continuity. Everything fully 
 already synced lives only in the archive now — check there before assuming something's
 missing.
 
+### 2026-07-27 — Milestone 14e IMPLEMENTED: disk mount geometry-mismatch dialog
+- **Built (`DiskDriveVm`):** `MountBytes` now goes through `DskImage.Mount(diskImage, Capacity,
+  SidesCount)` (machine ms.20d) instead of the raw `new DskImage(diskImage)` constructor — never
+  fails to mount now (the old `try/catch (ArgumentException)` "not a valid disk image" rejection
+  is gone; a too-short file mounts using the drive's configured geometry and reports a mismatch
+  instead). New `GeometryMismatchDetected` event fires only when `mismatch.Kind != None`.
+- **Recovery methods, one per dialog button:** `ReconfigureAndRemount(tracks, sides)` — re-mounts
+  the CURRENTLY-mounted image's own bytes under a new geometry (updating `Capacity`/`Sides` going
+  forward too, e.g. for a later "New (blank) disk"); re-raises the event if it somehow still
+  doesn't match, but a candidate geometry (by construction) always resolves cleanly.
+  `ContinueWithCurrentMount()` — a deliberate no-op; the image is already mounted, and the
+  mismatch stays on record (`Upd765.GetMismatch` keeps reporting it) rather than being silently
+  cleared, so a persistent status indicator could still reflect it. `ExtendMountedDiskToFullSize`
+  — calls `DskImage.ExtendTo`, then re-records the mismatch as `None` at the new length.
+  `CancelMount()` — the one path that does NOT end in "mounted": ejects the just-mounted image
+  (factored `EjectAsync`'s body out into a shared `ReturnToEmptyState()` helper); skips the
+  unsaved-changes gate since there's nothing of the user's to lose from a mount made moments ago.
+- **Construction-time (`.cfg`-authored) mismatch surfacing:** a mismatch raised synchronously
+  inside `DiskDriveVm`'s OWN constructor would fire before `DiskDriveWindowVm` (which subscribes
+  to each drive's events right AFTER constructing it, same pattern as its existing
+  `ShowMessageRequested`/`ConfirmDiscardRequested` relays) could possibly be listening — so the
+  constructor only captures it into a new `PendingMismatch` property, and `DiskDriveWindowVm`
+  calls the new `RaisePendingMismatchIfAny()` immediately after subscribing. `DiskDriveWindowVm`
+  itself gained a relayed `GeometryMismatchDetected` event carrying `(DiskDriveVm, DiskGeometryMismatch)`
+  — the view needs to know WHICH drive to call back into.
+- **Two real machine-layer bugs found and fixed while wiring this up** (found via the first real
+  test run, not by inspection) — see this same date's entry in `P2000.Machine` CLAUDE.md §17:
+  `DskImage.ReadDirectory()` crashed on any short/unpadded image (it assumed `_data` was always
+  ≥ `0x2000` bytes — true for every real disk, no longer true once ms.20d made short mounts
+  normal); `Machine.CaptureCurrentConfig()`'s `Capacity`/`Sides` never reflected a live
+  reconfigure, only ever echoing the stale construction-time config (same staleness class
+  `ImagePath` was already fixed for in ms.20c).
+- **Actual dialog built in `DiskDriveWindow.axaml.cs`** (not just the VM-level decision logic) —
+  two shapes over one plain-code `Window` (same style as this file's existing error/discard
+  dialogs, no XAML): Candidate mismatch names the match(es) and offers one "Use `{geometry}` +
+  remount" button per candidate; No-candidate mismatch states actual-vs-expected byte counts and
+  offers "Extend to full size" (only when `CanPad`, with a tooltip stating plainly it fills blank
+  space rather than recovering data) — both always also offer "Continue mounting as-is" and
+  "Cancel".
+- **Tests:** `DiskDriveVmTests` (+9, plus 1 existing test rewritten): a labeled, correctly-sized
+  mount raises no event (regression guard); single- and two-candidate mismatches report the
+  right candidate set; `ReconfigureAndRemount` changes the live disk's `Tracks`/`Sides` and
+  clears the mismatch; `ExtendMountedDiskToFullSize` pads the image to the expected length and
+  clears the mismatch; `ContinueWithCurrentMount` leaves the disk instance and mismatch
+  untouched; `CancelMount` ejects; a construction-time `PendingMismatch` only fires after
+  `RaisePendingMismatchIfAny()` is called, never eagerly. Rewrote
+  `MountBytes_TooShortForLabel_ShowsMessage_DoesNotMount` (behavior fundamentally changed — it
+  now mounts and reports a mismatch instead of rejecting) into
+  `MountBytes_TooShortForLabel_MountsAnyway_ReportsNoCandidateMismatch`. Full `P2000.UI.Tests`:
+  182/182 green (was 174, net of +9 new and the rewritten one).
+- **Applies to:** `src/P2000.UI/ViewModels/DiskDriveVm.cs`, `src/P2000.UI/ViewModels/DiskDriveWindowVm.cs`,
+  `src/P2000.UI/Views/DiskDriveWindow.axaml.cs`, `tests/P2000.UI.Tests/ViewModels/DiskDriveVmTests.cs`.
+  Reference doc §5d's "RESOLVED — the label-based auto-detect above is JWSDOS-specific" block;
+  machine ms.20d.
+- **Synced:** no (implementation-only — the design decision itself was already synced into the
+  reference doc's own 2026-07-27 "RESOLVED" entry before this milestone was built).
+
 ### 2026-07-27 — FOLLOW-UP FIX 3: Apply was silently re-rolling RamSeed/BankCount, causing false "stale config" mismatches
 - **Trigger — owner follow-up:** "When I load a config, apply, then unpin, pin it also asks for
   a save, even though I did not modify the loaded config..." — reported right after follow-up
@@ -1142,7 +1303,10 @@ missing.
 - **Applies to:** `src/P2000.UI/ViewModels/ConfigWindowVm.cs` (`_ramSeed`, `_bankCount`,
   `LoadFromCurrentConfig`, `LoadCfgAsync`, `BuildConfig`),
   `tests/P2000.UI.Tests/State/StartupConfigurationTests.cs`.
-- **Synced:** no (bug fix against an already-synced design).
+- **Synced:** yes (2026-07-27, into `docs/P2000T-reference.md` §3a "RESOLVED — startup
+  configuration" — folded into the revised Pinning bullet's "always available" wording, which
+  covers RamSeed/BankCount staying stable across an unedited Load → Apply as part of why staleness
+  detection had to be correct rather than naive).
 
 ### 2026-07-27 — FOLLOW-UP FIX 2: pinning now detects a stale saved file, not just "nothing saved yet"
 - **Trigger — owner follow-up (asked as a question, confirming it was a real gap):** "user loads
@@ -1183,7 +1347,8 @@ missing.
 - **Applies to:** `src/P2000.UI/ViewModels/ConfigWindowVm.cs` (`SavedCfgMatchesLiveConfig`,
   `PinAsStartupConfigAsync`'s re-check), `src/P2000.UI/Views/ConfigWindow.axaml` (hint/tooltip
   text), `tests/P2000.UI.Tests/State/StartupConfigurationTests.cs`.
-- **Synced:** no (bug fix against an already-synced design).
+- **Synced:** yes (2026-07-27, into `docs/P2000T-reference.md` §3a "RESOLVED — startup
+  configuration" — this IS the byte-for-byte staleness check the revised Pinning bullet describes).
 
 ### 2026-07-27 — FOLLOW-UP FIX: Pin button redesigned to never be permanently ghosted
 - **Trigger — owner follow-up:** the previous fix (below) made the Pin button correctly enable
@@ -1212,7 +1377,9 @@ missing.
 - **Applies to:** `src/P2000.UI/ViewModels/ConfigWindowVm.cs` (`PinAsStartupConfigAsync`),
   `src/P2000.UI/Views/ConfigWindow.axaml` (hint/tooltip text),
   `tests/P2000.UI.Tests/State/StartupConfigurationTests.cs`.
-- **Synced:** no (bug fix against an already-synced design).
+- **Synced:** yes (2026-07-27, into `docs/P2000T-reference.md` §3a "RESOLVED — startup
+  configuration" — the revised Pinning bullet's "always available... prompts to save first" is
+  this redesign).
 
 ### 2026-07-27 — FIXED: three bugs in milestone 14c, found via real owner usage (BASIC24k cartridge + boot floppy)
 - **Trigger:** owner's first real end-to-end run of the "power on preconfigured" story — loaded
@@ -1269,7 +1436,10 @@ missing.
   `src/P2000.UI/ViewModels/ConfigWindowVm.cs` (`OnLastCfgPathChanged`),
   `src/P2000.UI/Views/ConfigWindow.axaml` (`TextBlock.hint` style). Milestone 14c (this file,
   above).
-- **Synced:** no (bug fixes against an already-synced design; nothing new for the human to sync).
+- **Synced:** yes (2026-07-27, into `docs/P2000T-reference.md` §3a "RESOLVED — startup
+  configuration" — Bug 2, the actual root cause, is the whole subject of the new "IMPLEMENTED,
+  then CORRECTED" paragraph there; Bug 1 (Pin ghosting) is covered by the Pinning bullet's
+  redesign note; Bug 3 (text wrap) is a pure cosmetic/UI-code fix with no design-doc content).
 
 ### 2026-07-26 — Milestone 14c IMPLEMENTED: startup configuration (auto-remember + pin) + the §7 gap finally closed
 - **Built (new 4th file type):** `src/P2000.UI/State/AppPreferencesFile.cs` — `AppPreferences`
@@ -1347,8 +1517,11 @@ missing.
   section), `tests/P2000.UI.Tests/TestEnvironment.cs` (new),
   `tests/P2000.UI.Tests/State/StartupConfigurationTests.cs` (new). Reference doc §3a's "RESOLVED
   — startup configuration" block; machine ms.20c.
-- **Synced:** no (implementation-only — the design decision itself was already synced into the
-  reference doc's own 2026-07-26 "RESOLVED" entry before this milestone was built).
+- **Synced:** yes (2026-07-27, into `docs/P2000T-reference.md` §3a "RESOLVED — startup
+  configuration" — the auto-remember/startup-load/fourth-file-type/hand-authoring-fields shape
+  here matched the design exactly and needed no correction; see the new "IMPLEMENTED, then
+  CORRECTED" paragraph there for the one real gap this initial pass had, found via subsequent
+  real-usage bug reports below).
 
 ### 2026-07-24 — Milestone 14a IMPLEMENTED: cassette + disk unsaved-changes warning
 - **Machine-layer signal was already built and green (M20a, `P2000.Machine` CLAUDE.md §13.20a)

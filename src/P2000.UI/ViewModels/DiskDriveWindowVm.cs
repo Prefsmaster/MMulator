@@ -1,5 +1,6 @@
 using System.Collections.ObjectModel;
 using CommunityToolkit.Mvvm.ComponentModel;
+using P2000.Machine.Devices.Fdc;
 using P2000.UI.Runner;
 
 namespace P2000.UI.ViewModels;
@@ -39,6 +40,14 @@ public sealed partial class DiskDriveWindowVm : ObservableObject
     /// it, same aggregation pattern as <see cref="ShowMessageRequested"/>.</summary>
     public event Func<string, Task<bool>>? ConfirmDiscardRequested;
 
+    /// <summary>Raised when a drive's mount (live, or a `.cfg`-authored one surfaced for the
+    /// first time) produces a real geometry mismatch (project CLAUDE.md milestone 14e) — relayed
+    /// from whichever <see cref="DiskDriveVm"/> triggered it, carrying the drive alongside the
+    /// mismatch since the view needs to call back into that SPECIFIC drive's
+    /// <c>ReconfigureAndRemount</c>/<c>ContinueWithCurrentMount</c>/
+    /// <c>ExtendMountedDiskToFullSize</c>/<c>CancelMount</c>.</summary>
+    public event Action<DiskDriveVm, DiskGeometryMismatch>? GeometryMismatchDetected;
+
     public DiskDriveWindowVm(EmulationRunner runner)
     {
         _runner = runner;
@@ -72,7 +81,12 @@ public sealed partial class DiskDriveWindowVm : ObservableObject
             var vm = new DiskDriveVm(_runner, driveConfig.DriveIndex, driveConfig.Capacity, driveConfig.Sides);
             vm.ShowMessageRequested += OnDriveMessage;
             vm.ConfirmDiscardRequested += OnDriveConfirmDiscard;
+            vm.GeometryMismatchDetected += mismatch => GeometryMismatchDetected?.Invoke(vm, mismatch);
             Drives.Add(vm);
+            // Subscribed above THEN raised — a .cfg-authored mismatch captured at vm's own
+            // construction must not fire before anyone could possibly be listening (project
+            // CLAUDE.md milestone 14e).
+            vm.RaisePendingMismatchIfAny();
         }
         SelectedDrive = Drives.Count > 0 ? Drives[0] : null;
     }

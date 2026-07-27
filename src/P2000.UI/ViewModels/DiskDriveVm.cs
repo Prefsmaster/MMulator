@@ -22,10 +22,14 @@ public sealed partial class DiskDriveVm : ObservableObject
 
     public int DriveIndex { get; }
 
-    /// <summary>Geometry seed for "New (blank) disk" — topology, not editable here (the Config
-    /// window's job); a mounted image's own on-disk label always wins (machine M19/M20).</summary>
-    public int Capacity { get; }
-    public DiskSides Sides { get; }
+    /// <summary>Geometry seed for "New (blank) disk" — normally topology, fixed at construction
+    /// from the Config window (machine M19/M20); the ONE exception is
+    /// <see cref="ReconfigureAndRemount"/> (project CLAUDE.md milestone 14e), a deliberate,
+    /// user-initiated override in response to a real geometry mismatch — "let the user decide,
+    /// don't guess for them" (reference doc §5d). A mounted image's own on-disk label still wins
+    /// over this when it validates (machine ms.20d).</summary>
+    public int Capacity { get; private set; }
+    public DiskSides Sides { get; private set; }
 
     /// <summary>The file this disk was loaded from or last saved to; null when the mounted
     /// image is unbacked (fresh off "New (blank) disk"). Drives "Save" vs "Save as…", same
@@ -86,6 +90,23 @@ public sealed partial class DiskDriveVm : ObservableObject
     /// event, is what actually gates the warning.</summary>
     public event Func<string, Task<bool>>? ConfirmDiscardRequested;
 
+    /// <summary>Raised whenever a mount (live, via <see cref="MountBytes"/>, or a `.cfg`-authored
+    /// construction-time one surfaced via <see cref="RaisePendingMismatchIfAny"/>) produces a
+    /// real geometry mismatch (project CLAUDE.md milestone 14e; machine ms.20d). Never raised for
+    /// <see cref="DiskGeometryMismatchKind.None"/> — the common case stays silent. The image is
+    /// ALREADY mounted by the time this fires (mounting never blocks); the view shows the
+    /// appropriate dialog shape and calls back into <see cref="ReconfigureAndRemount"/>,
+    /// <see cref="ContinueWithCurrentMount"/>, <see cref="ExtendMountedDiskToFullSize"/>, or
+    /// <see cref="CancelMount"/> based on the user's choice.</summary>
+    public event Action<DiskGeometryMismatch>? GeometryMismatchDetected;
+
+    /// <summary>A `.cfg`-authored mismatch captured at construction time (machine ms.20d's
+    /// per-drive <c>Upd765.GetMismatch</c>) — nothing could show a dialog at machine-assembly
+    /// time, so this is surfaced later via <see cref="RaisePendingMismatchIfAny"/>, once the
+    /// window (and therefore a dialog) actually exists. <c>null</c> when there's nothing pending
+    /// (the common case, or once already raised/handled).</summary>
+    public DiskGeometryMismatch? PendingMismatch { get; private set; }
+
     public DiskDriveVm(EmulationRunner runner, int driveIndex, int capacity, DiskSides sides)
     {
         _runner = runner;
@@ -94,6 +115,22 @@ public sealed partial class DiskDriveVm : ObservableObject
         Sides = sides;
         runner.FrameReady += OnFrameReady;
         RefreshFromMachine();
+
+        var mismatch = runner.Machine.Fdc?.GetMismatch(driveIndex);
+        PendingMismatch = mismatch is { Kind: not DiskGeometryMismatchKind.None } ? mismatch : null;
+    }
+
+    /// <summary>Raises <see cref="GeometryMismatchDetected"/> for whatever
+    /// <see cref="PendingMismatch"/> was captured at construction. Call this AFTER subscribing to
+    /// the event — mirroring how <c>DiskDriveWindowVm</c> already subscribes to this VM's other
+    /// events right after constructing it — otherwise a mismatch raised from inside the
+    /// constructor itself would fire before anyone could possibly be listening (project CLAUDE.md
+    /// milestone 14e). No-op (and clears <see cref="PendingMismatch"/>) once already called.</summary>
+    public void RaisePendingMismatchIfAny()
+    {
+        if (PendingMismatch is not { } mismatch) return;
+        PendingMismatch = null;
+        GeometryMismatchDetected?.Invoke(mismatch);
     }
 
     private int SidesCount => Sides == DiskSides.Double ? 2 : 1;
@@ -187,44 +224,55 @@ public sealed partial class DiskDriveVm : ObservableObject
     /// M20), unconditionally — no discard-confirmation. <paramref name="backingFile"/> becomes
     /// this drive's Save target; pass null for an unbacked mount. User-facing mount paths
     /// should go through <see cref="TryMountBytesAsync"/> instead so a dirty image isn't
-    /// silently discarded.</summary>
+    /// silently discarded.
+    ///
+    /// <b>Goes through <see cref="DskImage.Mount"/>, not the raw constructor</b> (project
+    /// CLAUDE.md milestone 14e; machine ms.20d) — validates the on-disk JWSDOS label against the
+    /// file's actual length rather than trusting it blind, falling back to this drive's
+    /// configured <see cref="Capacity"/>/<see cref="Sides"/>. Never fails to mount (no more
+    /// "not a valid disk image" rejection for a too-short file — it mounts anyway, using the
+    /// configured geometry, and reports a mismatch instead via
+    /// <see cref="GeometryMismatchDetected"/> if one exists).</summary>
     public void MountBytes(byte[] diskImage, string filename, IStorageFile? backingFile = null)
     {
         var fdc = _runner.Machine.Fdc;
         if (fdc is null) return;
 
-        DskImage disk;
-        try
-        {
-            disk = new DskImage(diskImage);
-        }
-        catch (ArgumentException ex)
-        {
-            ShowMessageRequested?.Invoke($"Cannot mount — not a valid disk image:\n{ex.Message}");
-            return;
-        }
+        var (disk, mismatch) = DskImage.Mount(diskImage, Capacity, SidesCount);
 
-        // MountedPath (project CLAUDE.md milestone 14c) must be stamped here — the machine-layer
-        // DskImage(string) constructor only sets it when constructed directly from a path, but a
-        // live UI mount reads bytes itself (file dialog / drag-drop) and passes them in, so the
-        // real path is only known here. Without this, Machine.CaptureCurrentConfig() (and
-        // therefore auto-remember/Save .cfg) would silently see this drive as unmounted.
+        // MountedPath (project CLAUDE.md milestone 14c) must be stamped here — Mount's
+        // object-initializer construction path doesn't go through DskImage(string), so nothing
+        // sets it automatically; a live UI mount reads bytes itself (file dialog / drag-drop)
+        // and passes them in, so the real path is only known here. Without this,
+        // Machine.CaptureCurrentConfig() (and therefore auto-remember/Save .cfg) would silently
+        // see this drive as unmounted.
         disk.MountedPath = backingFile?.Path.LocalPath;
 
-        fdc.MountDisk(DriveIndex, disk);
+        fdc.MountDisk(DriveIndex, disk, mismatch);
         _backingFile = backingFile;
         HasImage = true;
         IsWriteProtected = disk.WriteProtected;
         ImageLabel = filename;
         Programs = FormatDirectory(disk);
         NotifyCommands();
+
+        if (mismatch.Kind != DiskGeometryMismatchKind.None)
+            GeometryMismatchDetected?.Invoke(mismatch);
     }
 
     [RelayCommand(CanExecute = nameof(HasImage))]
     private async Task EjectAsync()
     {
         if (!await ConfirmDiscardAsync("eject")) return;
+        ReturnToEmptyState();
+    }
 
+    /// <summary>Shared by <see cref="EjectAsync"/> and <see cref="CancelMount"/> — both leave the
+    /// drive genuinely empty; they differ only in WHETHER the unsaved-changes gate runs first
+    /// (Cancel is undoing a mount the user just made, not discarding unrelated prior work, so it
+    /// skips <see cref="ConfirmDiscardAsync"/>).</summary>
+    private void ReturnToEmptyState()
+    {
         _runner.Machine.Fdc?.EjectDisk(DriveIndex);
         _backingFile = null;
         HasImage = false;
@@ -233,6 +281,74 @@ public sealed partial class DiskDriveVm : ObservableObject
         Programs = [];
         NotifyCommands();
     }
+
+    // ── Geometry-mismatch recovery (project CLAUDE.md milestone 14e) ────────────────────────
+
+    /// <summary>"Reconfigure the drive to the matching geometry and remount" — one of the
+    /// candidate-mismatch dialog's options (owner's own requested resolution: let the user
+    /// decide, don't guess). Re-mounts the CURRENTLY-mounted image's bytes under the new
+    /// geometry (which the caller already confirmed matches the file's actual length via
+    /// <see cref="DiskGeometryMismatch.Candidates"/>), so this should always resolve to
+    /// <see cref="DiskGeometryMismatchKind.None"/> — but stays honest and re-raises
+    /// <see cref="GeometryMismatchDetected"/> if it somehow doesn't. Updates
+    /// <see cref="Capacity"/>/<see cref="Sides"/> to the new geometry going forward (e.g. for a
+    /// later "New (blank) disk").</summary>
+    public void ReconfigureAndRemount(int tracks, DiskSides sides)
+    {
+        var fdc = _runner.Machine.Fdc;
+        var current = fdc?.GetDisk(DriveIndex);
+        if (fdc is null || current is null) return;
+
+        var bytes = current.GetBytes();
+        var wasProtected = current.WriteProtected;
+        var mountedPath = current.MountedPath;
+
+        Capacity = tracks;
+        Sides = sides;
+
+        var (disk, mismatch) = DskImage.Mount(bytes, tracks, sides == DiskSides.Double ? 2 : 1);
+        disk.MountedPath = mountedPath;
+        disk.WriteProtected = wasProtected;
+        fdc.MountDisk(DriveIndex, disk, mismatch);
+
+        IsWriteProtected = disk.WriteProtected;
+        Programs = FormatDirectory(disk);
+
+        if (mismatch.Kind != DiskGeometryMismatchKind.None)
+            GeometryMismatchDetected?.Invoke(mismatch);
+    }
+
+    /// <summary>"Continue mounting with the current configuration anyway" / "continue as-is" —
+    /// the safe no-op choice on either mismatch dialog shape (project CLAUDE.md milestone 14e
+    /// test (f)). The image is ALREADY mounted (mounting never blocks), so this changes nothing;
+    /// the mismatch stays on record for the session (<c>Upd765.GetMismatch</c> keeps reporting
+    /// it) rather than being silently cleared, so a persistent status indicator could still
+    /// reflect it if the view chooses to show one.</summary>
+    public void ContinueWithCurrentMount() { /* intentionally a no-op — see doc comment */ }
+
+    /// <summary>"Extend to full size" — the no-candidate-mismatch dialog's recovery option.
+    /// Pads the in-memory image up to <see cref="DiskGeometryMismatch.ExpectedLength"/> (machine
+    /// ms.20d's <c>DskImage.ExtendTo</c>, <c>0x00</c> fill — honestly, this fills blank space, it
+    /// does not recover missing data) and clears the mismatch by re-recording it as
+    /// <see cref="DiskGeometryMismatchKind.None"/> at its new, now-matching length. No-op if
+    /// nothing is mounted.</summary>
+    public void ExtendMountedDiskToFullSize(int expectedLength)
+    {
+        var fdc = _runner.Machine.Fdc;
+        var disk = fdc?.GetDisk(DriveIndex);
+        if (fdc is null || disk is null) return;
+
+        disk.ExtendTo(expectedLength);
+        fdc.MountDisk(DriveIndex, disk, DiskGeometryMismatch.None(expectedLength));
+    }
+
+    /// <summary>"Cancel" on either mismatch dialog shape — the one path that does NOT end in
+    /// "mounted" (project CLAUDE.md milestone 14e: "every path... ends in a mounted drive (or a
+    /// cancelled mount if the user explicitly chooses Cancel)"). The mount always happens
+    /// immediately and optimistically; Cancel is a deliberate, explicit undo of THAT mount, not a
+    /// block — so it skips the unsaved-changes gate <see cref="EjectAsync"/> uses (there's
+    /// nothing of the user's to lose; they just mounted this moments ago).</summary>
+    public void CancelMount() => ReturnToEmptyState();
 
     /// <summary>"New (blank) disk": creates a genuinely unformatted in-memory image sized to
     /// this drive's own configured <see cref="Capacity"/>/<see cref="Sides"/> (no label, no

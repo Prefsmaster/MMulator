@@ -20,6 +20,13 @@
             <Setter Property="Foreground" Value="#ddd" />
             <Setter Property="Margin" Value="0,8,0,2" />
         </Style>
+        <!-- Explanatory captions under each section header — wraps instead of running off the
+             right edge of the (fixed-width) window (owner report, 2026-07-27). -->
+        <Style Selector="TextBlock.hint">
+            <Setter Property="Foreground" Value="#777" />
+            <Setter Property="FontSize" Value="11" />
+            <Setter Property="TextWrapping" Value="Wrap" />
+        </Style>
     </Window.Styles>
 
     <Border Background="#252525" Padding="16">
@@ -52,7 +59,7 @@
 
             <!-- ── Internal-slot board ──────────────────────────────────────── -->
             <TextBlock Classes="section" Text="Internal-Slot Board" />
-            <TextBlock Foreground="#777" FontSize="11"
+            <TextBlock Classes="hint"
                        Text="Determines upper memory AND whether the FDC/CTC + floppy drives exist." />
             <DockPanel>
                 <TextBlock Classes="label" Text="Board" />
@@ -70,7 +77,7 @@
             <!-- ── Floppy drives (project CLAUDE.md §14 milestone 14) ───────── -->
             <StackPanel IsVisible="{Binding ShowFloppyDrives}" Spacing="4">
                 <TextBlock Classes="section" Text="Floppy Drives" />
-                <TextBlock Foreground="#777" FontSize="11"
+                <TextBlock Classes="hint"
                            Text="Drive count/geometry is topology (reset-to-apply). Capacity/Sides only seed newly-created blank media — a mounted image's own label always wins. Images themselves are mounted live from the Disk Drives window." />
                 <DockPanel>
                     <TextBlock Classes="label" Text="Drive count" />
@@ -117,7 +124,7 @@
 
             <!-- ── Cassette (project CLAUDE.md milestone 14c) ───────────────── -->
             <TextBlock Classes="section" Text="Cassette" />
-            <TextBlock Foreground="#777" FontSize="11"
+            <TextBlock Classes="hint"
                        Text="Manually-authored initial tape (hand-authoring a .cfg). Save .cfg from a running machine instead captures whatever's actually mounted in the deck." />
             <DockPanel>
                 <TextBlock Classes="label" Text="Initial cassette" />
@@ -133,7 +140,7 @@
 
             <!-- ── SLOT1 cartridge ─────────────────────────────────────────── -->
             <TextBlock Classes="section" Text="SLOT1 Cartridge" />
-            <TextBlock Foreground="#777" FontSize="11"
+            <TextBlock Classes="hint"
                        Text="Empty SLOT1 → cassette-wait boot. Populate with BASIC.bin to boot into BASIC." />
             <DockPanel>
                 <TextBlock Classes="label" Text="Cartridge image" />
@@ -149,7 +156,7 @@
 
             <!-- ── Monitor ROM override ────────────────────────────────────── -->
             <TextBlock Classes="section" Text="Monitor ROM" />
-            <TextBlock Foreground="#777" FontSize="11"
+            <TextBlock Classes="hint"
                        Text="Leave empty to use the built-in embedded ROM (P2000ROM.rom). Override only for patched revisions." />
             <DockPanel>
                 <TextBlock Classes="label" Text="Custom ROM path" />
@@ -180,7 +187,7 @@
 
             <!-- ── Startup configuration (project CLAUDE.md milestone 14c) ─── -->
             <TextBlock Classes="section" Text="Startup" />
-            <TextBlock Foreground="#777" FontSize="11"
+            <TextBlock Classes="hint"
                        Text="By default the app remembers your last session automatically. Pin a specific, already-saved .cfg (via Load/Save .cfg above) to always start with that instead." />
             <DockPanel>
                 <TextBlock Classes="label" Text="Pinned startup config" />

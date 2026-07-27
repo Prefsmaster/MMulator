@@ -168,6 +168,14 @@ public sealed partial class ConfigWindowVm : ObservableObject
         }
     }
 
+    /// <summary>[NotifyPropertyChangedFor] on <see cref="LastCfgPath"/> updates
+    /// <see cref="CanPinStartup"/>'s bindable value, but a `[RelayCommand(CanExecute = …)]`
+    /// command's enabled state is a SEPARATE thing CommunityToolkit does not re-check
+    /// automatically — it only re-evaluates when told to. Without this, "Always start with this
+    /// configuration" stayed ghosted forever after a successful Load/Save .cfg (found via owner
+    /// report, 2026-07-27).</summary>
+    partial void OnLastCfgPathChanged(string? value) => PinAsStartupConfigCommand.NotifyCanExecuteChanged();
+
     partial void OnFloppyDriveCountChanged(int value) => ResizeFloppyDriveRows(value);
 
     private void ResizeFloppyDriveRows(int count)

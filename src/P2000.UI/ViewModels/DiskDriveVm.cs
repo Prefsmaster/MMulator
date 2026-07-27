@@ -204,6 +204,13 @@ public sealed partial class DiskDriveVm : ObservableObject
             return;
         }
 
+        // MountedPath (project CLAUDE.md milestone 14c) must be stamped here — the machine-layer
+        // DskImage(string) constructor only sets it when constructed directly from a path, but a
+        // live UI mount reads bytes itself (file dialog / drag-drop) and passes them in, so the
+        // real path is only known here. Without this, Machine.CaptureCurrentConfig() (and
+        // therefore auto-remember/Save .cfg) would silently see this drive as unmounted.
+        disk.MountedPath = backingFile?.Path.LocalPath;
+
         fdc.MountDisk(DriveIndex, disk);
         _backingFile = backingFile;
         HasImage = true;
@@ -283,6 +290,10 @@ public sealed partial class DiskDriveVm : ObservableObject
 
         _backingFile = file;
         ImageLabel = Path.GetFileNameWithoutExtension(file.Name);
+        // The image is now backed by this new file — update MountedPath the same reason
+        // MountBytes does (project CLAUDE.md milestone 14c).
+        var disk = _runner.Machine.Fdc?.GetDisk(DriveIndex);
+        if (disk is not null) disk.MountedPath = file.Path.LocalPath;
     }
 
     private string SuggestedFileNameStem() =>

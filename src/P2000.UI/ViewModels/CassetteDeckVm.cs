@@ -213,6 +213,9 @@ public sealed partial class CassetteDeckVm : ObservableObject
 
         _backingFile = file;
         TapeLabel = Path.GetFileNameWithoutExtension(file.Name);
+        // The tape is now backed by this new file — update MountedPath the same reason
+        // MountBytes does (project CLAUDE.md milestone 14c).
+        _runner.Machine.Mdcr.MountedPath = file.Path.LocalPath;
     }
 
     private string SuggestedFileNameStem() =>
@@ -274,7 +277,11 @@ public sealed partial class CassetteDeckVm : ObservableObject
         // Write-protect is read from the file itself (record offset 0x50, bit 0 — machine
         // CLAUDE.md §17, 2026-07-14); an unset/absent bit defaults writable. Read it back
         // from the machine rather than assuming — do NOT hardcode true here.
-        _runner.Machine.Mdcr.InsertTape(casImage);
+        // MountedPath (project CLAUDE.md milestone 14c) is passed through here — a live UI
+        // mount reads bytes itself (file dialog/drag-drop) so the real path is only known at
+        // this call site; without it, Machine.CaptureCurrentConfig() (and therefore
+        // auto-remember/Save .cfg) would silently see the deck as empty.
+        _runner.Machine.Mdcr.InsertTape(casImage, backingFile?.Path.LocalPath);
         _casBytes = casImage;
         _backingFile = backingFile;
         HasTape = true;

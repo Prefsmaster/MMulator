@@ -1108,6 +1108,63 @@ genuinely open, plus the last few active days, for continuity. Everything fully 
 already synced lives only in the archive now — check there before assuming something's
 missing.
 
+### 2026-07-27 — FIXED: three bugs in milestone 14c, found via real owner usage (BASIC24k cartridge + boot floppy)
+- **Trigger:** owner's first real end-to-end run of the "power on preconfigured" story — loaded
+  `Basic24k.bin` into SLOT1, mounted a boot floppy live via the Disk Drives window, booted into
+  disk BASIC, saved a `.cfg`. Reported: (1) "Always start with this configuration" stayed
+  ghosted; (2) relaunch booted bare/BASIC-empty regardless; (3) the description text under each
+  section (Cassette, SLOT1, Monitor ROM, etc.) ran off the right edge of the fixed-width window.
+- **Bug 2 (relaunch boots bare/empty) — the ACTUAL root cause, not a cosmetic issue:** `DiskDriveVm.MountBytes`/
+  `CassetteDeckVm.MountBytes` (the file-dialog/drag-drop mount path every real user takes) never
+  set `DskImage.MountedPath`/`MdcrDevice.MountedPath` at all — milestone 14c only wired that
+  property up automatically for the `DskImage(string path)`/`Mdcr.InsertTape(bytes, path)`
+  CONSTRUCTION-time paths (machine ms.20b/20c), which a *live* UI mount never goes through (the UI
+  reads the file's bytes itself via `OpenReadAsync`, then calls `MountBytes(bytes, filename,
+  backingFile)` — the real path was sitting right there in `backingFile.Path.LocalPath` and
+  simply never got forwarded). Net effect: `Machine.CaptureCurrentConfig()` always saw
+  `MountedPath == null` for anything mounted through the actual UI (as opposed to a `.cfg`'s own
+  `ImagePath`/`CassettePath` at construction) — so the owner's floppy never made it into the saved
+  `.cfg` at all, and the SLOT1-only config that DID save correctly booted straight into a
+  disk-boot-gate wait with no disk → "empty machine." **This is exactly bug 2's cause, not a
+  separate issue** — fixing it fixes both.
+  - **Fixed:** `DiskDriveVm.MountBytes` now sets `disk.MountedPath = backingFile?.Path.LocalPath;`
+    right after mounting; `DiskDriveVm.SaveAsAsync` updates it again to the new file after a
+    successful Save-as. `CassetteDeckVm.MountBytes` now passes `backingFile?.Path.LocalPath`
+    straight into the (already-existing, from ms.20c) `MdcrDevice.InsertTape(bytes, path)`
+    overload; `CassetteDeckVm.SaveAsAsync` updates `Mdcr.MountedPath` after a successful Save-as
+    the same way. Eject/New-blank paths needed no fix — they already correctly clear
+    `MountedPath` at the machine layer (ms.20c).
+- **Bug 1 (Pin button ghosted) — a separate, independent bug, also real:**
+  `[RelayCommand(CanExecute = nameof(CanPinStartup))]` does NOT
+  automatically re-check `CanExecute` when the backing property (`LastCfgPath`) changes —
+  `[NotifyPropertyChangedFor(nameof(CanPinStartup))]` only updates `CanPinStartup`'s OWN bindable
+  value; CommunityToolkit requires an explicit `PinAsStartupConfigCommand.NotifyCanExecuteChanged()`
+  call, which milestone 14c never added. **Fixed:** a new `partial void
+  OnLastCfgPathChanged(string? value)` calls it. This was independent of bug 1/2 above — even
+  once `SaveCfgAsync` correctly captured live media, the Pin button would have stayed ghosted
+  without this fix too.
+- **Bug 3 — text truncation:** none of the description `TextBlock`s under each section header had
+  `TextWrapping="Wrap"` (Avalonia's default is `NoWrap`), so anything longer than the fixed
+  480px-wide window's content area ran off the right edge instead of wrapping. **Fixed:** added a
+  shared `TextBlock.hint` style (`Foreground #777`, `FontSize 11`, `TextWrapping Wrap`) and
+  switched every such caption to `Classes="hint"` instead of repeating the same three inline
+  setters (also fixes any future caption the same way for free).
+- **Not separately unit-tested (documented limitation, not an oversight):** the `MountBytes`
+  fix's exact `backingFile.Path.LocalPath` plumbing would need a fake `IStorageFile` to exercise
+  headlessly — same StorageProvider-needs-a-real-desktop limitation this suite already accepts
+  elsewhere (`MemoryWatchVmTests`' own doc comment). Confidence instead comes from: the identical
+  mechanism (`MountedPath` set from a real path) is already covered end-to-end by
+  `StartupConfigurationTests` and machine-layer `MachineTests` via the construction-time path,
+  and this fix is a one-line delegation to the same property from a call site that already has
+  the real path in scope. Full `P2000.UI.Tests`: 170/170 green (unchanged — no test count change,
+  since no new automated test was added for this specific gap).
+- **Applies to:** `src/P2000.UI/ViewModels/DiskDriveVm.cs` (`MountBytes`, `SaveAsAsync`),
+  `src/P2000.UI/ViewModels/CassetteDeckVm.cs` (`MountBytes`, `SaveAsAsync`),
+  `src/P2000.UI/ViewModels/ConfigWindowVm.cs` (`OnLastCfgPathChanged`),
+  `src/P2000.UI/Views/ConfigWindow.axaml` (`TextBlock.hint` style). Milestone 14c (this file,
+  above).
+- **Synced:** no (bug fixes against an already-synced design; nothing new for the human to sync).
+
 ### 2026-07-26 — Milestone 14c IMPLEMENTED: startup configuration (auto-remember + pin) + the §7 gap finally closed
 - **Built (new 4th file type):** `src/P2000.UI/State/AppPreferencesFile.cs` — `AppPreferences`
   (`StartupCfgPath`, `StartupCfgIsPinned`) as small JSON in the platform-appropriate per-user

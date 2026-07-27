@@ -1442,6 +1442,68 @@ marked synced. Do NOT edit the reference doc from this project.
 - **Synced:** yes (2026-07-05, into P2000T-reference.md + device guides)
 -->
 
+### 2026-07-27 — Milestone 21 IMPLEMENTED: IMD (ImageDisk) reader/writer
+- **Trigger:** owner decision to adopt IMD as the emulator's native/preferred disk container
+  (reference doc §3a "RESOLVED — adopt IMD... as the emulator's native/preferred disk
+  container"), following on from ms.20d/UI ms.14e's geometry-mismatch work for legacy `.dsk`.
+- **Spec source note:** the primary published spec PDF (`oldcomputers-ddns.org/.../imd.pdf`,
+  cited in the reference doc block) was unreachable while building this (`WebFetch` failed with
+  `connect ECONNREFUSED`). Built instead directly from MAME's own `imd_dsk.cpp` parser (one of
+  the reference doc's OTHER cited sources) — a precise, load-bearing technical extraction, not a
+  guess: ASCII header terminated by literal `0x1A`; no separate geometry header field at all —
+  `Tracks`/`Sides` are derived from the highest cylinder/head seen across all track descriptors,
+  read until end-of-file (matches MAME's own approach); per-track 5-byte descriptor (mode,
+  cylinder, head-byte with optional cylinder-map/head-map flag bits, sector count, size code);
+  sector size = `128 << sizeCode`; sector data type byte 0-8 (unavailable / normal / compressed /
+  ×deleted-DAM / ×bad-CRC combinations).
+- **Built — `ImdFormat` (new internal static class, `Devices/Fdc/ImdFormat.cs`):**
+  `IsImdFile`/`Read`/`Write`. `DskImage.Mount` sniffs `ImdFormat.IsImdFile` FIRST, before any
+  label/config-fallback logic — an IMD mount always returns
+  `DiskGeometryMismatch.None`, never touching ms.20d's Candidate/NoCandidate machinery at all
+  (IMD is fully self-describing, same "embedded state is authoritative" shape as
+  `DskImage.FromEmbeddedState`). No existing call site (`Machine.cs`, `DiskDriveVm.MountBytes`)
+  needed to change. New `DskImage.Format` (`DiskImageFormat.Dsk`/`.Imd`) property, defaulting to
+  `Dsk` for every pre-existing construction path; new `DskImage.GetImdBytes()` mirroring the
+  existing `GetBytes()`.
+- **Sector-order (interleave) map IS preserved across an unmodified read→write round trip** —
+  new `DskImage.SectorOrderMaps` (keyed by (cylinder, head), populated on IMD read) is reused
+  verbatim by `GetImdBytes()` when present; only a `.dsk`-mounted or freshly-created image (no
+  real interleave data to preserve — `SectorOrderMaps` is `null`) falls back to a plain
+  sequential map. This matches the reference doc's explicit "round-tripping the per-sector order
+  map faithfully" — the milestone text's "write a plain sequential order for now" turned out to
+  describe only the NEW-data case (`.dsk`→IMD conversion, blank disks), not a re-save of an
+  already-IMD-backed image.
+- **Writer always emits sector data type 1 (normal, uncompressed) only** — no compression, no
+  deleted-DAM/bad-CRC modeling, since `DskImage` has no fields for either. **Flagged limitation**
+  (not covered by the milestone text): reading a file that uses IMD's optional per-track
+  cylinder-map/head-map bits (`0x80`/`0x40` on the head byte) parses past them correctly (so the
+  file still loads) but does NOT preserve or re-emit them — re-saving such a file would not be
+  byte-identical. No known P2000 image is expected to need this; flagged rather than silently
+  assumed away.
+- **Sector-size validation:** `Read` throws `InvalidDataException` if any track's IMD size code
+  doesn't resolve to exactly `DskImage.BytesPerSector` (256) — an honest "this isn't a P2000 disk
+  image" rejection, distinct in kind from ms.20d's fail-soft mismatch handling (that's for
+  ambiguous-but-plausible raw dumps; this is for a file whose own self-described structure
+  doesn't fit this project's fixed sector size at all).
+- **Mode byte value (250 kbps MFM, value 5) is a cosmetic/non-functional choice**, inferred from
+  this project's already-documented 5¼" double-density/300 RPM/MFM FDC model, NOT independently
+  re-confirmed against real P2000 hardware or captured real IMD files — nothing in this
+  emulator's timing model reads the mode byte back, so it has no behavioral effect either way.
+- **Tests:** `ImdFormatTests` (new, 9 cases) covers the milestone's own 5-item list plus 4 extra:
+  (a) round-trip byte-identical including a genuine non-sequential order map on one track (proves
+  preservation, not just structural validity); (b) the "all sectors this value" compression
+  marker reads as a fully-populated track; (c) a `.dsk`-mounted `DskImage`'s `GetImdBytes()`
+  produces a valid IMD with correct header/track descriptors and sequential order maps on every
+  track; (d) `Format` reports `Dsk`/`Imd` correctly per mount path; (e) an IMD mount never
+  reports a mismatch even with a deliberately wrong configured geometry; plus sector-size
+  rejection, and `IsImdFile` true/false on both formats. Full `P2000.Machine.Tests`: 529/529
+  green (was 520).
+- **Applies to:** `src/P2000.Machine/Devices/Fdc/ImdFormat.cs` (new),
+  `src/P2000.Machine/Devices/Fdc/DskImage.cs` (`Format`, `SectorOrderMaps`, `Mount`,
+  `GetImdBytes`), `tests/P2000.Machine.Tests/Devices/Fdc/ImdFormatTests.cs` (new). Reference doc
+  §3a.
+- **Synced:** not yet — awaiting the human's next sync pass.
+
 ### 2026-07-27 — Two follow-up fixes found while building UI ms.14e on top of ms.20d
 - **`DskImage.ReadDirectory()` crashed on any short/unpadded image — a direct consequence of
   ms.20d making short mounts a NORMAL, always-allowed path for the first time.** `ReadDirectory`
@@ -1472,7 +1534,8 @@ marked synced. Do NOT edit the reference doc from this project.
   `src/P2000.Machine/Machine.cs` (`CaptureCurrentConfig`),
   `tests/P2000.Machine.Tests/Devices/Fdc/DskImageTests.cs`. Same reference doc §5d block as
   milestone 20d above.
-- **Synced:** no (implementation-only bug fixes, no new design decision).
+- **Synced:** yes (2026-07-27, into `docs/P2000T-reference.md` §5d — folded into milestone 20d's
+  own "IMPLEMENTED" paragraph as the two real bugs found along the way).
 
 ### 2026-07-27 — Milestone 20d IMPLEMENTED: validate the JWSDOS label, detect real geometry mismatches
 - **Trigger:** real end-to-end testing with a genuine PDOS boot floppy (Basic24k's own boot disk —
@@ -1546,8 +1609,10 @@ marked synced. Do NOT edit the reference doc from this project.
   `tests/P2000.Machine.Tests/Devices/Fdc/Upd765Tests.cs`,
   `tests/P2000.Machine.Tests/Devices/Fdc/MultiDriveFloppyTests.cs`. Reference doc §5d's "RESOLVED
   — the label-based auto-detect above is JWSDOS-specific" block.
-- **Synced:** no (implementation-only — the design decision itself was already synced into the
-  reference doc's own 2026-07-27 "RESOLVED" entry before this milestone was built).
+- **Synced:** yes (2026-07-27, into `docs/P2000T-reference.md` §5d — new "IMPLEMENTED (machine
+  milestone 20d...)" paragraph confirms this was built exactly as designed, plus documents the
+  two out-of-range read/write behaviors and the `docs/JWSDOS-format.md` companion note, now
+  also added).
 
 ### 2026-07-26 — Milestone 20c IMPLEMENTED: `Machine.CaptureCurrentConfig()` (+ a real prerequisite gap found and closed: neither device tracked its own mount path at all)
 - **Found before building anything (the actual blocker for this milestone):** the milestone's own

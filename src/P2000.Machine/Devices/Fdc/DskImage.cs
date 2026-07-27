@@ -22,7 +22,7 @@ public sealed class DskImage
 {
     public const int SectorsPerTrack = 16;
     public const int BytesPerSector = 256;
-    private const int BytesPerTrack = SectorsPerTrack * BytesPerSector;
+    internal const int BytesPerTrack = SectorsPerTrack * BytesPerSector;
 
     /// <summary>Raw offset of the geometry/system label's SS/DS indicator byte
     /// (<c>docs/JWSDOS-format.md</c> §3, <c>$FEF</c>): ASCII <c>'D'</c> (double-sided) or
@@ -42,9 +42,28 @@ public sealed class DskImage
 
     private byte[] _data;
 
+    /// <summary>Per-track sector-order (interleave) maps carried over verbatim from a mounted
+    /// IMD file's own numbering map (project CLAUDE.md milestone 21) — keyed by (cylinder, head),
+    /// each entry the 1-based logical sector number occupying each physical position in that
+    /// track. <c>null</c> for a `.dsk`-mounted or freshly-created image (nothing to preserve;
+    /// <see cref="ImdFormat.Write"/> falls back to a plain sequential map per track). Optional
+    /// IMD cylinder/head remapping maps are parsed-and-discarded on read, not stored here — a
+    /// flagged limitation (project CLAUDE.md §17 findings log), since the milestone only calls
+    /// out preserving the sector-order/interleave map itself.</summary>
+    internal IReadOnlyDictionary<(int Cylinder, int Head), byte[]>? SectorOrderMaps { get; set; }
+
     public int Tracks { get; private set; }
     public int Sides { get; private set; }
     public bool WriteProtected { get; set; }
+
+    /// <summary>Which host container format this image was mounted from or last saved as
+    /// (project CLAUDE.md milestone 21) — defaults to <see cref="DiskImageFormat.Dsk"/> for
+    /// every existing construction path (legacy constructors, <see cref="CreateBlank"/>,
+    /// <see cref="FromEmbeddedState"/>); only <see cref="Mount"/>'s IMD-sniffing branch and a
+    /// format-changing host Save As (`P2000.UI` milestone 14f) ever set it to
+    /// <see cref="DiskImageFormat.Imd"/>. Purely informational — nothing in this class branches
+    /// on it; it exists so callers can decide default Save behavior without re-sniffing the file.</summary>
+    public DiskImageFormat Format { get; set; } = DiskImageFormat.Dsk;
 
     /// <summary>True once a WRITE DATA command has mutated this image since it was
     /// mounted/created/last saved (project CLAUDE.md §13 milestone 20a) — the machine-layer
@@ -124,6 +143,25 @@ public sealed class DskImage
     public static (DskImage Image, DiskGeometryMismatch Mismatch) Mount(
         byte[] bytes, int configuredTracks, int configuredSides)
     {
+        // 0. IMD is fully self-describing (geometry + real sector order live in the file itself,
+        // project CLAUDE.md milestone 21; reference doc §3a "IMD, once written, is fully
+        // self-describing... needs NONE of ms.20d's guessing machinery") — sniffed by content
+        // (its own text header), never by extension, and detected BEFORE any label/config
+        // fallback logic runs so an IMD mount can never hit the mismatch dialog (UI ms.14f test e).
+        if (ImdFormat.IsImdFile(bytes))
+        {
+            var (data, tracks, sides, orderMaps) = ImdFormat.Read(bytes);
+            var imdImage = new DskImage
+            {
+                _data = data,
+                Tracks = tracks,
+                Sides = sides,
+                Format = DiskImageFormat.Imd,
+                SectorOrderMaps = orderMaps,
+            };
+            return (imdImage, DiskGeometryMismatch.None(bytes.Length));
+        }
+
         var actualLength = bytes.Length;
 
         // 1. Trust the label ONLY if it's self-consistent — its implied length must equal the
@@ -266,6 +304,16 @@ public sealed class DskImage
     /// array, so the caller can't bypass <see cref="WriteSector"/>'s write-protect check.</summary>
     public byte[] GetBytes() => (byte[])_data.Clone();
 
+    /// <summary>Serializes this image's current content into IMD (ImageDisk) form (project
+    /// CLAUDE.md milestone 21) — the emulator's new native/preferred container. Reuses
+    /// <see cref="SectorOrderMaps"/> verbatim per track when present (an image mounted from a
+    /// real IMD file, unmodified since); otherwise (a `.dsk`-mounted or freshly-created image,
+    /// which has no genuine interleave data to preserve) <see cref="ImdFormat.Write"/> emits a
+    /// plain sequential order map — still a fully valid, standard IMD file, just not one
+    /// recording real physical interleave. Write-protect is deliberately not part of this
+    /// serialization (config/`.state` concern, unaffected by host container format).</summary>
+    public byte[] GetImdBytes() => ImdFormat.Write(_data, Tracks, Sides, SectorOrderMaps);
+
     /// <summary>Browses side 1's confirmed active directory only (raw <c>0x1800</c>-<c>0x1FFF</c>
     /// — <c>docs/JWSDOS-format.md</c> §2/§4). Side 2's directory location in a raw image is not
     /// yet confirmed (format doc §7 item 2) — deliberately NOT modeled here, per the milestone's
@@ -333,6 +381,22 @@ public readonly record struct DiskDirectoryEntry(
     ushort EndSector)
 {
     public string FullName => Extension.Length > 0 ? $"{Filename}.{Extension}" : Filename;
+}
+
+/// <summary>Which host container format a <see cref="DskImage"/> was mounted from or last saved
+/// as (project CLAUDE.md milestone 21). Purely descriptive — the emulation-facing sector I/O
+/// (<see cref="DskImage.ReadSector"/>/<see cref="DskImage.WriteSector"/>) is identical either
+/// way; only the host Save/Save-As path (`P2000.UI` milestone 14f) branches on it.</summary>
+public enum DiskImageFormat
+{
+    /// <summary>A raw sector dump — the legacy import/export format (project CLAUDE.md milestone
+    /// 20d's label/config-fallback/mismatch-dialog machinery applies only to this format).</summary>
+    Dsk,
+
+    /// <summary>IMD (ImageDisk) — the emulator's native/preferred container: self-describing
+    /// geometry and real per-sector physical order, natively read/writeable by MAME, Greaseweazle,
+    /// and FluxEngine (reference doc §3a).</summary>
+    Imd,
 }
 
 /// <summary>Which shape of geometry mismatch <see cref="DskImage.Mount"/> found, if any (project

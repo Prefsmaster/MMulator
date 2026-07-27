@@ -1442,6 +1442,38 @@ marked synced. Do NOT edit the reference doc from this project.
 - **Synced:** yes (2026-07-05, into P2000T-reference.md + device guides)
 -->
 
+### 2026-07-27 — Two follow-up fixes found while building UI ms.14e on top of ms.20d
+- **`DskImage.ReadDirectory()` crashed on any short/unpadded image — a direct consequence of
+  ms.20d making short mounts a NORMAL, always-allowed path for the first time.** `ReadDirectory`
+  unconditionally did `_data.AsSpan(0x1800, 0x0800)`, silently assuming `_data` was always ≥
+  `0x2000` bytes — true for every real disk image, but no longer true once ms.20d started
+  letting genuinely short files mount instead of throwing. Every "mount a too-short file" UI path
+  now calls `FormatDirectory` → `ReadDirectory` immediately after mounting, so this threw
+  `ArgumentOutOfRangeException` on the very first real test of ms.14e's own regression case.
+  **Fixed:** builds a zero-filled `DirectorySize`-byte buffer first, copies in whatever real
+  bytes overlap the directory region (none, if the image is shorter than `0x1800`), and reads
+  from that — same "out-of-range reads as `0x00`" convention `ReadSector` already established,
+  just applied to the directory region too. An unpadded short image now correctly browses as an
+  empty directory rather than crashing.
+- **`Machine.CaptureCurrentConfig()`'s `FloppyDriveConfig.Capacity`/`.Sides` always echoed the
+  ORIGINAL construction-time `Config`, even after UI ms.14e's "reconfigure the drive and remount"
+  recovery action changes a drive's REAL geometry live.** Same class of staleness
+  `FloppyDriveConfig.ImagePath` was already fixed for in ms.20c — a live reconfigure is exactly
+  the kind of drift that deriver exists to catch. **Fixed:** `Capacity`/`Sides` are now read from
+  the live mounted `DskImage`'s own `Tracks`/`Sides` when a disk is mounted, falling back to the
+  original `Config` entry only for an empty drive (nothing live to read).
+- **Tests:** `DskImageTests` (+1): an unpadded short image's `ReadDirectory()` returns empty, not
+  an exception. `MachineTests`/`MultiDriveFloppyTests`: no new dedicated test added for the
+  `CaptureCurrentConfig` geometry fix here — it's exercised indirectly by UI ms.14e's own
+  `ReconfigureAndRemount` tests, which assert the live disk's `Tracks`/`Sides` changed; a
+  dedicated machine-layer test would be redundant with those. Full `P2000.Machine.Tests`:
+  520/520 green (was 519).
+- **Applies to:** `src/P2000.Machine/Devices/Fdc/DskImage.cs` (`ReadDirectory`),
+  `src/P2000.Machine/Machine.cs` (`CaptureCurrentConfig`),
+  `tests/P2000.Machine.Tests/Devices/Fdc/DskImageTests.cs`. Same reference doc §5d block as
+  milestone 20d above.
+- **Synced:** no (implementation-only bug fixes, no new design decision).
+
 ### 2026-07-27 — Milestone 20d IMPLEMENTED: validate the JWSDOS label, detect real geometry mismatches
 - **Trigger:** real end-to-end testing with a genuine PDOS boot floppy (Basic24k's own boot disk —
   no JWSDOS label at all) and a genuinely short mount (32,768 bytes into a drive configured for

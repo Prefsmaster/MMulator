@@ -456,6 +456,21 @@ public class DskImageTests
     }
 
     [Fact]
+    public void ReadDirectory_OnUnpaddedShortImage_ReturnsEmpty_NotException()
+    {
+        // Found while wiring UI ms.14e: an unpadded short mount used to crash ReadDirectory()
+        // outright (it assumed _data was always >= 0x2000 bytes to contain the directory
+        // region) — every "mount a too-short file" path now goes through this, so it must not
+        // throw (project CLAUDE.md milestone 20d).
+        var image = new byte[10];
+        var (disk, _) = DskImage.Mount(image, configuredTracks: 40, configuredSides: 2);
+
+        var entries = disk.ReadDirectory();
+
+        Assert.Empty(entries);
+    }
+
+    [Fact]
     public void WriteSector_BeyondUnpaddedShortImage_IsSilentlyDropped_NotException()
     {
         var image = new byte[100];

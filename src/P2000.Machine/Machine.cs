@@ -759,7 +759,13 @@ public sealed class Machine
     /// (per configured drive) and <see cref="MachineConfig.CassettePath"/> are read from the LIVE
     /// devices instead — <see cref="Devices.Fdc.DskImage.MountedPath"/>/<see cref="Devices.Cassette.MdcrDevice.MountedPath"/>
     /// — so a captured config reflects what's actually mounted right now, not what was true at
-    /// construction time.
+    /// construction time. <see cref="FloppyDriveConfig.Capacity"/>/<see cref="FloppyDriveConfig.Sides"/>
+    /// are ALSO read from the live mounted <see cref="Devices.Fdc.DskImage"/>'s own
+    /// <see cref="Devices.Fdc.DskImage.Tracks"/>/<see cref="Devices.Fdc.DskImage.Sides"/> when a
+    /// disk is mounted (falling back to the original config for an empty drive) — project
+    /// CLAUDE.md milestone 14e's "reconfigure the drive and remount" recovery action changes a
+    /// drive's REAL geometry live, same category of drift <see cref="FloppyDriveConfig.ImagePath"/>
+    /// already had to account for.
     ///
     /// Read-only query, no mutation; callable at any time the machine is running.
     /// </summary>
@@ -769,13 +775,14 @@ public sealed class Machine
         var fdc = Board?.Fdc;
         foreach (var drive in Config.FloppyDrives)
         {
+            var disk = fdc?.GetDisk(drive.DriveIndex);
             floppyDrives.Add(new FloppyDriveConfig
             {
                 DriveIndex = drive.DriveIndex,
                 Enabled = drive.Enabled,
-                Capacity = drive.Capacity,
-                Sides = drive.Sides,
-                ImagePath = fdc?.GetDisk(drive.DriveIndex)?.MountedPath,
+                Capacity = disk?.Tracks ?? drive.Capacity,
+                Sides = disk is null ? drive.Sides : (disk.Sides == 2 ? DiskSides.Double : DiskSides.Single),
+                ImagePath = disk?.MountedPath,
             });
         }
 

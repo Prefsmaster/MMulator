@@ -269,11 +269,23 @@ public sealed class DskImage
     /// <summary>Browses side 1's confirmed active directory only (raw <c>0x1800</c>-<c>0x1FFF</c>
     /// — <c>docs/JWSDOS-format.md</c> §2/§4). Side 2's directory location in a raw image is not
     /// yet confirmed (format doc §7 item 2) — deliberately NOT modeled here, per the milestone's
-    /// own "don't guess an offset" instruction. Empty (zero-padded) slots are omitted.</summary>
+    /// own "don't guess an offset" instruction. Empty (zero-padded) slots are omitted.
+    ///
+    /// <b>An unpadded short mount's directory region reads as all-zero (project CLAUDE.md
+    /// milestone 20d)</b> — same out-of-range convention <see cref="ReadSector"/> uses, applied
+    /// here too: this used to assume <c>_data</c> was always at least <c>0x2000</c> bytes long
+    /// and threw <see cref="ArgumentOutOfRangeException"/> otherwise, which a genuinely short
+    /// mount (now always allowed to mount, never rejected) would hit on every directory browse.</summary>
     public IReadOnlyList<DiskDirectoryEntry> ReadDirectory()
     {
         var entries = new List<DiskDirectoryEntry>();
-        var region = _data.AsSpan(DirectoryOffset, DirectorySize);
+        var regionBuffer = new byte[DirectorySize]; // defaults to 0x00 — an empty directory
+        if (DirectoryOffset < _data.Length)
+        {
+            var available = Math.Min(DirectorySize, _data.Length - DirectoryOffset);
+            _data.AsSpan(DirectoryOffset, available).CopyTo(regionBuffer);
+        }
+        ReadOnlySpan<byte> region = regionBuffer;
         var count = DirectorySize / DirectoryEntrySize;
 
         for (var i = 0; i < count; i++)

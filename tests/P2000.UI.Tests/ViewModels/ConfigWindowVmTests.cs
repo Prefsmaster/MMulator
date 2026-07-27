@@ -80,15 +80,97 @@ public class ConfigWindowVmTests
         Assert.Equal(80, vm.FloppyDriveRows[1].Capacity);
     }
 
+    // ── Drive-count axis assigns real-hardware indices (project CLAUDE.md milestone 14d) ────────
+    // The ROM's disk driver hardcodes unit-select to drive 1 and never addresses unit 0
+    // (reference doc §5d), so the count axis must assign DriveIndex in the sequence 1, 2, 3, 0 —
+    // never the old 0-based sequential 0, 1, 2, 3 — or a "1 drive" config silently fails to boot.
+
+    /// <summary>Test (a): "1 drive" → DriveIndex 1, not 0.</summary>
     [Fact]
-    public void FloppyDriveCount_ResizesRowsWithSequentialIndices()
+    public void FloppyDriveCount_OneDrive_TargetsIndex1()
+    {
+        var vm = NewVm();
+
+        vm.FloppyDriveCount = 1;
+
+        Assert.Equal([1], vm.FloppyDriveRows.Select(r => r.DriveIndex));
+    }
+
+    /// <summary>Test (b): "2 drives" → [1, 2].</summary>
+    [Fact]
+    public void FloppyDriveCount_TwoDrives_TargetsIndices1And2()
+    {
+        var vm = NewVm();
+
+        vm.FloppyDriveCount = 2;
+
+        Assert.Equal([1, 2], vm.FloppyDriveRows.Select(r => r.DriveIndex));
+    }
+
+    [Fact]
+    public void FloppyDriveCount_ThreeDrives_TargetsIndices1Through3()
     {
         var vm = NewVm();
 
         vm.FloppyDriveCount = 3;
 
-        Assert.Equal(3, vm.FloppyDriveRows.Count);
-        Assert.Equal([0, 1, 2], vm.FloppyDriveRows.Select(r => r.DriveIndex));
+        Assert.Equal([1, 2, 3], vm.FloppyDriveRows.Select(r => r.DriveIndex));
+    }
+
+    /// <summary>Test (c): "4 drives" → [1, 2, 3, 0] — only the fourth row reaches the
+    /// ROM-unaddressed index 0.</summary>
+    [Fact]
+    public void FloppyDriveCount_FourDrives_TargetsIndices1_2_3_0()
+    {
+        var vm = NewVm();
+
+        vm.FloppyDriveCount = 4;
+
+        Assert.Equal([1, 2, 3, 0], vm.FloppyDriveRows.Select(r => r.DriveIndex));
+    }
+
+    /// <summary>Test (d): round-trip at each count 1-4 — build via this window, Apply (which
+    /// actually mounts each row's image into a real machine), then a freshly-opened
+    /// <c>ConfigWindowVm</c> against that SAME live machine reflects the identical count and
+    /// per-row <c>DriveIndex</c>/<c>ImagePath</c> back.</summary>
+    [AvaloniaFact]
+    public async Task FloppyDriveCount_RoundTripsThroughApply_AtEachCount()
+    {
+        foreach (var count in new[] { 1, 2, 3, 4 })
+        {
+            var runner = new EmulationRunner();
+            var vm = new ConfigWindowVm(runner, new DiskDriveWindowVm(runner));
+            runner.Start();
+            await Task.Delay(60);
+
+            vm.Board = InternalBoard.FloppyRam;
+            vm.FloppyDriveCount = count;
+            var expectedIndices = vm.FloppyDriveRows.Select(r => r.DriveIndex).ToArray();
+            var paths = new string[count];
+            for (var i = 0; i < count; i++)
+            {
+                paths[i] = Path.GetTempFileName(); // must actually exist — Machine mounts it on Apply
+                vm.FloppyDriveRows[i].ImagePath = paths[i];
+            }
+
+            try
+            {
+                vm.ApplyCommand.Execute(null);
+                await Task.Delay(60);
+
+                var reloadVm = new ConfigWindowVm(runner, new DiskDriveWindowVm(runner));
+
+                Assert.Equal(count, reloadVm.FloppyDriveCount);
+                Assert.Equal(expectedIndices, reloadVm.FloppyDriveRows.Select(r => r.DriveIndex));
+                for (var i = 0; i < count; i++)
+                    Assert.Equal(paths[i], reloadVm.FloppyDriveRows[i].ImagePath);
+            }
+            finally
+            {
+                foreach (var p in paths) File.Delete(p);
+                runner.Dispose();
+            }
+        }
     }
 
     [Fact]
@@ -151,10 +233,12 @@ public class ConfigWindowVmTests
         {
             Board = InternalBoard.FloppyRam,
             RamVariant = RamVariant.T102,
+            // Indices 1, 2 (not 0, 1) — the fixed [1, 2, 3, 0] sequence's first two positions
+            // (milestone 14d), so this collapses to count 2, not 4.
             FloppyDrives = new[]
             {
-                new FloppyDriveConfig { DriveIndex = 0, Capacity = 35, Sides = DiskSides.Single },
-                new FloppyDriveConfig { DriveIndex = 1, Capacity = 80, Sides = DiskSides.Double },
+                new FloppyDriveConfig { DriveIndex = 1, Capacity = 35, Sides = DiskSides.Single },
+                new FloppyDriveConfig { DriveIndex = 2, Capacity = 80, Sides = DiskSides.Double },
             },
         });
         await Task.Delay(60);
@@ -166,6 +250,64 @@ public class ConfigWindowVmTests
         Assert.Equal(35, vm.FloppyDriveRows[0].Capacity);
         Assert.Equal(80, vm.FloppyDriveRows[1].Capacity);
         Assert.Equal(DiskSides.Double, vm.FloppyDriveRows[1].Sides);
+
+        runner.Dispose();
+    }
+
+    /// <summary>Test (e): a `.cfg` with only index 1 enabled collapses to count 1 — the
+    /// regression guard replacing the OLD "index 0 alone → count 1" case, which must no longer be
+    /// how count-1 configs are produced or expected.</summary>
+    [AvaloniaFact]
+    public async Task LoadFromCurrentConfig_OnlyIndex1Enabled_CollapsesToCountOne()
+    {
+        var runner = new EmulationRunner();
+        runner.Start();
+        await Task.Delay(60);
+        runner.Reconfigure(new MachineConfig
+        {
+            Board = InternalBoard.FloppyRam,
+            RamVariant = RamVariant.T102,
+            FloppyDrives = new[] { new FloppyDriveConfig { DriveIndex = 1 } },
+        });
+        await Task.Delay(60);
+
+        var vm = new ConfigWindowVm(runner, new DiskDriveWindowVm(runner));
+
+        Assert.Equal(1, vm.FloppyDriveCount);
+        Assert.Equal(1, vm.FloppyDriveRows[0].DriveIndex);
+
+        runner.Dispose();
+    }
+
+    /// <summary>Test (f): a `.cfg` with only index 0 enabled (irregular, hand-edited — never
+    /// produced by this window itself) collapses to count 4 with drives 2/3 shown empty, not a
+    /// crash — position of index 0 in the [1, 2, 3, 0] sequence is the LAST slot.</summary>
+    [AvaloniaFact]
+    public async Task LoadFromCurrentConfig_OnlyIndex0Enabled_CollapsesToCountFour_DrivesTwoAndThreeEmpty()
+    {
+        var runner = new EmulationRunner();
+        runner.Start();
+        await Task.Delay(60);
+        runner.Reconfigure(new MachineConfig
+        {
+            Board = InternalBoard.FloppyRam,
+            RamVariant = RamVariant.T102,
+            FloppyDrives = new[] { new FloppyDriveConfig { DriveIndex = 0, Capacity = 80, Sides = DiskSides.Double } },
+        });
+        await Task.Delay(60);
+
+        var exception = Record.Exception(() => new ConfigWindowVm(runner, new DiskDriveWindowVm(runner)));
+        Assert.Null(exception);
+
+        var vm = new ConfigWindowVm(runner, new DiskDriveWindowVm(runner));
+
+        Assert.Equal(4, vm.FloppyDriveCount);
+        Assert.Equal([1, 2, 3, 0], vm.FloppyDriveRows.Select(r => r.DriveIndex));
+        // Drives 2/3 (rows 0/1, DriveIndex 1/2) are empty — the config only ever populated index 0.
+        Assert.Equal(40, vm.FloppyDriveRows[0].Capacity); // default, never touched
+        Assert.Equal(40, vm.FloppyDriveRows[1].Capacity); // default, never touched
+        Assert.Equal(80, vm.FloppyDriveRows[3].Capacity); // the actual index-0 drive, last row
+        Assert.Equal(DiskSides.Double, vm.FloppyDriveRows[3].Sides);
 
         runner.Dispose();
     }
@@ -233,7 +375,9 @@ public class ConfigWindowVmTests
         {
             Board = InternalBoard.FloppyRam,
             RamVariant = RamVariant.T102,
-            FloppyDrives = new[] { new FloppyDriveConfig { DriveIndex = 0, Capacity = 40, Sides = DiskSides.Double } },
+            // DriveIndex 1, not 0 — milestone 14d: internal index 0 is unaddressed by any real
+            // boot path, so "1 drive" (this window's single-drive shape) always targets index 1.
+            FloppyDrives = new[] { new FloppyDriveConfig { DriveIndex = 1, Capacity = 40, Sides = DiskSides.Double } },
         });
         await Task.Delay(60);
 
@@ -254,13 +398,13 @@ public class ConfigWindowVmTests
 
         await vm.PickImageForRowAsync(vm.FloppyDriveRows[0], file);
 
-        Assert.NotNull(runner.Machine.Fdc?.GetDisk(0)); // really mounted, not just previewed
+        Assert.NotNull(runner.Machine.Fdc?.GetDisk(1)); // really mounted, not just previewed
         // Mounted regardless, using the CONFIGURED geometry (never the mismatched file's own) —
         // same "nothing here blocks a mount" rule DskImage.Mount always applies (machine ms.20d).
-        Assert.Equal(40, runner.Machine.Fdc!.GetDisk(0)!.Tracks);
+        Assert.Equal(40, runner.Machine.Fdc!.GetDisk(1)!.Tracks);
         Assert.Equal(tempPath, vm.FloppyDriveRows[0].ImagePath); // read back from the real mount
         Assert.NotNull(mismatchDrive);
-        Assert.Equal(0, mismatchDrive!.DriveIndex);
+        Assert.Equal(1, mismatchDrive!.DriveIndex);
         Assert.Equal(DiskGeometryMismatchKind.Candidate, mismatch!.Value.Kind);
         Assert.False(offlineFired); // the live path never raises the offline event
 
@@ -377,7 +521,8 @@ public class ConfigWindowVmTests
             vm.ApplyCommand.Execute(null);
 
             Assert.NotNull(raisedDrive);
-            Assert.Equal(0, raisedDrive!.DriveIndex);
+            // "1 drive" now targets index 1, not 0 (milestone 14d).
+            Assert.Equal(1, raisedDrive!.DriveIndex);
             Assert.Equal(DiskGeometryMismatchKind.Candidate, raisedMismatch!.Value.Kind);
         }
         finally

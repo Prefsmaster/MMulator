@@ -1253,6 +1253,46 @@ project.
 - **Synced:** yes (YYYY-MM-DD)
 -->
 
+### 2026-07-27 — Milestone 14d IMPLEMENTED: drive-count axis assigns real-hardware indices
+- **Trigger:** owner's own first real end-to-end test with a sourced `Basic24k.bin` cartridge +
+  boot floppy (reference doc §5d "RESOLVED — the Config window's drive-count axis now follows
+  this exact real convention"). Configuring "1 drive" and mounting the boot floppy at the OLD
+  0-based default (internal index 0) silently failed to boot — the ROM's disk driver hardcodes
+  unit-select to drive 1 and never addresses unit 0 (already known from `Disk.asm`/`JWSFormat.bin`
+  disassembly, reference doc §5d — this is the first time it was hit in practice, not just
+  predicted).
+- **Done:** `ConfigWindowVm.ResizeFloppyDriveRows` now assigns `DriveIndex` from a fixed
+  `DriveIndexSequence = [1, 2, 3, 0]` by row POSITION, not `FloppyDriveRows.Count` directly — "1
+  drive" → `[1]`, "2 drives" → `[1, 2]`, "3 drives" → `[1, 2, 3]`, "4 drives" → `[1, 2, 3, 0]`.
+  Display labels ("Drive 1"–"Drive 4", left-to-right) are unchanged — only which
+  `MachineConfig.FloppyDrives[i]` slot each row targets changed. `LoadFloppyDrivesFrom`'s collapse-
+  to-a-count logic changed the same way: instead of `byIndex.Keys.Max() + 1`, it now walks
+  `DriveIndexSequence` in order and takes one past the highest POSITION with an enabled drive —
+  this is the exact same "highest enabled X + 1" shape as before, just POSITION-in-sequence
+  instead of raw index magnitude, so the existing gap/hand-edited-`.cfg` lossy-collapse behavior
+  (milestone 14) is preserved, just restated against the new sequence.
+- **Found:** the machine layer genuinely needed zero changes — confirmed
+  `Machine`/`MachineConfig`/`Upd765` already treat `FloppyDrives` as an arbitrary-index collection
+  (machine milestone 20) before touching anything, per the process reminder to stop and flag if
+  this turned out to need more than `ConfigWindowVm`'s own row/collapse logic. It didn't.
+- **Existing tests updated (pre-existing fixtures assumed the OLD 0-based convention, now
+  unrealistic):** `LoadFromCurrentConfig_ReflectsAnAlreadyFloppyRamMachine` (fixture indices 0,1 →
+  1,2 — index 0 alone would have wrongly collapsed to count 4 under the new sequence, which isn't
+  what that test was testing); `PickImageForRow_LiveDrive_DelegatesToSameMountPath_...` (fixture
+  index 0 → 1, matching what "1 drive" now actually produces); `Apply_ConfigWithUnresolvedMismatch_...`
+  (assertion updated from `DriveIndex == 0` to `== 1`). The renamed
+  `FloppyDriveCount_ResizesRowsWithSequentialIndices` became the milestone's own tests (a)-(c) below.
+- **Tests:** all 6 of the milestone's own listed cases — (a) "1 drive" → `[1]`; (b) "2 drives" →
+  `[1, 2]`; (c) "4 drives" → `[1, 2, 3, 0]`; (d) round-trip at each count 1-4 through a real
+  `Apply` + a freshly-opened `ConfigWindowVm` against the same live machine; (e) a `.cfg` with only
+  index 1 enabled collapses to count 1; (f) a `.cfg` with only index 0 enabled (irregular,
+  hand-edited) collapses to count 4 with drives 2/3 empty, no crash. Full `P2000.UI.Tests`:
+  198/198 green (was 192).
+- **Applies to:** `src/P2000.UI/ViewModels/ConfigWindowVm.cs` (`DriveIndexSequence`,
+  `ResizeFloppyDriveRows`, `LoadFloppyDrivesFrom`, `FloppyDriveRowVm`'s doc comment),
+  `tests/P2000.UI.Tests/ViewModels/ConfigWindowVmTests.cs`.
+- **Synced:** no (pending human sync into `docs/P2000T-reference.md` §5d).
+
 ### 2026-07-27 — Housekeeping: `docs/JWSDOS-format.md` renamed to `docs/P2000T-disk-formats.md`
 - **Trigger:** owner decision, mechanical follow-through of the rename recorded in
   `P2000.Machine/CLAUDE.md`'s own findings log the same day — this doc grew a substantial PDOS
@@ -1325,7 +1365,8 @@ project.
   `RecheckOfflineMismatchAsync`, `PickStorageFileAsync`), `DiskDriveWindowVm.cs`
   (`RebuildIfMachineChanged` visibility, `RaiseAnyPendingMismatches`), `DisplayWindow.axaml.cs`,
   `ConfigWindow.axaml.cs`.
-- **Synced:** no (pending human sync into `docs/P2000T-reference.md` §3a).
+- **Synced:** yes (2026-07-27, into `docs/P2000T-reference.md` §3a — new "IMPLEMENTED (UI
+  milestone 14g, 2026-07-27)" paragraph).
 
 ### 2026-07-27 — Milestone 14f IMPLEMENTED: Save/Save As format choice (IMD as the offered target)
 - **Depends on machine milestone 21** (`ImdFormat`/`DskImage.Format`/`GetImdBytes`, this same

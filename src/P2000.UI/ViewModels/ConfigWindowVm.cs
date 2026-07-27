@@ -14,9 +14,10 @@ namespace P2000.UI.ViewModels;
 /// <summary>One row of the "Floppy drives" config axis (project CLAUDE.md §14 milestone 14) —
 /// Capacity/Sides are reset-to-apply topology, and only the SEED for blank/unlabeled media
 /// (machine-layer M19/M20: a mounted image's own on-disk label always wins). <see cref="DriveIndex"/>
-/// is fixed at construction — rows are always sequential 0..N-1, matching the config window's
-/// drive-COUNT selector (no per-row enable/gaps, unlike the machine's own more general
-/// <see cref="FloppyDriveConfig"/> shape).</summary>
+/// is fixed at construction — rows are always in <see cref="ConfigWindowVm.DriveIndexSequence"/>
+/// order (1, 2, 3, 0 — the real machine's own on-screen drive numbering, milestone 14d), not
+/// 0-based sequential, matching the config window's drive-COUNT selector (no per-row enable/gaps,
+/// unlike the machine's own more general <see cref="FloppyDriveConfig"/> shape).</summary>
 public sealed partial class FloppyDriveRowVm : ObservableObject
 {
     private readonly ConfigWindowVm _owner;
@@ -208,16 +209,32 @@ public sealed partial class ConfigWindowVm : ObservableObject
         StatusMessage = "";
     }
 
+    /// <summary>The real machine's own on-screen drive numbering convention (project CLAUDE.md
+    /// milestone 14d; reference doc §5d "RESOLVED — the Config window's drive-count axis now
+    /// follows this exact real convention"): the ROM's `get_drive_choice` maps user-facing drive
+    /// 1/2/3/4 to internal unit-select 1/2/3/0 — the ROM's disk driver hardcodes unit-select to
+    /// drive 1 and never addresses unit 0, so a drive authored at internal index 0 (this window's
+    /// OLD 0-based sequential default for "1 drive") is silently invisible to the ROM. Row
+    /// position <c>i</c> (0-based, in display/left-to-right order — "Drive 1", "Drive 2", …)
+    /// always targets <c>MachineConfig.FloppyDrives</c> index <c>DriveIndexSequence[i]</c>.</summary>
+    private static readonly int[] DriveIndexSequence = [1, 2, 3, 0];
+
     /// <summary>Rebuilds <see cref="FloppyDriveRows"/> (and <see cref="FloppyDriveCount"/>) from
     /// a loaded config's drive list. Missing/disabled/gapped entries collapse to the config
-    /// window's simpler sequential-count model (§14 milestone 14) — any drive at index ≥ the
-    /// highest populated index is simply not represented; this only round-trips what THIS
-    /// window itself could have produced, not every shape <see cref="MachineConfig.FloppyDrives"/>
-    /// can technically hold (e.g. a hand-edited .cfg with gaps or a disabled middle drive).</summary>
+    /// window's simpler sequential-count model (§14 milestone 14, restated against
+    /// <see cref="DriveIndexSequence"/> by milestone 14d) — count = one past the highest POSITION
+    /// in that sequence with an enabled drive; this only round-trips what THIS window itself could
+    /// have produced, not every shape <see cref="MachineConfig.FloppyDrives"/> can technically hold
+    /// (e.g. a hand-edited .cfg with gaps, or index 0 set alone with nothing else — collapses to
+    /// count 4 with drives 2/3 shown empty, an accepted lossy-collapse limitation, not a crash).</summary>
     private void LoadFloppyDrivesFrom(IReadOnlyList<FloppyDriveConfig> drives)
     {
         var byIndex = drives.Where(d => d.Enabled).ToDictionary(d => d.DriveIndex);
-        var count = byIndex.Count == 0 ? 0 : byIndex.Keys.Max() + 1;
+        var count = 0;
+        for (var i = 0; i < DriveIndexSequence.Length; i++)
+        {
+            if (byIndex.ContainsKey(DriveIndexSequence[i])) count = i + 1;
+        }
         FloppyDriveCount = count; // triggers OnFloppyDriveCountChanged → ResizeFloppyDriveRows
         foreach (var row in FloppyDriveRows)
         {
@@ -241,7 +258,7 @@ public sealed partial class ConfigWindowVm : ObservableObject
         while (FloppyDriveRows.Count > count)
             FloppyDriveRows.RemoveAt(FloppyDriveRows.Count - 1);
         while (FloppyDriveRows.Count < count)
-            FloppyDriveRows.Add(new FloppyDriveRowVm(FloppyDriveRows.Count, this));
+            FloppyDriveRows.Add(new FloppyDriveRowVm(DriveIndexSequence[FloppyDriveRows.Count], this));
     }
 
     partial void OnBoardChanged(InternalBoard value)

@@ -508,7 +508,7 @@ public sealed partial class DiskDriveVm : ObservableObject
 
     private static IReadOnlyList<string> FormatDirectory(DskImage disk)
     {
-        // Side 2 directory location is unconfirmed (docs/JWSDOS-format.md §7 item 2) —
+        // Side 2 directory location is unconfirmed (docs/P2000T-disk-formats.md §7 item 2) —
         // ReadDirectory() itself only ever reads side 1's confirmed active region regardless
         // of the mounted image's Sides; nothing extra needed here to enforce that.
         var entries = disk.ReadDirectory();

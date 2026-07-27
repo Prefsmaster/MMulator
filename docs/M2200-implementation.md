@@ -288,7 +288,7 @@ for the 64 KB version, 8× `HM50256` [256Kbit×1] for the 256 KB version — sam
 different DRAM density, pin-compatible).
 
 **Geometry — CONFIRMED:** sector size is **256 bytes** (same as the real floppy, matching
-`docs/JWSDOS-format.md`'s conventions, though this is a genuinely separate device — §3.2 below).
+`docs/P2000T-disk-formats.md`'s conventions, though this is a genuinely separate device — §3.2 below).
 Maximum **16 sectors/track** (only the 4 LSBs of the sector register are used, regardless of
 capacity). Track register width depends on capacity: **4 LSBs for the 64 KB version, 6 LSBs for
 the 256 KB version** (4 bits × 16 sectors × 256 B = 64 KB exactly; 6 bits × 16 sectors × 256 B =

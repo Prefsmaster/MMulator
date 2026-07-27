@@ -343,8 +343,8 @@ public class MultiDriveFloppyTests
         // A genuinely blank image has no label (project CLAUDE.md §13.20) — reloading its raw
         // bytes through the label-sniffing constructor only makes sense once a guest DOS has
         // formatted it (written the geometry label as part of formatting), same as real
-        // hardware. Simulate that one-time format step directly (label bytes only, docs/
-        // JWSDOS-format.md §3) before the guest write this test actually cares about.
+        // hardware. Simulate that one-time format step directly (label bytes only,
+        // docs/P2000T-disk-formats.md §3) before the guest write this test actually cares about.
         var disk = DskImage.CreateBlank(tracks: 40, sides: 2);
         var formatted = disk.GetBytes();
         formatted[0x0FEF] = (byte)'D';

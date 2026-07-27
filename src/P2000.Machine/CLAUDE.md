@@ -714,7 +714,7 @@ is NO machine-layer runner milestone here — it's promoted in with the external
       registers/flags after the trap match the ROM's documented post-conditions so BASIC/ROM
       callers continue; (d) Authentic mode fires no trap. → commit.
 19. **Floppy Disk Controller (µPD765) — standalone chip + minimal board wiring** (reference
-    doc §5c/§5d/§5e + **`docs/JWSDOS-format.md`** for the DOS-specific facts below; the
+    doc §5c/§5d/§5e + **`docs/P2000T-disk-formats.md`** for the DOS-specific facts below; the
     disk-storage milestone the CTC (M17) was built to enable — its INT has nowhere to go
     without ch0).
     - **Design — standalone chip (DECISION, mirrors the `Z80Ctc`/`SAA5050` pattern):**
@@ -775,12 +775,12 @@ is NO machine-layer runner milestone here — it's promoted in with the external
       (routed via CTC ch0, which **redirects the polling loop's return address** rather than
       resuming it — an ISR technique, nothing special needed in the core) → track 1 to
       `0xE000`–`0xEFFF`, track 2 to `0xF000`–`0xFFFF`, **8 KB total** (not 16 KB — an earlier
-      figure was a typo, see `docs/JWSDOS-format.md` provenance) → checks the loaded byte
+      figure was a typo, see `docs/P2000T-disk-formats.md` provenance) → checks the loaded byte
       against `0xF3` ("system disk" signature) → cleanup always runs: CTC ch0 reset, FDC off,
       **RAMSW restored to `0x00`** (bank 0) — whatever runs the loaded DOS extension must
       itself re-select bank 1 before jumping into it.
       **`0xF3` signature — CONFIRMED, feeds directly into the RUN-gate test design
-      (`docs/JWSDOS-format.md` §6/§7); `0xF3` is specifically PDOS's (Philips DOS's) own
+      (`docs/P2000T-disk-formats.md` §6/§7); `0xF3` is specifically PDOS's (Philips DOS's) own
       system-disk signature, not a generic "Philips" convention** — confirmed two ways:
       two real JWSDOS disk images have `0x20` at that offset (JWSDOS 5.0's own actual first
       opcode byte, `JR NZ`, not a bad dump) while a real **"Disk BASIC 24K" `.IMD` image —
@@ -804,7 +804,7 @@ is NO machine-layer runner milestone here — it's promoted in with the external
       contradicting known reality), but confirm once `getdos`'s caller is sourced.
       **PDOS itself — NEW, per the owner's external documentation research (2026-07-20):** a
       real, distinct, official Philips DOS with its own directory system, separate from and not
-      assumed to share `jwsdos5.0.asm`'s directory format (`docs/JWSDOS-format.md` §4). Not
+      assumed to share `jwsdos5.0.asm`'s directory format (`docs/P2000T-disk-formats.md` §4). Not
       yet in this milestone's scope — flagging so a future PDOS-support milestone doesn't
       silently assume JWSDOS's directory struct applies. M19 as scoped here only needs to boot
       through `getdos` and check the signature; it does not need to parse a PDOS-formatted
@@ -822,37 +822,37 @@ is NO machine-layer runner milestone here — it's promoted in with the external
       results are identical either way. ROM busy-loops (the 342 ms / 1.3 ms delays above) are
       OUTSIDE this seam entirely — they need no hook, Authentic and Turbo both just execute
       them at real T-state cost.
-    - **Disk geometry / JWSDOS format — see `docs/JWSDOS-format.md` (companion doc, don't
+    - **Disk geometry / JWSDOS format — see `docs/P2000T-disk-formats.md` (companion doc, don't
       duplicate here, mirrors the MDCR pattern):** 16 sectors/track, 256 B/sector (CONFIRMED
       from `getdos`); JWSDOS 5.0 itself supports **multiple geometries** (35/40/80-track,
       SS/DS) as a per-disk format-time choice — supersedes the reference doc §5d/§3a's
       "single-sided 35-track" placeholder (**synced** — reference doc §3a/§5b now reflect the
       per-disk geometry + self-describing label). JWSDOS embeds a self-describing geometry
-      label on-disk (`docs/JWSDOS-format.md` §3) — **but real JWSDOS itself does NOT read this
+      label on-disk (`docs/P2000T-disk-formats.md` §3) — **but real JWSDOS itself does NOT read this
       back** to auto-configure its own runtime state (it uses live RAM defaults, changed only
-      via its own format menu, `docs/JWSDOS-format.md` §1). **Design decision:** the emulator's
+      via its own format menu, `docs/P2000T-disk-formats.md` §1). **Design decision:** the emulator's
       `.dsk` loader SHOULD auto-detect geometry from this label anyway — a deliberate
       emulator-side UX improvement beyond replicating real JWSDOS behavior, not "just
       matching the hardware." Keeps the "raw sector dump, no header" file convention
       (reference doc §3a) intact since the label is real on-disk JWSDOS data.
       **Auto-detect is two independent fixed-offset single-byte reads, CONFIRMED
-      (`docs/JWSDOS-format.md` §3):** side = ASCII `'D'`/`'S'` at raw offset `0x0FEF`; track
+      (`docs/P2000T-disk-formats.md` §3):** side = ASCII `'D'`/`'S'` at raw offset `0x0FEF`; track
       count = binary byte **`− 1`** at raw offset `0x0FFF` (e.g. `0x29` = 41 → 40 tracks). No
       banner-text parsing needed for either field — both are exact-position reads, byte-verified
       against two independent real images.
     - **Host `.dsk` image API** — mount/eject/create-blank/write-protect/browse, always
       host-speed, independent of `TimingPolicy` (the `.cas` API is the template). Read-only
-      directory browsing needs only the 32-byte directory-entry struct (`docs/JWSDOS-format.md`
+      directory browsing needs only the 32-byte directory-entry struct (`docs/P2000T-disk-formats.md`
       §4) — no allocation logic. **Browse ONLY the confirmed active directory: raw
       `0x1800`–`0x1FFF` (logical sector 25, `dir_side1_prep`'s target, 18 real entries on the
       `Spel1.dsk` test image) — do NOT parse raw `0x1000`–`0x17FF` (sectors 1–8 of track 2) as
       directory data.** That region is real, struct-shaped, but stale/unrelated data (a
-      `JWS Systeem Disk` write-path artifact, `docs/JWSDOS-format.md` §2/§7 item 3) — parsing it
+      `JWS Systeem Disk` write-path artifact, `docs/P2000T-disk-formats.md` §2/§7 item 3) — parsing it
       would surface phantom files that don't belong to the mounted disk. **Side 2's own
-      directory location in a raw `.dsk` file is NOT yet confirmed** (`docs/JWSDOS-format.md` §7
+      directory location in a raw `.dsk` file is NOT yet confirmed** (`docs/P2000T-disk-formats.md` §7
       item 2) — for a double-sided image, browse side 1 only until that's sourced; don't guess
       an offset for side 2. Write support (save into a mounted image) needs the gap-reuse/append
-      algorithm (`docs/JWSDOS-format.md` §5) — scope as a later concern unless M19 needs write
+      algorithm (`docs/P2000T-disk-formats.md` §5) — scope as a later concern unless M19 needs write
       from the start.
     - **`.state`:** the FDC device block (command/phase state, per-drive motor/head-position/
       selected-drive state) is a new device stream entry → bump `MachineStateFile.
@@ -985,7 +985,7 @@ is NO machine-layer runner milestone here — it's promoted in with the external
 
 20. **Philips Expansion Card — RAM-variant status + multi-drive floppy subsystem** (promoted
     from the §14 "multi-board RAM-variant framework" placeholder; reference doc §5c/§5d +
-    `docs/JWSDOS-format.md`; extends `InternalExtensionBoard`/`Upd765` from M19, does not
+    `docs/P2000T-disk-formats.md`; extends `InternalExtensionBoard`/`Upd765` from M19, does not
     replace them).
     - **RAM-variant half of this milestone is mostly already DONE — recap, not new work.**
       Per the milestone-2 findings-log entry (§17, 2026-07-02), `RamVariant` already implements
@@ -1129,7 +1129,7 @@ is NO machine-layer runner milestone here — it's promoted in with the external
       silently assumed to be one universal chip across every real M2200 unit.
     - **Geometry — auto-detect still wins, config axis is the fallback:** M19 already decided
       the emulator auto-detects capacity/sidedness from the on-disk label
-      (`docs/JWSDOS-format.md` §3: side at raw `0x0FEF`, track count−1 at raw `0x0FFF`) rather
+      (`docs/P2000T-disk-formats.md` §3: side at raw `0x0FEF`, track count−1 at raw `0x0FFF`) rather
       than trusting a config value. The new per-drive **Capacity/Sides config axis exists for
       blank/newly-formatted images (no valid label yet) and as a manual override if a label is
       absent or corrupt** — it is NOT a second source of truth competing with the label when one
@@ -1168,7 +1168,7 @@ is NO machine-layer runner milestone here — it's promoted in with the external
       no bitstream-style encode step the way `.cas` needed), **write-protect**, **browse** — all
       take a drive index; behaviour per call otherwise unchanged from M19. **Side 2 directory
       browsing stays blocked** on the same open item M19 already flagged — side 2's directory
-      location in a raw `.dsk` file is not yet confirmed (`docs/JWSDOS-format.md` §7 item 2) —
+      location in a raw `.dsk` file is not yet confirmed (`docs/P2000T-disk-formats.md` §7 item 2) —
       do not guess an offset just because multi-drive makes double-sided images more prominent;
       browse side 1 only for a DS-mounted image until that's sourced.
     - **Tests:** (a) config validation accepts 1 to 4 drives (updated ceiling, per the hardware-
@@ -1464,6 +1464,28 @@ marked synced. Do NOT edit the reference doc from this project.
 - **Applies to:** reference doc §… / <file/port>
 - **Synced:** yes (2026-07-05, into P2000T-reference.md + device guides)
 -->
+
+### 2026-07-27 — Housekeeping: `docs/JWSDOS-format.md` renamed to `docs/P2000T-disk-formats.md`
+- **Trigger:** owner decision (`docs/P2000T-disk-formats.md` §8 provenance entry) — the doc grew a
+  substantial, confirmed PDOS section (§6a) alongside its original JWSDOS content, and the old
+  JWSDOS-branded filename had started actively misdescribing about a fifth of its own content.
+- **Done:** `git mv docs/JWSDOS-format.md docs/P2000T-disk-formats.md` (history preserved, not
+  delete+recreate). Swept every `docs/JWSDOS-format.md` citation in source-code comments (`DskImage.cs`
+  and its test files across both `P2000.Machine.Tests` and any XML-doc pointers) and in this file's
+  own forward-looking §13 build-order milestone text (14 occurrences, lines 717–1171), plus
+  `docs/M2200-implementation.md`'s one cross-reference — all updated to the new path. No behavior
+  change; comment/doc text only.
+- **Left alone, deliberately:** this section's OWN two dated entries citing the old path (just
+  above, in the 20d write-up) and all of `docs/CLAUDE_machine_findings_archive.md` and
+  `docs/implementation-handoff-2026-07-22.md` — historical records of what was true when written,
+  not live references. Any findings-log entry from here on that needs to cite this doc should use
+  the new path.
+- **Applies to:** `docs/P2000T-disk-formats.md` (renamed), `src/P2000.Machine/CLAUDE.md` §13,
+  `src/P2000.Machine/Devices/Fdc/DskImage.cs`, `tests/P2000.Machine.Tests/Devices/Fdc/DskImageTests.cs`,
+  `tests/P2000.Machine.Tests/Devices/Fdc/MultiDriveFloppyTests.cs`,
+  `tests/P2000.Machine.Tests/Devices/Fdc/RealFixtureTests.cs`, `tests/P2000.Machine.Tests/Boot/DiskBootTests.cs`,
+  `docs/M2200-implementation.md`.
+- **Synced:** n/a — no reference-doc content changed, this is a path-reference sweep only.
 
 ### 2026-07-27 — Milestone 20e IMPLEMENTED: extracted `DskImage.DetectMismatch`
 - **Trigger:** owner decision to close the Config window's disk-image-picking gap (reference doc

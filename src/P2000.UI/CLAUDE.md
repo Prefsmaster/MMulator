@@ -871,10 +871,10 @@ builds did. Do not advance while the current milestone is red. Record spec corre
         changes — see ms.14a below** (owner decision, 2026-07-23, resolves what this bullet
         originally left open).
       - **Directory browse table** — filename, extension, type, blocks used, size — sourced from
-        the host-side `DskImage.ReadDirectory()` API (M19) / `docs/JWSDOS-format.md` §4's
+        the host-side `DskImage.ReadDirectory()` API (M19) / `docs/P2000T-disk-formats.md` §4's
         32-byte directory-entry fields. **Side 2 stays unavailable** for a DS-mounted image until
         the machine layer sources side 2's directory offset (same open item M19/M20 carry
-        forward, `docs/JWSDOS-format.md` §7 item 2) — show side 1 only, don't guess or leave a
+        forward, `docs/P2000T-disk-formats.md` §7 item 2) — show side 1 only, don't guess or leave a
         blank table that looks like an error.
       - **Live status row** — head (0/1), track/cylinder, sector, motor (on/off), read/write
         activity + direction, write-protected/write-enabled — same activity-LED sourcing pattern
@@ -1252,6 +1252,16 @@ project.
 - **Applies to:** reference doc §3a / <file>
 - **Synced:** yes (YYYY-MM-DD)
 -->
+
+### 2026-07-27 — Housekeeping: `docs/JWSDOS-format.md` renamed to `docs/P2000T-disk-formats.md`
+- **Trigger:** owner decision, mechanical follow-through of the rename recorded in
+  `P2000.Machine/CLAUDE.md`'s own findings log the same day — this doc grew a substantial PDOS
+  section (§6a) alongside its original JWSDOS content, making the old filename misleading.
+- **Done:** updated this project's two forward-looking §14 build-order citations (the VRAM
+  directory-browse milestone text) and `ViewModels/DiskDriveVm.cs`'s doc-comment citation to the
+  new path. No behavior change.
+- **Applies to:** `src/P2000.UI/CLAUDE.md` §14, `src/P2000.UI/ViewModels/DiskDriveVm.cs`.
+- **Synced:** n/a — no reference-doc content changed, this is a path-reference sweep only.
 
 ### 2026-07-27 — Milestone 14g IMPLEMENTED: Config-window disk picking unified + proactive surfacing
 - **Depends on machine milestone 20e** (`DskImage.DetectMismatch`/`DskImage.IsImdFile`, same day).

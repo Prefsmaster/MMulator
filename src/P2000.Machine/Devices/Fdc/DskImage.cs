@@ -2,7 +2,7 @@ namespace P2000.Machine.Devices.Fdc;
 
 /// <summary>
 /// Host-side <c>.dsk</c> disk-image API (project CLAUDE.md §13 milestone 19; format facts
-/// from <c>docs/JWSDOS-format.md</c>) — mirrors <see cref="Cassette.MiniTape"/>'s role for the
+/// from <c>docs/P2000T-disk-formats.md</c>) — mirrors <see cref="Cassette.MiniTape"/>'s role for the
 /// cassette: a plain data model the chip (<see cref="Upd765"/>) reads/writes sectors from,
 /// completely separate from the port-facing chip logic. Always host-speed, independent of
 /// <see cref="TimingPolicy"/> — mount/eject/create-blank/write-protect/browse never simulate
@@ -11,7 +11,7 @@ namespace P2000.Machine.Devices.Fdc;
 /// <b>Raw layout (derived, not directly stated by the format doc — flagged as such):</b> a
 /// side-major, cylinder-minor linear sector dump: side 0's cylinders 0..N-1 (each 16 sectors ×
 /// 256 B = 4096 B) come first, then side 1's, if present. This is the only layout consistent
-/// with <c>docs/JWSDOS-format.md</c> §2's confirmed byte ranges: "track 1" (raw
+/// with <c>docs/P2000T-disk-formats.md</c> §2's confirmed byte ranges: "track 1" (raw
 /// <c>0x0000</c>-<c>0x0FFF</c>) and "track 2" (raw <c>0x1000</c>-<c>0x1FFF</c>) are
 /// <c>getdos</c>'s own names for cylinders 0 and 1 of side 0, and the active side-1 directory
 /// at raw <c>0x1800</c>-<c>0x1FFF</c> (cylinder 1, sectors 9-16) has every entry's side byte
@@ -25,15 +25,15 @@ public sealed class DskImage
     internal const int BytesPerTrack = SectorsPerTrack * BytesPerSector;
 
     /// <summary>Raw offset of the geometry/system label's SS/DS indicator byte
-    /// (<c>docs/JWSDOS-format.md</c> §3, <c>$FEF</c>): ASCII <c>'D'</c> (double-sided) or
+    /// (<c>docs/P2000T-disk-formats.md</c> §3, <c>$FEF</c>): ASCII <c>'D'</c> (double-sided) or
     /// <c>'S'</c> (single-sided).</summary>
     private const int SideIndicatorOffset = 0x0FEF;
 
-    /// <summary>Raw offset of the track-count byte (<c>docs/JWSDOS-format.md</c> §3,
+    /// <summary>Raw offset of the track-count byte (<c>docs/P2000T-disk-formats.md</c> §3,
     /// <c>$FFF</c>): binary track count <b>+1</b> (e.g. <c>0x29</c> = 41 → 40 tracks).</summary>
     private const int TrackCountOffset = 0x0FFF;
 
-    /// <summary>Active side-1 directory region (<c>docs/JWSDOS-format.md</c> §2, confirmed via
+    /// <summary>Active side-1 directory region (<c>docs/P2000T-disk-formats.md</c> §2, confirmed via
     /// <c>dir_side1_prep</c>): raw <c>0x1800</c>-<c>0x1FFF</c>, NOT <c>0x1000</c>-<c>0x17FF</c>
     /// (a stale/unrelated cluster — see the format doc's §2/§7 item 3 caution).</summary>
     private const int DirectoryOffset = 0x1800;
@@ -115,7 +115,7 @@ public sealed class DskImage
     }
 
     /// <summary>The six canonical Capacity×Sides combinations JWSDOS itself supports
-    /// (<c>docs/JWSDOS-format.md</c> §3) — the fixed set <see cref="Mount"/>'s candidate-matching
+    /// (<c>docs/P2000T-disk-formats.md</c> §3) — the fixed set <see cref="Mount"/>'s candidate-matching
     /// checks against when neither the label nor the configured geometry validates.</summary>
     private static readonly (int Tracks, int Sides)[] CanonicalGeometries =
     {
@@ -345,7 +345,7 @@ public sealed class DskImage
     public byte[] GetImdBytes() => ImdFormat.Write(_data, Tracks, Sides, SectorOrderMaps);
 
     /// <summary>Browses side 1's confirmed active directory only (raw <c>0x1800</c>-<c>0x1FFF</c>
-    /// — <c>docs/JWSDOS-format.md</c> §2/§4). Side 2's directory location in a raw image is not
+    /// — <c>docs/P2000T-disk-formats.md</c> §2/§4). Side 2's directory location in a raw image is not
     /// yet confirmed (format doc §7 item 2) — deliberately NOT modeled here, per the milestone's
     /// own "don't guess an offset" instruction. Empty (zero-padded) slots are omitted.
     ///
@@ -396,7 +396,7 @@ public sealed class DskImage
     }
 }
 
-/// <summary>One parsed 32-byte JWSDOS directory entry (<c>docs/JWSDOS-format.md</c> §4,
+/// <summary>One parsed 32-byte JWSDOS directory entry (<c>docs/P2000T-disk-formats.md</c> §4,
 /// field layout sourced from the <c>jwsdos5.0.asm</c> <c>DE_*</c> symbols). Offsets 29-31
 /// (transient FDC-transfer scratch, not persisted per-file metadata — format doc §4) are
 /// deliberately not exposed.</summary>

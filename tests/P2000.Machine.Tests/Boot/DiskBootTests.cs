@@ -5,7 +5,7 @@ namespace P2000.Machine.Tests.Boot;
 
 /// <summary>
 /// Integration tests for the disk-boot path (project CLAUDE.md §13 milestone 19; reference doc
-/// §5b "Disk-boot gate", `docs/JWSDOS-format.md` §6 `getdos`) — the REAL embedded monitor ROM
+/// §5b "Disk-boot gate", `docs/P2000T-disk-formats.md` §6 `getdos`) — the REAL embedded monitor ROM
 /// driving the real <see cref="Devices.Fdc.Upd765"/> chip through its actual boot code, against
 /// the real disk fixture in <c>assets/Disks/Spel1.dsk</c>.
 ///
@@ -116,7 +116,7 @@ public class DiskBootTests
     }
 
     /// <summary>
-    /// The system-disk signature check (`docs/JWSDOS-format.md` §6 step 7 / `Disk.asm`
+    /// The system-disk signature check (`docs/P2000T-disk-formats.md` §6 step 7 / `Disk.asm`
     /// `tracks_loaded`): a real JWSDOS disk (first byte 0x20) does NOT match 0xF3, so `getdos`
     /// takes the "not PDOS" branch, confirmed by the exact loaded byte at 0xE000.
     /// </summary>

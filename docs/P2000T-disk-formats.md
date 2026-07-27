@@ -1,13 +1,21 @@
-# JWSDOS format — device/format guide
+# P2000T disk formats — device/format guide
+
+(Renamed 2026-07-27 from `JWSDOS-format.md` — this doc grew beyond a single-DOS scope once §6a
+added PDOS's own, genuinely distinct on-disk format alongside JWSDOS's; the old name had started
+to misdescribe roughly a fifth of the doc's own content. See the §8 provenance entry for the
+rename itself and what still needs updating in the actual repo.)
 
 Companion to `docs/P2000T-reference.md` and `docs/MDCR-implementation.md`, same division of
 labor as MDCR: **the reference doc keeps the generic µPD765 chip facts** (ports `0x8C`/`0x8D`/
 `0x90`, MSR/control-latch bits, command/execute/result phases, semi-DMA, CTC ch0/ch1 roles —
-reference doc §5d/§5e). **This doc keeps everything specific to how JWSDOS actually uses that
-chip and what it writes to disk** — the boot-load sequence as literally executed, the on-disk
-layout, the directory format, the allocation model, and the geometry label. Reference this doc
-from the reference doc and `CLAUDE.md` rather than duplicating its contents there, mirroring
-how MDCR-implementation.md is referenced from cassette-related sections.
+reference doc §5d/§5e). **This doc keeps everything specific to how the P2000T's two real DOSes
+actually use that chip and what they write to disk** — the shared boot-load sequence as literally
+executed (§6), then each DOS's own on-disk layout, directory format, and allocation model:
+**JWSDOS** (§1–§5 — the DOS this doc originally covered exclusively) and **PDOS** (§6a — the
+official Philips DOS, a separate product sharing only the physical geometry and `getdos`
+boot convention with JWSDOS, §6a's own intro). Reference this doc from the reference doc and
+`CLAUDE.md` rather than duplicating its contents there, mirroring how MDCR-implementation.md is
+referenced from cassette-related sections.
 
 **Sources:** the project's own monitor-ROM disassembly (`Disk.asm`, owner-supplied,
 2026-07-13 — covers the disk-boot gate and the full `getdos` routine, i.e. what the
@@ -356,6 +364,25 @@ functionally yes — `$FEF` is a reliable, fixed-offset ASCII `'D'`/`'S'` charac
 table row above), confirmed identically in two independent real images. No banner-text search
 needed; parse it exactly like `$FFF`.
 
+**RESOLVED (owner + CC, 2026-07-27) — this label is a JWSDOS convention, not a P2000 disk-image
+convention, and an emulator's auto-detect must validate it rather than trust it blind.**
+Triggered by real testing: the `Basic24k` boot floppy is **PDOS**, a different disk OS entirely
+— it has nothing at `$FEF`/`$FFF` at all, so an auto-detect reading those offsets on a PDOS (or
+any other non-JWSDOS, or plain data-only) image is just reading whatever sector bytes happen to
+occupy that space, not a real label. Compounding this, a raw `.dsk` sector dump carries zero
+container metadata of its own, so **file length alone is sometimes genuinely ambiguous** — a
+40-track/double-sided image and an 80-track/single-sided image are both exactly 327,680 bytes;
+nothing about the bytes themselves can disambiguate that. **The fix, now built (`P2000.Machine`
+milestone 20d; reference doc §5d's label-validation RESOLVED block): only trust a read label if
+the byte length it implies equals the file's actual length exactly** — otherwise treat the file
+as unlabeled and fall back to the drive's configured Capacity/Sides (surfacing a user-facing
+mismatch dialog, `P2000.UI` milestone 14e, if that doesn't match either). This single length
+check is what makes it safe to read these offsets blind on any file, JWSDOS or not — random
+sector bytes forming a combination that ALSO happens to byte-length-match the file is
+vanishingly unlikely. **Nothing in this doc's own byte-offset table above needed correcting** —
+the label itself, on a genuine JWSDOS disk, is exactly as documented; this note is about not
+assuming every `.dsk` file IS a JWSDOS disk just because it CAN be read at these offsets.
+
 **RESOLVED (owner, 2026-07-19 — disassembly of `JWS Systeem Disk` itself; closes the former
 "where does the on-disk label get written" open item, moved to §7's resolved list):**
 `JWS Systeem Disk` — not `jwsdos5.0.asm`'s own format/erase routine — is confirmed to be the
@@ -602,6 +629,131 @@ match dispatch on the exact byte values above, not a reconstructed bit theory.
 
 ---
 
+## 6a. PDOS's own disk format — FCB structure, record allocation, and a hard geometry ceiling
+(owner-sourced, 2026-07-27, official Dutch-language 24K Disk BASIC documentation) — this
+substantially RESOLVES §7 item 7(b) below ("PDOS's own on-disk directory format — completely
+unsourced"). Everything in this section is **PDOS's own scheme, confirmed distinct from
+JWSDOS's** (§4/§5 above) — same physical sector geometry (16 sectors/track, 256 B/sector) and
+the same `getdos` two-track boot convention (§6), but a completely different directory/
+allocation model. JWSDOS didn't just clone PDOS at the boot level and stop there — per the
+owner's own framing, **JWSDOS is a genuine improvement over PDOS in capability** (wider
+geometry support, below), while still being "clumsy in some aspects" (the owner's own
+characterization — plausibly pointing at already-documented JWSDOS quirks like the stale
+directory cluster left over from `JWS Systeem Disk`'s blind sequential copy, §7 item 3, or the
+somewhat ad-hoc write-scope behavior found there; not asserting anything beyond what's already
+on record unless the owner wants to specify further).
+
+- **Allocation unit — the "record":** 4 sectors = 1024 bytes (a cluster, in modern terms).
+  Capacity: 35 tracks × 4 KB/track = 140 KB; 40 tracks × 4 KB/track = 160 KB — matches figures
+  already established elsewhere in this doc/reference doc.
+- **Directory — the FCB ("File Control Block"), 32 bytes, one per file:** lives on **track 1
+  of a "werkschijf" (data/working disk) ONLY — explicitly NOT the system disk**, whose track 1
+  serves the boot-load convention instead (§6). Layout (1-based byte positions, as the source
+  document states them):
+  - Position 1: unconfirmed/unlabeled first byte (`0x00` in the worked example below). **Update,
+    real-disk byte inspection (below):** not a constant — a real disk's two FCB entries show
+    `0xF3` and `0x00` respectively at this position, so it varies per file and isn't simply
+    "always zero."
+    **PLAUSIBLE, owner-proposed, not confirmed:** `0xF3` is already established elsewhere in
+    this doc (§6, provenance log 2026-07-13) as the confirmed official Philips disk-BASIC system
+    signature — the real first byte at `0xE000` in a genuine "Disk BASIC 24K" IMD image. The
+    owner independently recalled this same association (checked directly in a hex editor,
+    separately from this doc's own tooling) and floated a matching hypothesis here: position 1
+    could be a system/protected-file flag, `0xF3` marking a file as part of the official
+    Basic-24K product (cartridge + boot disk + this "werkschijf"/utility volume) rather than an
+    ordinary user file. It fits this specific disk cleanly — `VOLORG.BAS` (the actual utility
+    program, `0xF3`) vs. `VOLINFO.BAS` (a plain-text help screen, `0x00`) is exactly the kind of
+    file pair you'd expect to be split "core product" vs. "ordinary content" if that's what the
+    byte means. Genuinely plausible and worth recording, but it's the same *value* reused in a
+    structurally different context (a directory-entry attribute byte vs. a boot-time first
+    opcode) — that alone doesn't guarantee the same semantics, so this stays a hypothesis pending
+    a disk with more files (ideally a mix of official and clearly-user-created ones) to test it
+    against. No confirmed meaning yet.
+  - Positions 2–9 (8 bytes): filename, space-padded if shorter than 8 characters (e.g.
+    `"MONITORE"`).
+  - Positions 10–15: unlabeled in the source (an extension-like `"BAS"` + reserved bytes in the
+    worked example — plausibly a file-type/extension field, not confirmed).
+  - **Position 16: sector count** — the file's real length in sectors (e.g. `0x1B` = 27 →
+    file is under 27 × 256 = 6912 bytes).
+  - **Positions 17–32 (16 bytes) — the Disk Allocation Map:** one byte per **record** number
+    used by this file, in order. Since 16 bytes can address at most 16 records × 1 KB = 16 KB,
+    **a file over 16 KB gets a second FCB/index entry** (a continuation record).
+  - **Worked example, confirms the scheme exactly:** sector count `0x1B` (27) with allocation
+    map `[0E, 0F, 10, 11, 12, 13, 14, 00, 00, ...]` — 7 real records (`0x0E`–`0x14`) × 4
+    sectors/record = 28 sectors, one more than the 27 actually needed (the last sector of the
+    7th record goes unused) — matches the source document's own arithmetic precisely.
+  - **CONFIRMED against a real disk (owner-supplied `volorg.dsk`, 143,360 B, SS-35 — a real
+    "werkschijf" carrying the `VOLORG`/`VOLINFO` disk-utility programs), independent of the
+    source document's own single worked example:** both real FCB entries byte-inspected directly.
+    Entry 1 (`VOLORG`, sector count `0x2C`=44) has allocation map `[04,05,06,07,0C,0D,0E,0F,
+    10,11,12,00,00,00,00,00]` — 11 records × 4 = 44 sectors, an *exact* fit with zero slack (a
+    new case the docx's own example didn't cover). Entry 2 (`VOLINFO`, sector count `0x0E`=14)
+    has allocation map `[08,09,0A,0B,00,...]` — 4 records × 4 = 16 sectors, 2 unused, the same
+    "slack" shape as the docx worked example. Neither entry's allocation map ever references
+    records `00`–`03` — directly confirming, on real data, the "record `0` is always part of
+    track 1's own index area" reasoning below (this is also the same point the owner raised
+    independently: those four codes are reserved and never spent on file data).
+  - **INFERRED → now CONFIRMED on real data:** trailing `0x00` entries in the allocation map past
+    the real records are unused padding, not a literal "record 0" reference — both real FCB
+    entries above end in `0x00` padding and never once encode an actual `00`–`03` record, matching
+    the reasoning that record `0` is permanently reserved for track 1's own index/FCB area and so
+    could never legitimately appear as a regular file's data slot.
+  - **`CLOSE` is what commits an updated FCB back to the index** — forgetting it in BASIC risks
+    the file being partially or entirely unfindable later. A real reliability/usage fact, not an
+    emulator behavior question (nothing here currently models file-level DOS semantics).
+- **Real physical interleave — CONFIRMED against real disk content (not just sourced from the
+  docx table), and directly relevant to the IMD sector-order-map work (machine milestone 21):**
+  each track's 16 sectors are grouped into its 4 records in a fixed, non-sequential physical
+  order — originally sourced from the source document's own worked table (its record-to-sector
+  breakdown is identical for every track, not just the one illustrated): record position 1 =
+  physical sectors **{1, 7, 13, 3}** (read in that order, 0-based: `00h, 06h, 0Ch, 02h`);
+  position 2 = **{9, 15, 5, 11}** (`08h, 0Eh, 04h, 0Ah`); position 3 = **{2, 8, 14, 4}**
+  (`01h, 07h, 0Dh, 03h`); position 4 = **{10, 16, 6, 12}** (`09h, 0Fh, 05h, 0Bh`).
+  **Independently re-derived from `volorg.dsk`'s raw bytes, not just transcribed from the
+  source table:** `VOLINFO.BAS` (track 3, records 8–11) is a plain-text BASIC help screen — a
+  12-item menu, "0 load and run a BASIC program" through "E exit to BASIC command mode." Read
+  the track's 16 sectors in plain physical order (1, 2, 3, … 16), the menu items come out
+  scrambled — item `E`'s text isn't even findable as a contiguous string, and several sector
+  boundaries land mid-word with a chunk of text simply missing (e.g. "BASIC-fil" is directly
+  followed by "utes", with "e attrib" — part of "file attributes" — silently absent, because
+  that piece of the sentence was physically stored in a different sector position entirely).
+  Re-order the *same* 16 sectors per the pattern above — sectors `{1,7,13,3}` first, then
+  `{9,15,5,11}`, then `{2,8,14,4}`, then `{10,16,6,12}` — and the menu reads perfectly, items
+  `0` through `E` in exact ascending order with no gaps (byte offsets 459, 513, 576, 611, 670,
+  727, 770, 809, 866, 901, 940, 1007 in the reassembled stream — cleanly monotonic). This isn't
+  a plausible-sounding pattern anymore; it's the only sector ordering that reconstructs
+  coherent file content from this real disk. Not currently modeled or produced by this emulator
+  (machine milestone 21's IMD writer only emits a plain sequential order for new data,
+  explicitly deferring real interleave), but now a confirmed, independently-verified candidate
+  for whenever a future milestone models authentic PDOS-formatted disk creation. Not scoped or
+  being built now — recorded here so it doesn't need re-deriving later.
+- **Track ↔ record-number mapping — a simple formula, not a table worth transcribing in full:**
+  track *N*'s four records are numbered `(N-1)×4` through `(N-1)×4 + 3` (hex). Track 1 → records
+  `00`–`03`; track 2 → `04`–`07`; …; track 40 → `9C`–`9F`. Total for 40 tracks: records `00`–`9F`
+  (160 records, matching 160 KB ÷ 1 KB/record exactly).
+- **Hard geometry ceiling — CONFIRMED, and it EXPLAINS the already-known "35 or 40 tracks, no
+  80, single-sided only" limit rather than just restating it:** the Disk Allocation Map stores
+  each record number as a **single byte** — 0–255, 256 records max. 80 tracks × 4 records/track
+  = 320 records, already over budget at 80 tracks regardless of sides; any double-sided variant
+  (35 or 40 tracks × 2 sides × 4 records/track = 280 or 320 records) is also over budget. Only
+  single-sided 35-track (140 records, `00`–`8B`) or single-sided 40-track (160 records, `00`–
+  `9F`) fit within a single byte's range. **This is a hard architectural ceiling in PDOS's own
+  addressing scheme, not a preference or a documentation gap** — independently corroborated by
+  the source document's own text (disks used with 24K Disk BASIC "have 35 or 40 tracks," no
+  80-track figure ever mentioned) and by the owner's own further research into secondary
+  sources. **Not in tension with anything already documented about JWSDOS or this emulator**:
+  JWSDOS's own allocation model (§5) uses no "record" concept at all and is confirmed to support
+  the wider 35/40/80-track, SS/DS range (§1) — a different, more capable DOS-level scheme on
+  the same physical hardware, which itself mechanically supports up to 80-track/double-sided
+  (confirmed via the M2200/Philips manual research, reference doc §5d) regardless of which DOS
+  a given disk happens to be formatted for. Three independent facts, no contradiction: hardware
+  ceiling (mechanical) ≥ JWSDOS's ceiling (software) > PDOS's ceiling (software, this section).
+- **Applies to:** reference doc §5d (disk geometry / FDC), machine milestone 21 (IMD sector-order
+  map — the interleave pattern above is the concrete candidate data for whenever that's picked
+  up), this doc §7 item 7 (resolved below).
+
+---
+
 ## 7. Open items
 
 1. **Does anything re-sync `SS_DS_Char`/`number_of_tracks` (§1) from an inserted disk's own
@@ -661,15 +813,15 @@ match dispatch on the exact byte values above, not a reconstructed bit theory.
 6. RAM variable addresses beyond `disk_transfer` (`0x6070`, confirmed): `memsize`,
    `disk_status`, `sysdisk_status`, `stacktemp_disk`, `disk_track_num`, `disk_search_track` —
    nice-to-have for `.state`/debugger symbol work, not blocking.
-7. **PDOS (Philips DOS) — NEW (owner, 2026-07-20), a real, distinct, official DOS with its
-   own directory system, confirmed to exist by name but otherwise unsourced.** Owner is
-   researching further. Open sub-questions: (a) is "Disk BASIC 24K" (the `0xF3`-signed image,
-   §6 step 7) actually a PDOS disk — presumed, not confirmed; (b) PDOS's own on-disk directory
-   format — completely unsourced, do not assume it matches `jwsdos5.0.asm`'s `DE_*` struct
-   (§4), which is JWSDOS's own and only boot-level-compatible with PDOS, not necessarily
-   directory-format-compatible; (c) whether this project needs to model PDOS as a second,
-   separate DOS at all, or whether JWSDOS-only support is sufficient scope — an open scoping
-   question for whoever picks this up, not just a research gap.
+7. **PDOS (Philips DOS) — sub-item (b) now RESOLVED (owner, 2026-07-27, official Dutch-language
+   24K Disk BASIC documentation) — see new §6a for the full FCB/record/geometry-ceiling
+   writeup.** Remaining open sub-questions, narrowed: (a) is "Disk BASIC 24K" (the
+   `0xF3`-signed image, §6 step 7) actually a PDOS disk — still presumed, not independently
+   confirmed, though now a far more plausible presumption given §6a's own source is
+   specifically 24K Disk BASIC's documentation; (c) whether this project needs to model PDOS
+   as a second, separate DOS at all (directory browsing, write support, etc.), or whether
+   JWSDOS-only support is sufficient scope — still an open scoping question for whoever picks
+   this up, now unblocked by a real source if the answer turns out to be "yes."
 
 **Resolved since the last revision (moved out of this list):** **`sysdisk_status`'s ambiguous
 initial-value comment (2026-07-20)** — explained, not just flagged: the exact `0xF3` branch
@@ -805,3 +957,55 @@ convention: `0xF3` is the official Philips disk-BASIC signature (verified agains
   despite calling the media "double-density" (conventionally an MFM-implying label) — in tension
   with this doc's own "MFM encoding" (§1, from `getdos`'s FDC command bytes). Flagged inline in §1;
   full write-up in `P2000T-reference.md` §5d. → this doc §1.
+- **2026-07-27 (owner-supplied official Dutch-language 24K Disk BASIC documentation):** PDOS's
+  own FCB/directory structure, its "record" (4-sector/1 KB) allocation unit, a fully worked
+  example cross-validating the sector-count/allocation-map relationship, a confirmed real
+  per-track physical interleave pattern, and the track↔record-number formula, all sourced
+  directly — resolving §7 item 7(b)'s "completely unsourced" status. Independently corroborates,
+  and explains the mechanism behind, the already-known "35 or 40 tracks, single-sided only"
+  ceiling: the allocation map's single-byte record numbering caps addressing at 256 records,
+  which only single-sided 35- or 40-track geometries fit within. → this doc §6a, §7 item 7.
+- **2026-07-27 (owner-supplied real disk image, `volorg.dsk`, 143,360 B, SS-35 — a real "VOLORG"
+  disk-utility werkschijf): direct byte inspection upgrades three §6a items from "sourced from
+  a single docx example" to independently CONFIRMED on different, real data.** (1) FCB layout
+  confirmed on two real entries (`VOLORG`, exact-fit allocation with zero slack; `VOLINFO`,
+  slack-padded allocation) — both match the documented position-16/17–32 scheme exactly, and
+  neither ever allocates records `00`–`03`, confirming those are permanently reserved for track
+  1's own index area (matches the owner's own reasoning independently). (2) The "trailing `0x00`
+  = padding, not a record-0 reference" inference is now confirmed on real data, not just the
+  one docx example. (3) **The physical interleave pattern is independently re-derived, not just
+  transcribed:** `VOLINFO.BAS`'s own plain-text help menu reads as scrambled/incomplete garbage
+  under naive sequential sector order, and reads as a perfect, complete, monotonically-ordered
+  12-item menu once reassembled per the documented `{1,7,13,3}/{9,15,5,11}/{2,8,14,4}/
+  {10,16,6,12}` pattern — the strongest possible confirmation available short of a real drive.
+  Also newly observed: the FCB's position-1 byte is NOT constant (`0xF3` vs `0x00` across the
+  two real entries) — the "unlabeled first byte" note is corrected from "0x00 in the worked
+  example" to "varies, meaning still unconfirmed." → this doc §6a.
+- **2026-07-27 (owner, independent hex-editor inspection of the same `volorg.dsk`):** confirmed
+  the sector-reordering finding above independently, using a different method (manual hex-editor
+  read) than this doc's own programmatic byte inspection — two independent confirmations of the
+  same real disk. Also recalled that `0xF3` is a known Philips system-track signature and
+  proposed it may flag position 1 as a system/protected-file marker for files belonging to the
+  official Basic-24K product; recorded as a plausible, not-yet-confirmed hypothesis (fits this
+  disk's `VOLORG.BAS`=`0xF3`/`VOLINFO.BAS`=`0x00` split cleanly, but needs a disk with more/mixed
+  files to test properly). Incidentally surfaced via readable text on the disk: `VOLORG.BAS` is
+  credited "WRITTEN BY MAX STERNECK, PHILIPS VIENNA" and interacts directly with the boot
+  "SYSTEM DISK" (write-protect-label removal, insertion prompts) — real historical context, not
+  currently load-bearing for any design decision. → this doc §6a.
+- **2026-07-27 (owner, structural concern): renamed this doc from `JWSDOS-format.md` to
+  `P2000T-disk-formats.md`.** With §6a's PDOS content now substantial and confirmed against real
+  data, keeping a JWSDOS-branded filename was actively misleading about a fifth of the doc's own
+  content — the owner's own objection, and the right call. Title and intro reworded to frame the
+  doc as covering both of the P2000T's real DOSes (JWSDOS §1–§5, PDOS §6a) over the shared
+  physical/boot layer (§6), rather than "JWSDOS, plus an unrelated PDOS aside." Every
+  cross-reference to the old path inside `P2000T-reference.md` (the doc this session maintains)
+  has already been updated to match.
+- **2026-07-27 (Claude Code): the git mv + reference sweep flagged above is now done.**
+  `git mv docs/JWSDOS-format.md docs/P2000T-disk-formats.md` (history preserved). Swept every
+  `docs/JWSDOS-format.md` citation in source-code comments and each project's living/forward-
+  looking `CLAUDE.md` sections (§13 build-order in `P2000.Machine/CLAUDE.md`, §14 build-order in
+  `P2000.UI/CLAUDE.md`) plus `docs/M2200-implementation.md`, updating all to
+  `docs/P2000T-disk-formats.md`. Left untouched, per the "historical record, not a live
+  reference" rule: dated findings-log entries in both `CLAUDE.md` files, `docs/
+  CLAUDE_machine_findings_archive.md`, and `docs/implementation-handoff-2026-07-22.md` (itself a
+  dated point-in-time snapshot).

@@ -18,7 +18,7 @@ public class DskImageTests
         return image;
     }
 
-    // ---- Geometry auto-detect (docs/JWSDOS-format.md §3) --------------------------------------
+    // ---- Geometry auto-detect (docs/P2000T-disk-formats.md §3) --------------------------------------
 
     [Fact]
     public void Mount_DoubleSided40Track_DetectsGeometry()
@@ -61,7 +61,7 @@ public class DskImageTests
     [Fact]
     public void ReadWriteSector_Side0Cylinder1Sector9_LandsAtRawOffset0x1800()
     {
-        // docs/JWSDOS-format.md §2: side 1's active directory sits at raw 0x1800-0x1FFF, which
+        // docs/P2000T-disk-formats.md §2: side 1's active directory sits at raw 0x1800-0x1FFF, which
         // is cylinder 1 (getdos's "track 2"), head 0, sectors 9-16 — this pins that identity.
         var disk = DskImage.CreateBlank(tracks: 40, sides: 2);
         var pattern = new byte[256];
@@ -99,7 +99,7 @@ public class DskImageTests
         foreach (var b in disk.ReadSector(0, 0, 1)) Assert.Equal(0x00, b);
     }
 
-    // ---- Directory browse (docs/JWSDOS-format.md §4; side-1 active directory only) ------------
+    // ---- Directory browse (docs/P2000T-disk-formats.md §4; side-1 active directory only) ------------
 
     private static void WriteDirectoryEntry(byte[] image, int slotIndex, string filename,
         string extension, char fileType, ushort fileLength, ushort transferAddress,
@@ -148,7 +148,7 @@ public class DskImageTests
     [Fact]
     public void ReadDirectory_NeverReadsTheStaleClusterAt0x1000()
     {
-        // docs/JWSDOS-format.md §2/§7 item 3: raw 0x1000-0x17FF holds a real, struct-shaped but
+        // docs/P2000T-disk-formats.md §2/§7 item 3: raw 0x1000-0x17FF holds a real, struct-shaped but
         // STALE directory cluster from a different disk operation entirely — must never surface.
         var image = BuildSyntheticImage(tracks: 40, sides: 2);
         // Poke a plausible-looking directory entry into the stale region.
@@ -166,7 +166,7 @@ public class DskImageTests
     [Fact]
     public void ReadDirectory_AllZeroTrack_ReturnsEmptyDirectory()
     {
-        // docs/JWSDOS-format.md §2: jwssytem.dsk's entire track 2 is all-zero — an empty
+        // docs/P2000T-disk-formats.md §2: jwssytem.dsk's entire track 2 is all-zero — an empty
         // directory must not be treated as an error.
         var image = BuildSyntheticImage(tracks: 40, sides: 2);
         var disk = new DskImage(image);

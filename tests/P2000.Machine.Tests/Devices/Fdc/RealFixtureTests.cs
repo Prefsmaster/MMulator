@@ -49,7 +49,7 @@ public class RealFixtureTests
     // ---- Directory browse: exact real content, stale cluster excluded ---------------------------
 
     /// <summary>The confirmed 18 real filenames on <c>Spel1.dsk</c>'s active side-1 directory
-    /// (raw 0x1800-0x1FFF), in on-disk order (<c>docs/JWSDOS-format.md</c> §2/§4).</summary>
+    /// (raw 0x1800-0x1FFF), in on-disk order (<c>docs/P2000T-disk-formats.md</c> §2/§4).</summary>
     private static readonly string[] ExpectedActiveFilenames =
     {
         "Tralieenspel", "klemvast", "Elevatie", "Risk", "Space Misson", "Cijferdans",
@@ -167,7 +167,7 @@ public class RealFixtureTests
         var expected = File.ReadAllBytes(path).AsSpan(0, 4096).ToArray();
         Assert.Equal(expected, read);
 
-        // The byte getdos's own system-disk-signature check reads (docs/JWSDOS-format.md §6
+        // The byte getdos's own system-disk-signature check reads (docs/P2000T-disk-formats.md §6
         // step 7): a real JWSDOS disk is 0x20, not the PDOS/official-disk-BASIC 0xF3.
         Assert.Equal(0x20, read[0]);
         Assert.NotEqual(0xF3, read[0]);

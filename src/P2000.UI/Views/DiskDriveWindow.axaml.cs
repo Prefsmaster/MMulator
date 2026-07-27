@@ -25,6 +25,7 @@ public partial class DiskDriveWindow : Window
             _vm.ShowMessageRequested -= ShowErrorDialog;
             _vm.ConfirmDiscardRequested -= ShowConfirmDiscardDialog;
             _vm.GeometryMismatchDetected -= ShowGeometryMismatchDialog;
+            _vm.SaveAsFormatRequested -= ShowSaveAsFormatDialog;
         }
 
         _vm = DataContext as DiskDriveWindowVm;
@@ -34,6 +35,7 @@ public partial class DiskDriveWindow : Window
             _vm.ShowMessageRequested += ShowErrorDialog;
             _vm.ConfirmDiscardRequested += ShowConfirmDiscardDialog;
             _vm.GeometryMismatchDetected += ShowGeometryMismatchDialog;
+            _vm.SaveAsFormatRequested += ShowSaveAsFormatDialog;
         }
 
         base.OnDataContextChanged(e);
@@ -190,6 +192,67 @@ public partial class DiskDriveWindow : Window
     private static string GeometryName(int tracks, int sides) =>
         $"{tracks}-track/{(sides == 2 ? "double-sided" : "single-sided")}";
 
+    // ── Save-As format-choice dialog (project CLAUDE.md milestone 14f; machine ms.21) ───────
+    // "Save As" always asks — never a silent conversion. Wording/lossy-export framing depends on
+    // whether the drive is CURRENTLY .dsk- or IMD-backed; the returned format is always plain
+    // IMD or Dsk regardless of which button's label was shown.
+
+    private async Task<DiskImageFormat?> ShowSaveAsFormatDialog(DiskImageFormat currentFormat)
+    {
+        var dialog = new Window
+        {
+            Title = "MMulator — Save Disk As",
+            Width = 440,
+            SizeToContent = SizeToContent.Height,
+            CanResize = false,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+        };
+
+        DiskImageFormat? result = null;
+
+        var imdButton = new Button { Content = "Save as IMD", MinWidth = 100 };
+        imdButton.Click += (_, _) => { result = DiskImageFormat.Imd; dialog.Close(); };
+
+        string message;
+        Button dskButton;
+        if (currentFormat == DiskImageFormat.Imd)
+        {
+            message = "Save this disk as IMD (in place), or export it as a plain .dsk file for tools that only read raw sector dumps?";
+            dskButton = new Button { Content = "Save as plain .dsk", MinWidth = 130 };
+            ToolTip.SetTip(dskButton,
+                "Lossy: any recorded sector order collapses to plain logical order in the exported file.");
+        }
+        else
+        {
+            message = "Save this disk as IMD (the preferred format — records real sector order, readable/writeable by other floppy tools), or keep it as a legacy .dsk file?";
+            dskButton = new Button { Content = "Save as .dsk", MinWidth = 100 };
+        }
+        dskButton.Click += (_, _) => { result = DiskImageFormat.Dsk; dialog.Close(); };
+
+        var cancelButton = new Button { Content = "Cancel", MinWidth = 80 };
+        cancelButton.Click += (_, _) => { result = null; dialog.Close(); };
+
+        dialog.Content = new StackPanel
+        {
+            Margin = new Avalonia.Thickness(20),
+            Spacing = 16,
+            Children =
+            {
+                new TextBlock { Text = message, TextWrapping = Avalonia.Media.TextWrapping.Wrap },
+                new StackPanel
+                {
+                    Orientation = Avalonia.Layout.Orientation.Horizontal,
+                    Spacing = 8,
+                    HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Center,
+                    Children = { imdButton, dskButton, cancelButton },
+                },
+            }
+        };
+
+        await dialog.ShowDialog(this);
+        return result;
+    }
+
     // ── Drag-and-drop (.dsk/.img mount, project CLAUDE.md §14 "DRIVE TABS" decision,
     // 2026-07-23): a drop lands on whichever drive's tab is currently selected — resolves the
     // N-drive drop-target ambiguity milestone 14 originally left unbuilt, exactly like dropping
@@ -213,7 +276,7 @@ public partial class DiskDriveWindow : Window
         {
             if (item is not IStorageFile file) continue;
             var ext = Path.GetExtension(file.Name).ToLowerInvariant();
-            if (ext is not (".dsk" or ".img")) continue;
+            if (ext is not (".dsk" or ".img" or ".imd")) continue;
 
             await using var stream = await file.OpenReadAsync();
             using var ms = new MemoryStream();
@@ -232,7 +295,7 @@ public partial class DiskDriveWindow : Window
         return items.Any(f =>
         {
             var ext = Path.GetExtension(f.Name).ToLowerInvariant();
-            return ext is ".dsk" or ".img";
+            return ext is ".dsk" or ".img" or ".imd";
         });
     }
 }

@@ -107,6 +107,19 @@ public sealed partial class DiskDriveVm : ObservableObject
     /// (the common case, or once already raised/handled).</summary>
     public DiskGeometryMismatch? PendingMismatch { get; private set; }
 
+    /// <summary>Raised by <see cref="SaveAsAsync"/> to ask which container format to save as
+    /// (project CLAUDE.md milestone 14f) — the offered choices are always IMD and `.dsk`, but
+    /// their wording/lossy-export framing differs by <paramref name="currentFormat"/>'s value
+    /// (a `.dsk`-backed drive offers "Save as IMD"/"Save as `.dsk`"; an IMD-backed drive offers
+    /// "Save as IMD"/"Save as plain `.dsk`" with an explicit lossy-order warning, since any
+    /// recorded sector order collapses to plain logical order in the exported file). The view
+    /// resolves the returned task with the chosen format, or <c>null</c> if the user cancels the
+    /// format choice itself (distinct from cancelling the subsequent file-save dialog, which
+    /// <see cref="SaveAsAsync"/> handles separately). No subscriber (headless/tests) keeps the
+    /// CURRENT format — same "no subscriber, proceed" shape as
+    /// <see cref="ConfirmDiscardRequested"/>.</summary>
+    public event Func<DiskImageFormat, Task<DiskImageFormat?>>? SaveAsFormatRequested;
+
     public DiskDriveVm(EmulationRunner runner, int driveIndex, int capacity, DiskSides sides)
     {
         _runner = runner;
@@ -182,7 +195,9 @@ public sealed partial class DiskDriveVm : ObservableObject
             AllowMultiple = false,
             FileTypeFilter =
             [
-                new FilePickerFileType("P2000T Disk") { Patterns = ["*.dsk", "*.img"] },
+                new FilePickerFileType("Disk image") { Patterns = ["*.dsk", "*.img", "*.imd"] },
+                new FilePickerFileType("IMD (ImageDisk)") { Patterns = ["*.imd"] },
+                new FilePickerFileType("P2000T Disk (.dsk)") { Patterns = ["*.dsk", "*.img"] },
                 new FilePickerFileType("All files") { Patterns = ["*"] }
             ]
         });
@@ -376,6 +391,10 @@ public sealed partial class DiskDriveVm : ObservableObject
     [RelayCommand(CanExecute = nameof(HasImage))]
     private void ToggleWriteProtect() => IsWriteProtected = !IsWriteProtected;
 
+    /// <summary>Plain "Save" — NEVER changes format (project CLAUDE.md milestone 14f): writes
+    /// back in place in whatever format currently backs the drive (<c>DskImage.Format</c>), no
+    /// prompt, same as this command already behaved before IMD existed. Only
+    /// <see cref="SaveAsAsync"/> can change format.</summary>
     [RelayCommand(CanExecute = nameof(HasImage))]
     private async Task SaveAsync()
     {
@@ -384,42 +403,60 @@ public sealed partial class DiskDriveVm : ObservableObject
             await SaveAsAsync();
             return;
         }
-        await WriteDiskToFileAsync(_backingFile);
+        var disk = _runner.Machine.Fdc?.GetDisk(DriveIndex);
+        if (disk is null) return;
+        await WriteDiskToFileAsync(_backingFile, disk.Format);
     }
 
+    /// <summary>"Save As" — the ONLY path that can change format, and it always asks for a name
+    /// and destination, never a silent conversion (project CLAUDE.md milestone 14f). First asks
+    /// which format to save as via <see cref="SaveAsFormatRequested"/> (the view offers "Save as
+    /// IMD" plus either "Save as `.dsk`" or "Save as plain `.dsk`" depending on the drive's
+    /// CURRENT format), then the usual native save-file dialog, then writes and updates the
+    /// drive's tracked format AND path going forward.</summary>
     [RelayCommand(CanExecute = nameof(HasImage))]
     private async Task SaveAsAsync()
     {
+        var disk = _runner.Machine.Fdc?.GetDisk(DriveIndex);
+        if (disk is null) return;
+
+        var chosenFormat = SaveAsFormatRequested is null ? disk.Format : await SaveAsFormatRequested(disk.Format);
+        if (chosenFormat is null) return; // user cancelled the format choice
+
         var topLevel = GetTopLevel();
         if (topLevel is null) return;
 
+        var ext = chosenFormat == DiskImageFormat.Imd ? "imd" : "dsk";
+        var typeName = chosenFormat == DiskImageFormat.Imd ? "IMD (ImageDisk)" : "P2000T Disk (.dsk)";
         var file = await topLevel.StorageProvider.SaveFilePickerAsync(new FilePickerSaveOptions
         {
             Title = $"Save Disk (drive {DriveIndex}) As",
-            SuggestedFileName = $"{SuggestedFileNameStem()}.dsk",
-            FileTypeChoices = [new FilePickerFileType("P2000T Disk") { Patterns = ["*.dsk"] }],
-            DefaultExtension = "dsk",
+            SuggestedFileName = $"{SuggestedFileNameStem()}.{ext}",
+            FileTypeChoices = [new FilePickerFileType(typeName) { Patterns = [$"*.{ext}"] }],
+            DefaultExtension = ext,
         });
         if (file is null) return;
 
-        if (!await WriteDiskToFileAsync(file)) return;
+        if (!await WriteDiskToFileAsync(file, chosenFormat.Value)) return;
 
         _backingFile = file;
         ImageLabel = Path.GetFileNameWithoutExtension(file.Name);
-        // The image is now backed by this new file — update MountedPath the same reason
-        // MountBytes does (project CLAUDE.md milestone 14c).
-        var disk = _runner.Machine.Fdc?.GetDisk(DriveIndex);
-        if (disk is not null) disk.MountedPath = file.Path.LocalPath;
+        // The image is now backed by this new file (and possibly a new format) — update
+        // MountedPath the same reason MountBytes does (project CLAUDE.md milestone 14c), and
+        // Format so a later plain Save keeps writing whatever format was just chosen here.
+        disk.MountedPath = file.Path.LocalPath;
+        disk.Format = chosenFormat.Value;
     }
 
     private string SuggestedFileNameStem() =>
         _backingFile is not null ? Path.GetFileNameWithoutExtension(_backingFile.Name) : "disk";
 
-    /// <summary>Writes the mounted image's raw bytes (<c>DskImage.GetBytes</c> — a plain
-    /// byte-for-byte copy, no bitstream encode needed) to <paramref name="file"/>, then marks
-    /// the image clean (project CLAUDE.md §13.20a dirty-tracking signal). Returns false (and
-    /// surfaces a message) on failure or when no image is mounted.</summary>
-    private async Task<bool> WriteDiskToFileAsync(IStorageFile file)
+    /// <summary>Writes the mounted image to <paramref name="file"/> in the given
+    /// <paramref name="format"/> (<c>DskImage.GetBytes</c> for a raw `.dsk`, <c>GetImdBytes</c>
+    /// for IMD — project CLAUDE.md milestone 21/14f), then marks the image clean (project
+    /// CLAUDE.md §13.20a dirty-tracking signal). Returns false (and surfaces a message) on
+    /// failure or when no image is mounted.</summary>
+    private async Task<bool> WriteDiskToFileAsync(IStorageFile file, DiskImageFormat format)
     {
         var disk = _runner.Machine.Fdc?.GetDisk(DriveIndex);
         if (disk is null)
@@ -430,7 +467,7 @@ public sealed partial class DiskDriveVm : ObservableObject
 
         try
         {
-            var bytes = disk.GetBytes();
+            var bytes = format == DiskImageFormat.Imd ? disk.GetImdBytes() : disk.GetBytes();
             await using var stream = await file.OpenWriteAsync();
             await stream.WriteAsync(bytes);
             disk.MarkClean();

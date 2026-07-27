@@ -1202,6 +1202,54 @@ project.
 - **Synced:** yes (YYYY-MM-DD)
 -->
 
+### 2026-07-27 — Milestone 14f IMPLEMENTED: Save/Save As format choice (IMD as the offered target)
+- **Depends on machine milestone 21** (`ImdFormat`/`DskImage.Format`/`GetImdBytes`, this same
+  day). Reference doc §3a "RESOLVED — adopt IMD... as the emulator's native/preferred disk
+  container."
+- **Built (`DiskDriveVm`):** plain `SaveAsync` never changes format — writes back in place via
+  whatever `DskImage.Format` currently reports (`GetBytes()` for `.dsk`, `GetImdBytes()` for
+  IMD), no prompt, exactly as it behaved before IMD existed. `SaveAsAsync` is the only path that
+  can change format: it now first raises a new `SaveAsFormatRequested` event
+  (`Func<DiskImageFormat, Task<DiskImageFormat?>>`) carrying the drive's CURRENT format, awaits
+  the view's answer, and only then opens the native save-file dialog (extension/file-type-filter
+  chosen from the ANSWER, not the current format) — a cancelled format choice aborts before any
+  file dialog ever shows. On a successful save, updates `MountedPath` (as before, ms.14c) AND
+  `Format` (new) so a later plain Save keeps writing whatever was just chosen. No subscriber
+  (headless/tests) keeps the CURRENT format — same "no subscriber, proceed" shape already
+  established for `ConfirmDiscardRequested`.
+- **`DiskDriveWindowVm`** relays `SaveAsFormatRequested` the same way it already relays
+  `GeometryMismatchDetected`/others — one lambda subscription per drive VM in
+  `RebuildIfMachineChanged`, falling back to `Task.FromResult(currentFormat)` if nothing above it
+  has subscribed either (keeps the "no subscriber, proceed" default intact through BOTH relay
+  hops, not just the inner one).
+- **`DiskDriveWindow` (view):** new `ShowSaveAsFormatDialog` — a plain-code `Window`, same
+  pattern as `ShowGeometryMismatchDialog`/`ShowConfirmDiscardDialog`. Always offers "Save as
+  IMD"; the second button's label/tooltip depends on the CURRENT format — "Save as `.dsk`" (keep
+  the legacy format, new file/location) for a `.dsk`-backed drive, or "Save as plain `.dsk`" with
+  a tooltip stating the export is lossy (recorded sector order collapses to plain logical order)
+  for an IMD-backed drive — plus "Cancel". Also: the Mount file dialog's `FileTypeFilter` and the
+  window's drag-drop handlers (`OnDrop`/`HasDiskFile`) now accept `.imd` alongside `.dsk`/`.img`
+  — needed for an IMD file to actually be mountable through the UI at all (content-based
+  detection in `DskImage.Mount` doesn't care about extension, but the file picker/drop filter
+  did).
+- **Tests:** `DiskDriveVmTests` (+5) — same headless-TopLevel limitation as every other Save/
+  Save-As test in this file (noted at the file's own top): the actual file WRITE isn't
+  observable without a real desktop `StorageProvider`, but `SaveAsFormatRequested` fires BEFORE
+  `GetTopLevel()` is ever called, so the format-choice decision itself is directly testable —
+  (1)/(2) `SaveAsCommand` asks with the drive's actual current format (`Dsk` for a fresh blank
+  disk, `Imd` for a drive mounted from real IMD bytes built via the public
+  `DskImage.CreateBlank(...).GetImdBytes()`); (3) no subscriber doesn't throw and leaves `Format`
+  unchanged; (4) a cancelled format choice leaves `Format`/path unchanged; (5) mounting real IMD
+  bytes (deliberately a different geometry than the drive's configured Capacity/Sides) never
+  raises `GeometryMismatchDetected` — the milestone's own test (e), at the UI layer (machine
+  layer already covers this in `ImdFormatTests`). Full `P2000.UI.Tests`: 187/187 green (was 178).
+- **Applies to:** `src/P2000.UI/ViewModels/DiskDriveVm.cs` (`SaveAsFormatRequested`,
+  `SaveAsync`/`SaveAsAsync`/`WriteDiskToFileAsync`, Mount file-type filter),
+  `src/P2000.UI/ViewModels/DiskDriveWindowVm.cs` (relay), `src/P2000.UI/Views/DiskDriveWindow.axaml.cs`
+  (`ShowSaveAsFormatDialog`, drag-drop `.imd` acceptance),
+  `tests/P2000.UI.Tests/ViewModels/DiskDriveVmTests.cs`. Reference doc §3a.
+- **Synced:** not yet — awaiting the human's next sync pass.
+
 **2026-07-24 — trimmed for size.** This log had grown to ~1300 lines. Every entry was
 checked against `P2000T-reference.md` — several stale "Synced: no" flags were corrected
 (the content was already synced, just never marked), and two small genuine gaps (the umlaut
@@ -1266,8 +1314,9 @@ missing.
   `src/P2000.UI/Views/DiskDriveWindow.axaml.cs`, `tests/P2000.UI.Tests/ViewModels/DiskDriveVmTests.cs`.
   Reference doc §5d's "RESOLVED — the label-based auto-detect above is JWSDOS-specific" block;
   machine ms.20d.
-- **Synced:** no (implementation-only — the design decision itself was already synced into the
-  reference doc's own 2026-07-27 "RESOLVED" entry before this milestone was built).
+- **Synced:** yes (2026-07-27, into `docs/P2000T-reference.md` §5d — new "IMPLEMENTED (UI
+  milestone 14e...)" paragraph confirms this was built exactly as designed, no corrections
+  needed).
 
 ### 2026-07-27 — FOLLOW-UP FIX 3: Apply was silently re-rolling RamSeed/BankCount, causing false "stale config" mismatches
 - **Trigger — owner follow-up:** "When I load a config, apply, then unpin, pin it also asks for

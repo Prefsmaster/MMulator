@@ -682,4 +682,109 @@ public class DiskDriveVmTests
 
         runner.Dispose();
     }
+
+    // ---- Save/Save-As format choice (project CLAUDE.md milestone 14f; machine ms.21) -------
+    // Full Save/Save-As file I/O isn't headlessly testable (no real desktop TopLevel/
+    // StorageProvider — same limitation noted at the top of this file). What IS reachable
+    // without one: SaveAsAsync asks SaveAsFormatRequested for the format BEFORE it ever touches
+    // GetTopLevel(), so the format-choice decision itself — which format is offered as
+    // "current," and that a cancelled/absent choice leaves nothing changed — is directly
+    // testable. The actual byte-level Dsk-vs-Imd write selection is covered by
+    // `P2000.Machine.Tests`' `ImdFormatTests` (`DskImage.GetBytes`/`GetImdBytes`).
+
+    [AvaloniaFact]
+    public async Task SaveAsAsync_AsksForFormat_PassingDskAsCurrentFormat_ForADskBackedDrive()
+    {
+        var runner = await NewFloppyRunnerAsync();
+        var vm = NewVm(runner);
+        vm.NewBlankDiskCommand.Execute(null); // freshly-created -> DiskImageFormat.Dsk (default)
+        DiskImageFormat? askedWith = null;
+        vm.SaveAsFormatRequested += format =>
+        {
+            askedWith = format;
+            return Task.FromResult<DiskImageFormat?>(null); // Cancel — nothing to write headless anyway
+        };
+
+        vm.SaveAsCommand.Execute(null);
+
+        Assert.Equal(DiskImageFormat.Dsk, askedWith);
+
+        runner.Dispose();
+    }
+
+    [AvaloniaFact]
+    public async Task SaveAsAsync_AsksForFormat_PassingImdAsCurrentFormat_ForAnImdBackedDrive()
+    {
+        var runner = await NewFloppyRunnerAsync();
+        var vm = NewVm(runner);
+        var imdBytes = DskImage.CreateBlank(tracks: 40, sides: 1).GetImdBytes();
+        vm.MountBytes(imdBytes, "IMD_DISK"); // Mount sniffs the IMD header -> DiskImageFormat.Imd
+        Assert.Equal(DiskImageFormat.Imd, runner.Machine.Fdc!.GetDisk(0)!.Format);
+        DiskImageFormat? askedWith = null;
+        vm.SaveAsFormatRequested += format =>
+        {
+            askedWith = format;
+            return Task.FromResult<DiskImageFormat?>(null);
+        };
+
+        vm.SaveAsCommand.Execute(null);
+
+        Assert.Equal(DiskImageFormat.Imd, askedWith);
+
+        runner.Dispose();
+    }
+
+    [AvaloniaFact]
+    public async Task SaveAsAsync_NoSubscriber_DefaultsToKeepingCurrentFormat_DoesNotThrow()
+    {
+        // "No subscriber, proceed" — same shape as ConfirmDiscardRequested's own headless
+        // default. Can't observe the write itself (no TopLevel headless), just that nothing
+        // throws and the drive's own Format is left untouched.
+        var runner = await NewFloppyRunnerAsync();
+        var vm = NewVm(runner);
+        vm.NewBlankDiskCommand.Execute(null);
+
+        vm.SaveAsCommand.Execute(null);
+
+        Assert.Equal(DiskImageFormat.Dsk, runner.Machine.Fdc!.GetDisk(0)!.Format);
+
+        runner.Dispose();
+    }
+
+    [AvaloniaFact]
+    public async Task SaveAsAsync_CancelledFormatChoice_LeavesFormatAndPathUnchanged()
+    {
+        var runner = await NewFloppyRunnerAsync();
+        var vm = NewVm(runner);
+        vm.NewBlankDiskCommand.Execute(null);
+        vm.SaveAsFormatRequested += _ => Task.FromResult<DiskImageFormat?>(null); // Cancel
+
+        vm.SaveAsCommand.Execute(null);
+
+        Assert.Equal(DiskImageFormat.Dsk, runner.Machine.Fdc!.GetDisk(0)!.Format);
+
+        runner.Dispose();
+    }
+
+    // ---- (e) mounting a real IMD file never triggers ms.14e's mismatch dialog ---------------
+
+    [AvaloniaFact]
+    public async Task MountBytes_RealImdFile_NeverRaisesGeometryMismatch_EvenWithDifferentConfiguredGeometry()
+    {
+        var runner = await NewFloppyRunnerAsync(); // configured 40-track/single-sided
+        var vm = NewVm(runner);
+        var imdBytes = DskImage.CreateBlank(tracks: 80, sides: 2).GetImdBytes(); // deliberately different geometry
+        var raised = false;
+        vm.GeometryMismatchDetected += _ => raised = true;
+
+        vm.MountBytes(imdBytes, "IMD_DISK");
+
+        Assert.False(raised);
+        Assert.True(vm.HasImage);
+        Assert.Equal(80, runner.Machine.Fdc!.GetDisk(0)!.Tracks);
+        Assert.Equal(2, runner.Machine.Fdc.GetDisk(0)!.Sides);
+        Assert.Equal(DiskImageFormat.Imd, runner.Machine.Fdc.GetDisk(0)!.Format);
+
+        runner.Dispose();
+    }
 }

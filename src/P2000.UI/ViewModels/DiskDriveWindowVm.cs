@@ -48,6 +48,14 @@ public sealed partial class DiskDriveWindowVm : ObservableObject
     /// <c>ExtendMountedDiskToFullSize</c>/<c>CancelMount</c>.</summary>
     public event Action<DiskDriveVm, DiskGeometryMismatch>? GeometryMismatchDetected;
 
+    /// <summary>Raised when a drive's "Save As" needs the format-choice prompt (project CLAUDE.md
+    /// milestone 14f) — relayed from whichever <see cref="DiskDriveVm"/> triggered it, same
+    /// aggregation pattern as the other relayed events. The view resolves the task with the
+    /// chosen format, or <c>null</c> if the user cancels the format choice. No subscriber (e.g.
+    /// the view hasn't attached yet) keeps the drive's CURRENT format, same "no subscriber,
+    /// proceed" default <see cref="DiskDriveVm.SaveAsFormatRequested"/> itself falls back to.</summary>
+    public event Func<DiskImageFormat, Task<DiskImageFormat?>>? SaveAsFormatRequested;
+
     public DiskDriveWindowVm(EmulationRunner runner)
     {
         _runner = runner;
@@ -82,6 +90,8 @@ public sealed partial class DiskDriveWindowVm : ObservableObject
             vm.ShowMessageRequested += OnDriveMessage;
             vm.ConfirmDiscardRequested += OnDriveConfirmDiscard;
             vm.GeometryMismatchDetected += mismatch => GeometryMismatchDetected?.Invoke(vm, mismatch);
+            vm.SaveAsFormatRequested += currentFormat =>
+                SaveAsFormatRequested?.Invoke(currentFormat) ?? Task.FromResult<DiskImageFormat?>(currentFormat);
             Drives.Add(vm);
             // Subscribed above THEN raised — a .cfg-authored mismatch captured at vm's own
             // construction must not fire before anyone could possibly be listening (project

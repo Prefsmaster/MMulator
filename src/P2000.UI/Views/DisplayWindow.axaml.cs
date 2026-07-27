@@ -73,15 +73,32 @@ public partial class DisplayWindow : Window
             // Proactive geometry-mismatch surfacing (project CLAUDE.md milestone 14g) —
             // subscribed here, on the ALWAYS-present main window, so a mismatch from the
             // startup-config auto-load (or a later ConfigWindowVm.Apply) shows a dialog even if
-            // the Disk Drives satellite window is never opened this session. Subscribe THEN
-            // raise, same ordering DiskDriveWindowVm itself already uses per-drive — the startup
-            // machine's mismatches were already computed by the time DiskVm finished
-            // constructing, but nothing could have raised them into a dialog before this line.
+            // the Disk Drives satellite window is never opened this session. The actual RAISE is
+            // deferred to OnOpened (below), NOT done here — see that override's doc comment for
+            // why doing it here crashes the app.
             _vm.DiskVm.GeometryMismatchDetected += ShowGeometryMismatchDialog;
-            _vm.DiskVm.RaiseAnyPendingMismatches();
         }
 
         base.OnDataContextChanged(e);
+    }
+
+    /// <summary>FIX (project CLAUDE.md §17/§18 findings, post-14g): <see cref="RaiseAnyPendingMismatches"/>
+    /// must NOT be called from <see cref="OnDataContextChanged"/> — <c>App.axaml.cs</c> sets
+    /// <c>DataContext</c> via `new DisplayWindow { DataContext = vm }`, which fires
+    /// <see cref="OnDataContextChanged"/> SYNCHRONOUSLY, before `desktop.MainWindow = win` and
+    /// therefore before this window is ever shown. <see cref="ShowGeometryMismatchDialog"/>'s
+    /// `dialog.ShowDialog(this)` requires a VISIBLE owner — calling it that early throws
+    /// `InvalidOperationException` ("Cannot show window with non-visible owner"), unhandled inside
+    /// an `async void` method, which crashes the whole process with no user-facing error. Because
+    /// "Continue mounting as-is" deliberately never clears the underlying mismatch (it stays "on
+    /// record for the session," `DiskDriveVm.ContinueWithCurrentMount`'s own doc comment), this
+    /// reproduced on EVERY subsequent launch once a mismatched drive's config got auto-saved as
+    /// the startup config — a permanent crash loop. Raising here instead, once this window is
+    /// actually visible, fixes it while preserving the "subscribe then raise" ordering.</summary>
+    protected override void OnOpened(EventArgs e)
+    {
+        base.OnOpened(e);
+        _vm?.DiskVm.RaiseAnyPendingMismatches();
     }
 
     // ── Error dialog (version mismatch / save-load failure) ──────────────────

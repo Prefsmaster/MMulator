@@ -1253,6 +1253,56 @@ project.
 - **Synced:** yes (YYYY-MM-DD)
 -->
 
+### 2026-07-27 — FIXED: startup crash-loop when the auto-saved config carries an unresolved disk geometry mismatch
+- **Trigger:** owner bug report — configured Floppy+RAM + a Basic24k cartridge + a 32,768-byte
+  disk image into drive 1 (undersized vs. the drive's configured geometry — a real
+  `DiskGeometryMismatchKind.NoCandidate`), clicked Apply, chose "Continue mounting as-is" on the
+  resulting mismatch dialog, then quit. Every subsequent launch crashed on startup with no visible
+  error — a permanent crash loop, since the mismatched drive's config gets auto-saved as the
+  startup `.cfg` on quit (project CLAUDE.md milestone 14c) and "Continue mounting as-is" is a
+  deliberate no-op that never clears the underlying mismatch (`DiskDriveVm.ContinueWithCurrentMount`'s
+  own doc comment: "the mismatch stays on record for the session").
+- **Root cause — a real bug in milestone 14g's own proactive-surfacing wiring, confirmed by
+  reverting the fix and re-running the new regression test (below), which reproduced the EXACT
+  crash: `System.InvalidOperationException : Cannot show window with non-visible owner.`** at
+  `DisplayWindow.ShowGeometryMismatchDialog`'s `dialog.ShowDialog(this)`.
+  `DisplayWindow.OnDataContextChanged` used to call `_vm.DiskVm.RaiseAnyPendingMismatches()`
+  directly — but `App.axaml.cs` sets `DataContext` via `new DisplayWindow { DataContext = vm }`,
+  and Avalonia fires `OnDataContextChanged` SYNCHRONOUSLY as part of that object initializer,
+  before `desktop.MainWindow = win` and therefore before this window has ever been shown.
+  Avalonia's `Window.ShowDialog` requires a VISIBLE owner and throws otherwise; since
+  `ShowGeometryMismatchDialog` is `async void`, that exception was unhandled and crashed the whole
+  process with no user-facing message. On the FIRST session this path is never exercised for the
+  startup config (there is none yet); once a mismatched config gets auto-saved as the startup
+  config, EVERY later launch re-hits it.
+- **Fix:** moved the `RaiseAnyPendingMismatches()` call from `OnDataContextChanged` to a new
+  `OnOpened` override (`DisplayWindow.axaml.cs`) — `OnOpened` only fires once the window is
+  actually shown, matching the exact same pattern `ConfigWindow.axaml.cs` already uses for its own
+  `OnOpened`-gated refresh. Subscription (`GeometryMismatchDetected += ShowGeometryMismatchDialog`)
+  stays in `OnDataContextChanged`, preserving the "subscribe then raise" ordering — just splitting
+  WHEN each half runs.
+- **Test infra change needed to actually test this:** constructing the real `DisplayWindow` (not
+  just `DisplayWindowVm`) in a headless test threw a SEPARATE, pre-existing error —
+  `DisplayControl`'s constructor eagerly allocates a `WriteableBitmap`, which needs
+  `IPlatformRenderInterface`; `tests/P2000.UI.Tests/TestApp.cs`'s `UseHeadlessDrawing` was `false`,
+  registering no render interface at all. Flipped to `true` (still fully headless, just backed by
+  Avalonia.Headless's own lightweight render interface) — full `P2000.UI.Tests` reran clean after
+  the flip (198/198) before adding the new test, confirming no other test depended on the old
+  setting.
+- **New test — a genuine end-to-end regression guard, not just a unit test of the VM layer**
+  (`tests/P2000.UI.Tests/Views/DisplayWindowTests.cs`, new `Views/` test folder): constructs a real
+  `DisplayWindowVm` against a startup `.cfg` with an unresolved mismatch, then a real `DisplayWindow`
+  with `DataContext` set via object initializer (mirrors `App.axaml.cs` exactly), calls `Show()`,
+  asserts no exception. Verified this test actually catches the regression: reverted the
+  `DisplayWindow.axaml.cs` fix, reran — got the exact `"Cannot show window with non-visible owner."`
+  exception reported above — then restored the fix.
+- **Applies to:** `src/P2000.UI/Views/DisplayWindow.axaml.cs` (`OnDataContextChanged`, new
+  `OnOpened`), `tests/P2000.UI.Tests/TestApp.cs` (`UseHeadlessDrawing`),
+  `tests/P2000.UI.Tests/Views/DisplayWindowTests.cs` (new).
+- **Synced:** no (pending human sync into `docs/P2000T-reference.md` if this warrants a reference-
+  doc note — flagging for the human to decide, since this is a pure bugfix over an already-designed
+  feature, not a new design decision).
+
 ### 2026-07-27 — Milestone 14d IMPLEMENTED: drive-count axis assigns real-hardware indices
 - **Trigger:** owner's own first real end-to-end test with a sourced `Basic24k.bin` cartridge +
   boot floppy (reference doc §5d "RESOLVED — the Config window's drive-count axis now follows

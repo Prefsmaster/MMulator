@@ -1108,6 +1108,47 @@ genuinely open, plus the last few active days, for continuity. Everything fully 
 already synced lives only in the archive now — check there before assuming something's
 missing.
 
+### 2026-07-27 — FOLLOW-UP FIX 2: pinning now detects a stale saved file, not just "nothing saved yet"
+- **Trigger — owner follow-up (asked as a question, confirming it was a real gap):** "user loads
+  prior config, tweaks it a bit, clicks apply. When active config doesn't match the saved config,
+  clicking always start with this config should also prompt for 'save'. Or is this already
+  covered by this last change?" It was NOT covered — the previous fix only handled `LastCfgPath
+  is null` (nothing saved/loaded yet in this window session); once ANY `.cfg` had been
+  loaded/saved once, `LastCfgPath` stayed non-null forever after, so Pin would silently reuse that
+  stale path even after further field edits + Apply diverged the live machine from it.
+- **Fixed — `PinAsStartupConfigAsync` now compares live vs. saved before trusting `LastCfgPath`:**
+  new `SavedCfgMatchesLiveConfig(path)` reads the file at `path` and compares it, byte-for-byte,
+  against `MachineConfigFile.Serialize(Machine.CaptureCurrentConfig())` — the exact same
+  serialization `SaveCfgAsync` itself would produce right now. A mismatch (or any read/parse
+  failure — a missing/moved file counts as "doesn't match", the safe default) is treated the same
+  as "nothing saved yet": prompts the Save `.cfg` dialog before pinning.
+- **Found and fixed a second, more serious bug while wiring this up — a fall-through that would
+  have pinned the stale file anyway:** the naive re-check after prompting for a save was `if
+  (LastCfgPath is null) return;`, copied from the "nothing saved yet" case — but in the MISMATCH
+  case, `LastCfgPath` was already non-null (pointing at the STALE file) before the save attempt.
+  If the save dialog was cancelled (or, headlessly, has no `TopLevel` to attach to at all),
+  `LastCfgPath` stays exactly as it was — non-null — so that check passed and execution fell
+  through to pin the stale file regardless, defeating the whole fix. **Caught by the test for this
+  exact scenario, before it shipped** (`PinAsStartupConfig_LiveConfigDivergedFromSavedFile_...`
+  failed on the first attempt with `IsStartupPinned` unexpectedly `true`). Fixed: re-run
+  `SavedCfgMatchesLiveConfig` on whatever `LastCfgPath` is AFTER the save attempt, rather than
+  just checking non-null — only a save that actually landed leaves the file matching.
+- **Tests:** `StartupConfigurationTests` — renamed and fixed the previous "pins directly" test
+  (`PinAsStartupConfig_SavedCfgAlreadyMatchesLiveConfig_PinsDirectly_NoRePrompt`) to save the
+  ACTUAL live-captured config to disk rather than a separately-constructed bare `MachineConfig()`
+  (the two were never byte-equal in the first place — every `EmulationRunner` gets its own
+  randomly-generated `RamSeed`, project CLAUDE.md §17 2026-07-21/22 — so this test would have
+  started failing the moment `SavedCfgMatchesLiveConfig` existed, for the RIGHT reason: it
+  correctly detected the mismatch). New:
+  `PinAsStartupConfig_LiveConfigDivergedFromSavedFile_PromptsReSave_DoesNotPinStaleFile` (+1) —
+  a deliberately-mismatched saved file must leave `IsStartupPinned`/`AppPreferences` untouched
+  after a (headlessly-unavailable) save attempt fails, the regression guard for the fall-through
+  bug above. Full `P2000.UI.Tests`: 173/173 green (was 172).
+- **Applies to:** `src/P2000.UI/ViewModels/ConfigWindowVm.cs` (`SavedCfgMatchesLiveConfig`,
+  `PinAsStartupConfigAsync`'s re-check), `src/P2000.UI/Views/ConfigWindow.axaml` (hint/tooltip
+  text), `tests/P2000.UI.Tests/State/StartupConfigurationTests.cs`.
+- **Synced:** no (bug fix against an already-synced design).
+
 ### 2026-07-27 — FOLLOW-UP FIX: Pin button redesigned to never be permanently ghosted
 - **Trigger — owner follow-up:** the previous fix (below) made the Pin button correctly enable
   after a successful Load/Save `.cfg`, but the owner pointed out a real UX gap: starting from a

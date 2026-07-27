@@ -188,7 +188,7 @@
             <!-- ── Startup configuration (project CLAUDE.md milestone 14c) ─── -->
             <TextBlock Classes="section" Text="Startup" />
             <TextBlock Classes="hint"
-                       Text="By default the app remembers your last session automatically. Pin this configuration to always start with it instead — you'll be prompted to save a .cfg first if you haven't already." />
+                       Text="By default the app remembers your last session automatically. Pin this configuration to always start with it instead — you'll be prompted to save (or re-save) a .cfg first if it doesn't already match what's running." />
             <DockPanel>
                 <TextBlock Classes="label" Text="Pinned startup config" />
                 <Button Command="{Binding UnpinStartupConfigCommand}"
@@ -197,7 +197,7 @@
                 <Button Command="{Binding PinAsStartupConfigCommand}"
                         DockPanel.Dock="Right" Content="Always start with this configuration" Margin="4,0,0,0"
                         IsVisible="{Binding !IsStartupPinned}"
-                        ToolTip.Tip="Pins this configuration as the permanent startup default. If you haven't saved a .cfg yet in this window, you'll be prompted to save one first." />
+                        ToolTip.Tip="Pins this configuration as the permanent startup default. If nothing's saved yet, or the saved file no longer matches what's running (e.g. you tweaked something and hit Apply), you'll be prompted to save first." />
                 <TextBlock Text="{Binding IsStartupPinned, Converter={x:Static vm:BoolToPinnedTextConverter.Instance}}"
                            Foreground="#888" VerticalAlignment="Center" />
             </DockPanel>

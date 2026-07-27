@@ -301,16 +301,23 @@ public sealed partial class ConfigWindowVm : ObservableObject
     /// stops overwriting it until <see cref="UnpinStartupConfig"/>. Always enabled, not gated on
     /// having saved/loaded a `.cfg` first (owner report, 2026-07-27: a machine fresh off Apply has
     /// no `LastCfgPath` yet, and a permanently-ghosted button with no explanation was
-    /// counter-intuitive) — when nothing's been saved yet, this prompts the SAME Save `.cfg`
-    /// dialog <see cref="SaveCfgAsync"/> uses, then pins whatever the user just saved. Cancelling
-    /// that dialog leaves nothing pinned, same as cancelling any other save.</summary>
+    /// counter-intuitive) — when nothing's been saved yet, OR when the live machine no longer
+    /// matches what's actually stored at <see cref="LastCfgPath"/> (owner follow-up, 2026-07-27:
+    /// load a `.cfg`, tweak a field, Apply — `LastCfgPath` is still set, but the file on disk is
+    /// now stale), this prompts the SAME Save `.cfg` dialog <see cref="SaveCfgAsync"/> uses, then
+    /// pins whatever the user just saved. Cancelling that dialog leaves nothing pinned, same as
+    /// cancelling any other save.</summary>
     [RelayCommand]
     private async Task PinAsStartupConfigAsync()
     {
-        if (LastCfgPath is null)
+        if (LastCfgPath is null || !SavedCfgMatchesLiveConfig(LastCfgPath))
         {
             await SaveCfgAsync();
-            if (LastCfgPath is null) return; // user cancelled the save dialog
+            // Re-check rather than just "is LastCfgPath null" — LastCfgPath may already have
+            // been non-null (a STALE path) going in, so a cancelled/failed save would otherwise
+            // fall through and pin the very stale file this check exists to catch. Only a save
+            // that actually landed leaves the file matching live content.
+            if (LastCfgPath is null || !SavedCfgMatchesLiveConfig(LastCfgPath)) return;
         }
 
         var prefs = AppPreferencesFile.Load();
@@ -319,6 +326,26 @@ public sealed partial class ConfigWindowVm : ObservableObject
         AppPreferencesFile.Save(prefs);
         IsStartupPinned = true;
         StatusMessage = $"Pinned {Path.GetFileName(LastCfgPath)} as the startup configuration.";
+    }
+
+    /// <summary>True when the file at <paramref name="path"/> already holds byte-for-byte what
+    /// <see cref="Machine.CaptureCurrentConfig"/> would produce right now — i.e. pinning it needs
+    /// no re-save. False (the safe default, triggering a re-save prompt) on any read/parse
+    /// problem, or when they genuinely differ — the case this exists for (project CLAUDE.md
+    /// milestone 14c follow-up, 2026-07-27): fields tweaked and Applied since the last Load/Save
+    /// mean the running machine has moved on from whatever's still sitting in that file.</summary>
+    private bool SavedCfgMatchesLiveConfig(string path)
+    {
+        try
+        {
+            var onDisk = File.ReadAllText(path);
+            var live = MachineConfigFile.Serialize(_runner.Machine.CaptureCurrentConfig());
+            return onDisk == live;
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     [RelayCommand]

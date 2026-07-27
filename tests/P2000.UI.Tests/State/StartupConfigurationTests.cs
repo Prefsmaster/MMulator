@@ -240,16 +240,19 @@ public class StartupConfigurationTests
     }
 
     [Fact]
-    public async Task PinAsStartupConfig_WithAlreadySavedCfg_PinsDirectly_NoRePrompt()
+    public async Task PinAsStartupConfig_SavedCfgAlreadyMatchesLiveConfig_PinsDirectly_NoRePrompt()
     {
         using var scope = new PreferencesDirectoryScope();
         var runner = new EmulationRunner(); // never Start()ed — not disposed
         var configVm = new ConfigWindowVm(runner);
 
-        // Simulates a prior successful Save/Load .cfg (which sets LastCfgPath) without needing
-        // a real StorageProvider dialog headlessly.
+        // Simulates a prior successful Save .cfg (which sets LastCfgPath) without needing a real
+        // StorageProvider dialog headlessly — the file's content must be exactly what
+        // CaptureCurrentConfig() returns right now (byte-for-byte, including the machine's own
+        // randomly-generated RamSeed), same as SaveCfgAsync itself would have written, or the
+        // "already matches" check below would (correctly) see a mismatch.
         var cfgPath = System.IO.Path.Combine(scope.Path, "already-saved.cfg");
-        MachineConfigFile.SaveToFile(new MachineConfig(), cfgPath);
+        MachineConfigFile.SaveToFile(runner.Machine.CaptureCurrentConfig(), cfgPath);
         configVm.LastCfgPath = cfgPath;
 
         await configVm.PinAsStartupConfigCommand.ExecuteAsync(null);
@@ -258,6 +261,33 @@ public class StartupConfigurationTests
         var prefs = AppPreferencesFile.Load();
         Assert.True(prefs.StartupCfgIsPinned);
         Assert.Equal(cfgPath, prefs.StartupCfgPath);
+    }
+
+    [Fact]
+    public async Task PinAsStartupConfig_LiveConfigDivergedFromSavedFile_PromptsReSave_DoesNotPinStaleFile()
+    {
+        // Owner follow-up report, 2026-07-27: load a .cfg, tweak a field, Apply — LastCfgPath is
+        // still set (pointing at the pre-tweak file), but the live machine has moved on. Pinning
+        // must not silently pin the now-stale file.
+        using var scope = new PreferencesDirectoryScope();
+        var runner = new EmulationRunner(); // never Start()ed — not disposed
+        var configVm = new ConfigWindowVm(runner);
+
+        var staleCfgPath = System.IO.Path.Combine(scope.Path, "stale.cfg");
+        // Deliberately mismatched from the live machine's actual config (different RamVariant),
+        // simulating "tweaked and Applied since this file was last saved."
+        MachineConfigFile.SaveToFile(new MachineConfig { RamVariant = RamVariant.T54 }, staleCfgPath);
+        configVm.LastCfgPath = staleCfgPath;
+
+        // No real StorageProvider in a headless test run, so the implicit re-save this should
+        // trigger can't complete — which is itself the point: it must NOT fall through and pin
+        // the stale file anyway.
+        await configVm.PinAsStartupConfigCommand.ExecuteAsync(null);
+
+        Assert.False(configVm.IsStartupPinned);
+        var prefs = AppPreferencesFile.Load();
+        Assert.False(prefs.StartupCfgIsPinned);
+        Assert.Null(prefs.StartupCfgPath);
     }
 
     // ---- (f) SaveCfgAsync regression guard -----------------------------------------------------

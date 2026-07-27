@@ -1253,6 +1253,32 @@ project.
 - **Synced:** yes (YYYY-MM-DD)
 -->
 
+### 2026-07-27 — TRACKED, NOT YET FIXED: geometry-mismatch dialog doesn't pause emulation
+- **Trigger:** owner observation while verifying the crash-loop fix just below — the machine
+  keeps ticking on its own thread the whole time the mismatch dialog is up (by design: mounting
+  is non-blocking, milestone 14e — "every path ends in a mounted drive... not a new gate"; the
+  dialog only blocks the user's own interaction with the main window via modal `ShowDialog`, it
+  does nothing to the emulation thread). Owner's own assessment: harmless, since no interaction
+  with the emulator is possible until the dialog is answered — reported for completeness, not as
+  a blocking bug.
+- **The real (if minor) consequence, surfaced during this investigation, not yet acted on:** the
+  ROM's boot sequence may already read from the truncated/mismatched disk — and already fail (or
+  "succeed" against zero-filled garbage) — before the user even responds to the dialog. None of
+  the recovery buttons (`ReconfigureAndRemount`/`ExtendMountedDiskToFullSize`/`ContinueWithCurrentMount`
+  in `DiskDriveVm.cs`) enqueue a reset, so picking a fix after the fact swaps the image without
+  giving the ROM a fresh boot attempt — the machine can be left in an already-failed boot state
+  that only a manual warm/cold reset clears.
+- **Owner decision (2026-07-27, asked directly): track only, no code change this round.** Two
+  remediation shapes were offered — (a) pause emulation while the dialog is open (enqueue
+  `PauseCommand` before showing, resume after), or (b) pause AND auto-enqueue a warm reset after a
+  remediating choice — owner chose neither for now; this entry exists so it isn't lost if raised
+  again later.
+- **Applies to:** `src/P2000.UI/Views/DisplayWindow.axaml.cs` (`ShowGeometryMismatchDialog`),
+  `src/P2000.UI/ViewModels/DiskDriveVm.cs` (`ReconfigureAndRemount`/`ExtendMountedDiskToFullSize`/
+  `ContinueWithCurrentMount`) — if this is picked up later, either of those is where a pause/reset
+  would need to be enqueued.
+- **Synced:** n/a — no fix landed, nothing to sync into the reference doc yet.
+
 ### 2026-07-27 — FIXED: startup crash-loop when the auto-saved config carries an unresolved disk geometry mismatch
 - **Trigger:** owner bug report — configured Floppy+RAM + a Basic24k cartridge + a 32,768-byte
   disk image into drive 1 (undersized vs. the drive's configured geometry — a real

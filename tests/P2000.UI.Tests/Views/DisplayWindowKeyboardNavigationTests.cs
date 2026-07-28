@@ -143,4 +143,45 @@ public class DisplayWindowKeyboardNavigationTests
         var expected = KeyMap.Map(Key.A)!.Value;
         Assert.Contains(events, e => e.Row == expected.Row && e.Col == expected.Col && e.Pressed);
     }
+
+    /// <summary>(e) Regression guard for a real bug FOUND in this same fix (owner-reported
+    /// 2026-07-28, post-14i): gating <c>OnPreviewKeyUp</c> on <c>MainMenu.IsOpen</c> the same way
+    /// as <c>OnPreviewKeyDown</c> can silently drop a key's release if the menu happens to open
+    /// while that key is still physically held (e.g. tapping Alt without releasing an already-
+    /// pressed key first) — leaking <c>HostKeyTranslator</c>'s forced-Shift bookkeeping
+    /// (<c>_activePress</c>/<c>_activeForce</c>/the force-on/off counters) permanently, which then
+    /// corrupts a LATER, unrelated keypress landing on the same matrix crosspoint (reported as
+    /// Standard-Host <c>'</c>/<c>=</c> spuriously also emitting the base digit <c>7</c>/<c>0</c>
+    /// they share a crosspoint with). <c>OnPreviewKeyUp</c> must NOT gate on <c>MainMenu.IsOpen</c>
+    /// — only <c>OnPreviewKeyDown</c> should.</summary>
+    [AvaloniaFact]
+    public void KeyHeldAcrossMenuOpen_StillReleasesCleanly_NoStuckForcedShiftState()
+    {
+        using var f = Fixture.Create();
+        f.Vm.KeyTranslator.Mode = KeyMappingMode.StandardHost;
+        var events = TrackMatrixEvents(f.Vm);
+
+        // OemQuotes unshifted needs a forced P2000 Shift (KeyMap's Standard-Host override) and
+        // targets (0,6) — the SAME crosspoint as the plain digit key '7'.
+        Press(f.Window, Key.OemQuotes, PhysicalKey.Quote);
+
+        // Menu opens while OemQuotes is still physically held (e.g. the user taps Alt with the
+        // other hand) — its KeyUp must still reach the translator despite this.
+        f.MainMenu.Open();
+        Release(f.Window, Key.OemQuotes, PhysicalKey.Quote);
+        f.MainMenu.Close();
+
+        events.Clear();
+
+        // A later, unrelated OemQuotes press (menu fully closed again) must produce EXACTLY one
+        // forced-shift press + one target press — no leaked state from the release above should
+        // suppress the synthetic-Shift assertion this time.
+        Press(f.Window, Key.OemQuotes, PhysicalKey.Quote);
+
+        var target = KeyMap.MapStandardHost(Key.OemQuotes, shiftHeld: false)!.Value;
+        Assert.Single(events, e => e.Row == target.Row && e.Col == target.Col && e.Pressed);
+        // The synthetic-Shift crosspoint (9,0) must also have fired — proof the forced-Shift-ON
+        // counter wasn't left non-zero by the earlier swallowed-then-fixed release.
+        Assert.Contains(events, e => e.Row == 9 && e.Col == 0 && e.Pressed);
+    }
 }

@@ -405,8 +405,17 @@ public partial class DisplayWindow : Window
 
     private void OnPreviewKeyUp(object? sender, KeyEventArgs e)
     {
-        if (MainMenu.IsOpen) return;
-
+        // Deliberately asymmetric with OnPreviewKeyDown (project CLAUDE.md §17/§18 findings,
+        // post-14i): KeyUp must ALWAYS reach the translator, even while MainMenu.IsOpen. A key
+        // can be pressed while the menu is closed (a real matrix press + HostKeyTranslator
+        // bookkeeping — e.g. a Standard-Host forced-Shift entry in _activePress/_activeForce) and
+        // then released while the menu happens to be open (e.g. the user taps Alt while still
+        // holding it). Gating KeyUp here too would silently drop that release — the matrix
+        // crosspoint never gets un-pressed and the translator's forced-shift counters never
+        // decrement, permanently leaking state that corrupts a LATER, unrelated keypress landing
+        // on the same crosspoint. Recognized-but-never-pressed KeyUps (e.g. Enter releasing while
+        // selecting a menu item) are already harmless no-ops here — HostKeyTranslator.KeyUp only
+        // emits a release for a key it actually has recorded as pressed.
         if (_vm is not null && _vm.KeyTranslator.KeyUp(e.Key, e.PhysicalKey))
             e.Handled = true;
     }

@@ -1418,6 +1418,44 @@ project.
 - **Synced:** yes (YYYY-MM-DD)
 -->
 
+### 2026-07-28 — FIXED: milestone 14i's menu-navigation fix could permanently corrupt Standard-Host forced-Shift state on a held key
+- **Trigger:** owner-reported bug, discovered while typing shortly after 14i shipped: in
+  Standard-Host mode, the unshifted `'`/`"` key spuriously ALSO produced the digit `7`
+  (`'` needs a forced P2000 Shift+7, targeting the SAME crosspoint `(0,6)` as the plain digit key
+  `7`), and unshifted `=`/`+` likewise ALSO produced `0` (targets `(5,5)`, shared with digit `0`).
+- **Root cause:** milestone 14i (`DisplayWindow.axaml.cs`) gated BOTH `OnPreviewKeyDown` and
+  `OnPreviewKeyUp` on `MainMenu.IsOpen`, symmetrically. That's correct for KeyDown (yields
+  arrow/mnemonic keys to the menu while it's navigating) but unsound for KeyUp: if a key is
+  pressed while the menu is closed (creating real `HostKeyTranslator` bookkeeping —
+  `_keysDown`/`_activePress`/`_activeForce`/the force-on/off counters) and then released while the
+  menu happens to be open (e.g. tapping Alt without releasing the key first), that release was
+  silently dropped. Confirmed via a headless test reproducing exactly this sequence with the old
+  (symmetric) gating: the key's entry in `_keysDown` never got removed, so a LATER, unrelated
+  press of the SAME key was treated as an OS auto-repeat (`_keysDown.Add` failing) and produced
+  **zero** matrix events at all — an even more direct manifestation of the same defect than the
+  originally-reported "extra digit" symptom, both stemming from the identical stuck-state root
+  cause.
+- **Fix:** removed the `MainMenu.IsOpen` gate from `OnPreviewKeyUp` — it now ALWAYS forwards to
+  `HostKeyTranslator.KeyUp`, regardless of menu state. Confirmed harmless for the menu-navigation
+  case: `HostKeyTranslator.KeyUp` only emits a release for a key it actually has recorded as
+  pressed (`_activePress.Remove` returning false is a safe no-op), so a KeyUp for a key that was
+  never pressed by the translator in the first place (because its KeyDown WAS correctly gated) —
+  e.g. releasing Enter after using it to select a menu item — does nothing. `OnPreviewKeyDown`
+  keeps the original gate unchanged.
+- **Tests:** `DisplayWindowKeyboardNavigationTests` (+1) —
+  `KeyHeldAcrossMenuOpen_StillReleasesCleanly_NoStuckForcedShiftState`: press OemQuotes
+  (Standard-Host), open the menu while still "held," release it (menu open), close the menu, then
+  press OemQuotes again — asserts exactly one target press plus the synthetic-Shift press, proving
+  neither `_keysDown` nor the forced-Shift counters were left corrupted by the intervening
+  menu-open release. Verified this actually catches the regression: reverting the fix made this
+  test fail with ZERO matrix events on the second press (the auto-repeat-suppression manifestation
+  above), not the originally-reported "extra digit" one — both are the same underlying leak,
+  observed two different ways depending on which key/sequence exercises it.
+- **Applies to:** `src/P2000.UI/Views/DisplayWindow.axaml.cs` (`OnPreviewKeyUp`),
+  `tests/P2000.UI.Tests/Views/DisplayWindowKeyboardNavigationTests.cs`. Milestone 14i (this file,
+  above).
+- **Synced:** no
+
 ### 2026-07-28 — Milestone 16 IMPLEMENTED: blank-disk message distinguished from "unknown disk contents/structure"
 - **Trigger:** owner decision, fast-follow onto milestone 15 (reference doc §3a same RESOLVED
   block's part-3 bullet). Depends on machine milestone 23 (an all-empty directory now reaches

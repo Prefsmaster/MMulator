@@ -759,6 +759,23 @@ public class DskImageTests
         Assert.Empty(disk.ReadPdosDirectory());
     }
 
+    // ---- Raw sector-1 read for the fallback dump view (project CLAUDE.md §13 milestone 22b) ------
+
+    [Fact]
+    public void ReadSector_Track1Sector1_OnUnpaddedShortImage_ReturnsZeroFill_NotException()
+    {
+        // The specific "sector 1" call UI milestone 15b's fallback dump view makes — same
+        // 0x00 fill-byte convention as every other out-of-range/short-mount read (milestone 20d),
+        // no separate fallback value introduced for this use.
+        var image = new byte[10];
+        var (disk, _) = DskImage.Mount(image, configuredTracks: 40, configuredSides: 2);
+
+        var sector1 = disk.ReadSector(cylinder: 0, head: 0, sector: 1).ToArray();
+
+        Assert.Equal(256, sector1.Length);
+        Assert.All(sector1, b => Assert.Equal(0x00, b));
+    }
+
     [Fact]
     public void ReadDirectory_OnUnpaddedShortImage_ReturnsEmpty_NotException()
     {

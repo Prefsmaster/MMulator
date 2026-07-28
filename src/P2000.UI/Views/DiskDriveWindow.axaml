@@ -101,6 +101,26 @@
                                     </DataTemplate>
                                 </ItemsControl.ItemTemplate>
                             </ItemsControl>
+
+                            <!-- PDOS-system / unknown fallback view (project CLAUDE.md §14
+                                 milestone 15b): a short message plus a hex/ascii dump of sector 1,
+                                 replacing the file-list table entirely — never shown alongside it
+                                 (Programs stays empty in these two DiskDirectoryFormat cases, see
+                                 DiskDriveVm.RefreshDirectoryTable). -->
+                            <TextBlock Text="{Binding DirectoryMessage}"
+                                       FontSize="11" Foreground="#bbb" TextWrapping="Wrap"
+                                       Margin="0,4,0,0"
+                                       IsVisible="{Binding HasDirectoryMessage}" />
+                            <ItemsControl ItemsSource="{Binding SectorDump}"
+                                          IsVisible="{Binding HasDirectoryMessage}">
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <TextBlock Text="{Binding}"
+                                                   FontSize="10" FontFamily="Consolas,Courier New,monospace"
+                                                   Foreground="#ddd" />
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
                         </StackPanel>
                     </ScrollViewer>
                 </DataTemplate>

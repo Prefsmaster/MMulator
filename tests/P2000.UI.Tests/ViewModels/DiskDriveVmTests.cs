@@ -623,30 +623,6 @@ public class DiskDriveVmTests
         runner.Dispose();
     }
 
-    [AvaloniaFact]
-    public async Task MountBytes_UnknownDetectedFormat_KeepsLegacyTableUnchanged()
-    {
-        // Neither JWSDOS (garbage at the JWSDOS directory offset) nor a plausible PDOS FCB (also
-        // garbage, and byte 0 isn't the 0xF3 system-disk marker either) — DetectDirectoryFormat
-        // reports Unknown, so this milestone's own instruction applies: keep milestone 14's
-        // ORIGINAL rendering (no Side/Track-Sector/PDOS columns) exactly as it was before this
-        // change. PdosSystem/Unknown's own fallback view is milestone 15b, not built here.
-        var image = new byte[40 * 1 * 16 * 256];
-        for (var i = 0; i < 20; i++) image[i] = 0xFF; // implausible PDOS first FCB slot, not 0xF3
-        for (var i = 0; i < 20; i++) image[0x1800 + i] = 0x01; // implausible JWSDOS entries
-        var runner = await NewFloppyRunnerAsync(); // 40-track/single default — no label to override it
-        var vm = NewVm(runner);
-
-        vm.MountBytes(image, "GARBAGE");
-
-        Assert.DoesNotContain("Side", vm.DirectoryHeader);
-        Assert.DoesNotContain("Track/Sector", vm.DirectoryHeader);
-        Assert.Equal(DiskDirectoryFormat.Unknown,
-            runner.Machine.Fdc!.GetDisk(0)!.DetectDirectoryFormat());
-
-        runner.Dispose();
-    }
-
     // ---- PDOS FCB directory rendering (project CLAUDE.md §14 milestone 15a; machine ms.22a) ----
 
     [AvaloniaFact]
@@ -674,6 +650,94 @@ public class DiskDriveVmTests
         var volinfoRow = Assert.Single(vm.Programs, row => row.Contains("VOLINFO"));
         Assert.Contains("T3", volinfoRow); // records 8-11 -> track 3 only, no dash
         Assert.DoesNotContain("T3-", volinfoRow);
+
+        runner.Dispose();
+    }
+
+    // ---- PDOS-system / unknown fallback view (project CLAUDE.md §14 milestone 15b; machine
+    // ms.22b) ---------------------------------------------------------------------------------
+
+    [AvaloniaFact]
+    public async Task MountBytes_RealDiskBasicSystemDisk_ShowsSystemDiskMessage_AndSectorDump_NotATable()
+    {
+        // The real official Philips "Disk BASIC 24K" system disk (owner-supplied) — track 1
+        // offset 0 is the genuine 0xF3 boot signature and the disambiguation logic (machine
+        // ms.22a) correctly finds no plausible FCB behind it.
+        var bytes = await File.ReadAllBytesAsync(DiskFixturePath("diskbasic_1.6uk.dsk"));
+        var runner = await NewFloppyRunnerAsync(); // 40-track/single default — no JWSDOS label here
+        var vm = NewVm(runner, capacity: 35, sides: DiskSides.Single);
+
+        vm.MountBytes(bytes, "DISKBASIC");
+
+        Assert.Equal(DiskDirectoryFormat.PdosSystem,
+            runner.Machine.Fdc!.GetDisk(0)!.DetectDirectoryFormat());
+        Assert.True(vm.HasDirectoryMessage);
+        Assert.Contains("PDOS system disk", vm.DirectoryMessage);
+        Assert.Empty(vm.Programs); // no empty table shown alongside the message
+
+        Assert.Equal(16, vm.SectorDump.Count);
+        Assert.StartsWith("00  F3", vm.SectorDump[0]); // real confirmed sector-1 boot signature
+
+        runner.Dispose();
+    }
+
+    [AvaloniaFact]
+    public async Task MountBytes_GarbageImage_ShowsUnknownMessage_AndSectorDump_NotATable()
+    {
+        // Neither JWSDOS (garbage at the JWSDOS directory offset) nor a plausible PDOS FCB (also
+        // garbage, and byte 0 isn't the 0xF3 system-disk marker either) — DetectDirectoryFormat
+        // reports Unknown, the catch-all, informational (not alarming) case.
+        var image = new byte[40 * 1 * 16 * 256];
+        for (var i = 0; i < 20; i++) image[i] = 0xFF; // implausible PDOS first FCB slot, not 0xF3
+        for (var i = 0; i < 20; i++) image[0x1800 + i] = 0x01; // implausible JWSDOS entries
+        var runner = await NewFloppyRunnerAsync(); // 40-track/single default — no label to override it
+        var vm = NewVm(runner);
+
+        vm.MountBytes(image, "GARBAGE");
+
+        Assert.Equal(DiskDirectoryFormat.Unknown,
+            runner.Machine.Fdc!.GetDisk(0)!.DetectDirectoryFormat());
+        Assert.True(vm.HasDirectoryMessage);
+        Assert.Contains("Unknown disk contents/structure", vm.DirectoryMessage);
+        Assert.Empty(vm.Programs);
+
+        Assert.Equal(16, vm.SectorDump.Count);
+        Assert.StartsWith("00  FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF", vm.SectorDump[0]);
+
+        runner.Dispose();
+    }
+
+    [AvaloniaFact]
+    public async Task MountBytes_NormalJwsdosImage_HasNoDirectoryMessage_RegressionGuard()
+    {
+        // The fallback-view fields must stay empty for every OTHER format — otherwise the
+        // message/dump could linger from a previous mount and wrongly hide a real directory table.
+        var runner = await NewFloppyRunnerAsync();
+        var vm = NewVm(runner);
+
+        vm.MountBytes(BuildSyntheticImage(tracks: 40, sides: 2), "SPEL1");
+
+        Assert.False(vm.HasDirectoryMessage);
+        Assert.Empty(vm.DirectoryMessage);
+        Assert.Empty(vm.SectorDump);
+
+        runner.Dispose();
+    }
+
+    [AvaloniaFact]
+    public async Task Eject_ClearsAnyFallbackMessageAndSectorDump()
+    {
+        var runner = await NewFloppyRunnerAsync();
+        var vm = NewVm(runner, capacity: 35, sides: DiskSides.Single);
+        var bytes = await File.ReadAllBytesAsync(DiskFixturePath("diskbasic_1.6uk.dsk"));
+        vm.MountBytes(bytes, "DISKBASIC");
+        Assert.True(vm.HasDirectoryMessage);
+
+        vm.EjectCommand.Execute(null);
+
+        Assert.False(vm.HasDirectoryMessage);
+        Assert.Empty(vm.DirectoryMessage);
+        Assert.Empty(vm.SectorDump);
 
         runner.Dispose();
     }

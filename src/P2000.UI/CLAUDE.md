@@ -1398,6 +1398,51 @@ project.
 - **Synced:** yes (YYYY-MM-DD)
 -->
 
+### 2026-07-28 — Milestone 15b IMPLEMENTED: PDOS-system / unknown fallback view
+- **Trigger:** owner decision (reference doc §3a same RESOLVED block). Third and last of the
+  three-part split — depends on machine milestone 22b's raw sector-1 read (no new API needed,
+  `DskImage.ReadSector` already sufficed — see that milestone's own CLAUDE.md §17 entry) and
+  milestone 22a's `PdosSystem`/`Unknown` detection.
+- **Added:** `DiskDriveVm` gained `DirectoryMessage`/`HasDirectoryMessage`/`SectorDump`.
+  `RefreshDirectoryTable`'s dispatch now checks `PdosSystem`/`Unknown` FIRST (before Jwsdos/
+  PdosWorking) — sets a short explanatory message ("PDOS system disk — no file directory" /
+  "Unknown disk contents/structure") plus a 16-row hex+ASCII dump of sector 1
+  (`FormatSectorDump`), and clears `Programs` so the file-list table never shows alongside the
+  message. `DiskDriveWindow.axaml` gained a matching message + `ItemsControl` block, visible only
+  via `HasDirectoryMessage` — reuses the exact same monospace/color styling the directory table
+  and the debugger's memory watch window (`P2000.UI` CLAUDE.md §10) already use, rather than
+  inventing a new hex-dump layout.
+- **Found — this exhausted `DiskDirectoryFormat`, so a since-prompt-9 dead branch could be
+  removed:** with all four enum values now explicitly handled (`PdosSystem`/`Unknown` → fallback,
+  `PdosWorking` → PDOS table, `Jwsdos` → JWSDOS table), the old `if (format != Jwsdos)` "legacy"
+  branch in `RefreshDirectoryTable` (added milestone 15, meant to cover PdosWorking/PdosSystem/
+  Unknown before milestones 15a/15b existed) became unreachable — removed rather than left as dead
+  code.
+- **Found — two existing tests from milestones 15/15a needed updating, not just extending, since
+  their premise changed once real detection replaced a stub:**
+  `MountBytes_NonJwsdosDetectedFormat_KeepsLegacyTableUnchanged` (milestone 15, used a synthetic
+  garbage image expecting the OLD "legacy table for anything non-Jwsdos" behavior) is now
+  superseded entirely by this milestone's own fallback-view tests using the same fixture shape —
+  removed rather than kept alongside a contradicting expectation.
+- **Real-fixture confirmation:** the real `diskbasic_1.6uk.dsk` system-disk fixture shows the
+  "PDOS system disk" message with a correctly-dumped sector 1 (starts `F3 ED 5E DD...`, the real
+  boot code); a synthetic garbage image (implausible at both the JWSDOS and PDOS check offsets)
+  shows the "Unknown disk contents/structure" message. **Flagging, not silently resolving:** the
+  milestone's own test list mentions "a short/blank mount" as another `Unknown` example, but a
+  genuinely short/blank mount's JWSDOS-directory region reads as all-zero, which milestone 15's own
+  (already-shipped, tested) logic treats as a valid, just-empty `Jwsdos` — NOT `Unknown` — so that
+  specific example doesn't arise in practice given the prior milestone's deliberate design. Not
+  changed here (would regress milestone 15's own tested behavior); noted for the human to reconcile
+  if the owner's original intent differs.
+- **Applies to:** `src/P2000.UI/ViewModels/DiskDriveVm.cs` (`DirectoryMessage`,
+  `HasDirectoryMessage`, `SectorDump`, `FormatSectorDump`, `RefreshDirectoryTable`'s restructured
+  dispatch), `src/P2000.UI/Views/DiskDriveWindow.axaml`,
+  `tests/P2000.UI.Tests/ViewModels/DiskDriveVmTests.cs`, machine ms.22b (`ReadSector`, consumed
+  here), `docs/P2000T-disk-formats.md` §6a/§7 item 8.
+- **Synced:** no — reference doc §3a's RESOLVED block already describes the target end-state;
+  nothing here contradicts or extends it (see the "short/blank mount" flag above for the one point
+  that may need owner reconciliation).
+
 ### 2026-07-28 — Milestone 15a IMPLEMENTED: PDOS FCB directory rendering
 - **Trigger:** owner decision (reference doc §3a same RESOLVED block; `docs/P2000T-disk-formats.md`
   §6a/§7 item 8). Second of the three-part split — depends on machine milestone 22a's
@@ -1430,9 +1475,9 @@ project.
   `PdosDirectoryHeader`, `FormatPdosTrackRange`), `tests/P2000.UI.Tests/ViewModels/DiskDriveVmTests.cs`,
   machine ms.22a (`ReadPdosDirectory`/`PdosDirectoryEntry`, consumed here),
   `docs/P2000T-disk-formats.md` §6a/§7 item 8.
-- **Synced:** no — reference doc §3a's RESOLVED block already describes the target end-state;
-  nothing here contradicts or extends it (see machine CLAUDE.md §17's own finding for the one
-  correction that DOES need syncing — the track-formula `+1`).
+- **Synced:** yes (2026-07-28, into `docs/P2000T-reference.md` §3a — part-2 bullet updated to
+  IMPLEMENTED, including the corrected `+1` track formula from machine ms.22a's own finding, the
+  no-Side/no-filetype-column rendering, and the `volorg.dsk` real-fixture confirmation).
 
 ### 2026-07-28 — Milestone 15 IMPLEMENTED: directory-format dispatch + JWSDOS Side/Track-Sector columns
 - **Trigger:** owner decision (reference doc §3a "RESOLVED — the Disk Drives window's directory
@@ -1470,8 +1515,10 @@ project.
   `RefreshDirectoryTable`, `ClearDirectoryTable`, `FormatTrackSectorRange`, `ToTrackSector`),
   `tests/P2000.UI.Tests/ViewModels/DiskDriveVmTests.cs`, machine ms.22 (`DetectDirectoryFormat`,
   consumed here), `docs/P2000T-disk-formats.md` §1/§4/§7 items 2-3.
-- **Synced:** no — reference doc §3a's RESOLVED block already describes the target end-state;
-  nothing here contradicts or extends it.
+- **Synced:** yes (2026-07-28, into `docs/P2000T-reference.md` §3a — the RESOLVED block's part-1
+  bullet updated from "UNBLOCKED, spec'd below" to "IMPLEMENTED," folding in the `DirectoryHeader`
+  static→instance conversion, the Side/Track-Sector column behavior, and the real-fixture
+  confirmations; `docs/P2000T-disk-formats.md` §4/§7 item 2 also updated).
 
 ### 2026-07-28 — FIXED: Disk Drives window showed "No disk" for a drive mounted via a `.cfg`'s `FloppyDrives[i].ImagePath`
 - **Trigger:** owner-reported bug — a `.cfg`-authored Basic24k boot floppy in drive 1, geometry
@@ -1511,7 +1558,8 @@ project.
   restored it) before considering this done.
 - **Applies to:** `src/P2000.UI/ViewModels/DiskDriveVm.cs` (constructor, `SaveAsync`,
   `SuggestedFileNameStem`, new `WriteDiskToPathAsync`).
-- **Synced:** no
+- **Synced:** yes (2026-07-28, into `docs/P2000T-reference.md` §3a — new "FIXED (2026-07-28)"
+  paragraph, placed alongside the other Disk Drives window fixes).
 
 ### 2026-07-28 — Milestone 14i IMPLEMENTED: menu keyboard navigation fix
 - **Root cause, confirmed (not just the "likely" cause flagged in the spec) by reading Avalonia
@@ -1563,7 +1611,9 @@ project.
   swallowed matrix event visible in the assertion output, confirming they're not vacuous.
 - **Applies to:** reference doc §3a "FLAGGED — the Display window's global keyboard capture
   appears to swallow keys the menu bar itself needs" note; `P2000.UI/Views/DisplayWindow.axaml.cs`.
-- **Synced:** no
+- **Synced:** yes (2026-07-28, into `docs/P2000T-reference.md` §3a — the FLAGGED note now has a
+  new "IMPLEMENTED (UI milestone 14i, 2026-07-28)" paragraph appended with the confirmed root
+  cause and fix).
 
 ### 2026-07-27 — Milestone 14h IMPLEMENTED: menu bar consolidation
 - **Done:** `DisplayWindow.axaml`'s menu bar collapsed from 7 top-level items to 4

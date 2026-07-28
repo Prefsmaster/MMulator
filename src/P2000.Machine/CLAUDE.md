@@ -1556,6 +1556,27 @@ marked synced. Do NOT edit the reference doc from this project.
 - **Synced:** yes (2026-07-05, into P2000T-reference.md + device guides)
 -->
 
+### 2026-07-28 — Milestone 22b IMPLEMENTED: raw sector-1 read for the fallback dump view (no new API)
+- **Trigger:** owner decision (reference doc §3a same RESOLVED block). Third and last of the
+  three-part split — triggered whenever milestone 22/22a's dispatch returns `PdosSystem` or
+  `Unknown`.
+- **Found — confirmed no new API was needed, exactly as the milestone's own text hedged:**
+  `DskImage.ReadSector(cylinder, head, sector)` (milestone 19) already does precisely what this
+  milestone asked for — read-only, no FDC/command-sequence semantics, and its existing out-of-
+  range/short-mount behavior already returns the `0x00` fill-byte convention (milestone 20d), not a
+  different fallback value. `ReadSector(cylinder: 0, head: 0, sector: 1)` is track 1/sector 1.
+  Nothing added to `DskImage.cs` itself for this milestone — only tests, pinning the SPECIFIC call
+  the UI fallback view (milestone 15b) makes, since the general behavior was already covered
+  incidentally by other tests but not framed around this exact use case.
+- **Real-fixture confirmation:** reading sector 1 off `diskbasic_1.6uk.dsk` (real PDOS system disk)
+  and `volorg.dsk` (real PDOS working disk) both match the source files' own raw bytes exactly;
+  a short/blank mount's sector-1 read returns all-zero, matching every other out-of-range read.
+- **Applies to:** `tests/P2000.Machine.Tests/Devices/Fdc/DskImageTests.cs`,
+  `tests/P2000.Machine.Tests/Devices/Fdc/RealFixtureTests.cs`, `P2000.UI` milestone 15b (consumes
+  `ReadSector` directly).
+- **Synced:** no — reference doc §3a's RESOLVED block already anticipates this ("likely needs no
+  new API at all"); nothing here contradicts or extends it.
+
 ### 2026-07-28 — Milestone 22a IMPLEMENTED: PDOS FCB directory reader + system-disk disambiguation
 - **Trigger:** owner decision (reference doc §3a same RESOLVED block; `docs/P2000T-disk-formats.md`
   §6a for the FCB byte-level spec, §7 item 8 for the disambiguation this milestone implements).
@@ -1607,9 +1628,10 @@ marked synced. Do NOT edit the reference doc from this project.
   `tests/P2000.Machine.Tests/Devices/Fdc/DskImageTests.cs`,
   `tests/P2000.Machine.Tests/Devices/Fdc/RealFixtureTests.cs`, `P2000.UI` milestone 15a (consumes
   this), `docs/P2000T-disk-formats.md` §6a/§7 item 8.
-- **Synced:** no — the track-formula correction above should be synced into reference doc §3a's
-  "record ÷ 4" phrasing (or at least cross-referenced) since it currently under-specifies the
-  needed `+1`.
+- **Synced:** yes (2026-07-28, into `docs/P2000T-reference.md` §3a — part-2 bullet updated to
+  IMPLEMENTED with the disambiguation logic, the sane-sector-count rule, the corrected `+1`
+  track formula, and the continuation-FCB-folding assumption flagged; `docs/P2000T-disk-
+  formats.md` §7 item 8 and §6a's position-1 note updated to match).
 
 ### 2026-07-28 — Milestone 22 IMPLEMENTED: `DiskDirectoryFormat` detection dispatch (JWSDOS-only part)
 - **Trigger:** owner decision (reference doc §3a "RESOLVED — the Disk Drives window's directory
@@ -1641,8 +1663,11 @@ marked synced. Do NOT edit the reference doc from this project.
   `tests/P2000.Machine.Tests/Devices/Fdc/DskImageTests.cs`,
   `tests/P2000.Machine.Tests/Devices/Fdc/RealFixtureTests.cs`, `P2000.UI` milestone 15 (consumes
   this), `docs/P2000T-disk-formats.md` §1/§4/§6a/§7 item 8.
-- **Synced:** no — reference doc §3a's RESOLVED block already describes the target end-state;
-  nothing here contradicts or extends it.
+- **Synced:** yes (2026-07-28, into `docs/P2000T-reference.md` §3a — the RESOLVED block's part-1
+  bullet updated from "UNBLOCKED, spec'd below" to "IMPLEMENTED," folding in the all-empty-
+  directory→`Jwsdos` design call, the already-exposed `Head`/`StartSector`/`EndSector` finding,
+  and the real-fixture confirmations; `docs/P2000T-disk-formats.md` §4 also got the `AUTORUN`
+  622/632→`T39 S14-T40 S8` cross-check and §7 item 2 got the no-mixed-sides-fixture flag).
 
 ### 2026-07-27 — Housekeeping: `docs/JWSDOS-format.md` renamed to `docs/P2000T-disk-formats.md`
 - **Trigger:** owner decision (`docs/P2000T-disk-formats.md` §8 provenance entry) — the doc grew a

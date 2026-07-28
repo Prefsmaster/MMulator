@@ -233,6 +233,37 @@ public class RealFixtureTests
         Assert.Equal(632, autorun.EndSector);
     }
 
+    // ---- Raw sector-1 read for the fallback dump view (project CLAUDE.md §13 milestone 22b) ------
+    // No new API needed — DskImage.ReadSector already reads raw bytes off the mounted image with
+    // no FDC/command-sequence semantics, and its out-of-range/short-mount behavior already matches
+    // milestone 20d's 0x00 fill-byte convention (see DskImageTests.cs's own coverage of that). These
+    // tests pin the SPECIFIC "sector 1" call the UI fallback view (milestone 15b) makes.
+
+    [Fact]
+    public void DiskBasicDsk_ReadSector_Track1Sector1_MatchesRawFileBytesExactly()
+    {
+        var path = DiskPath("diskbasic_1.6uk.dsk");
+        var disk = new DskImage(path);
+
+        var sector1 = disk.ReadSector(cylinder: 0, head: 0, sector: 1).ToArray();
+
+        var expected = File.ReadAllBytes(path).AsSpan(0, DskImage.BytesPerSector).ToArray();
+        Assert.Equal(expected, sector1);
+        Assert.Equal(0xF3, sector1[0]); // the real PDOS system-disk boot signature
+    }
+
+    [Fact]
+    public void VolorgDsk_ReadSector_Track1Sector1_MatchesRawFileBytesExactly()
+    {
+        var path = DiskPath("volorg.dsk");
+        var disk = new DskImage(path);
+
+        var sector1 = disk.ReadSector(cylinder: 0, head: 0, sector: 1).ToArray();
+
+        var expected = File.ReadAllBytes(path).AsSpan(0, DskImage.BytesPerSector).ToArray();
+        Assert.Equal(expected, sector1);
+    }
+
     // ---- Empty-track fixture ----------------------------------------------------------------
 
     [Fact]

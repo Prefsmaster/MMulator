@@ -77,6 +77,26 @@ public sealed partial class DiskDriveVm : ObservableObject
 
     [ObservableProperty] private IReadOnlyList<string> _programs = [];
 
+    /// <summary>Short explanatory message shown INSTEAD of the directory table (project CLAUDE.md
+    /// §14 milestone 15b; machine ms.22b) for a <see cref="DiskDirectoryFormat.PdosSystem"/> or
+    /// <see cref="DiskDirectoryFormat.Unknown"/> mount — empty for every other format, which is
+    /// what <see cref="HasDirectoryMessage"/> gates the view's fallback-vs-table visibility on.
+    /// Never shown alongside an (empty) table — <see cref="RefreshDirectoryTable"/> always clears
+    /// <see cref="Programs"/> to <c>[]</c> in the same branch that sets this.</summary>
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(HasDirectoryMessage))]
+    private string _directoryMessage = "";
+
+    public bool HasDirectoryMessage => DirectoryMessage.Length > 0;
+
+    /// <summary>Hex+ASCII dump of sector 1 (16 rows × 16 bytes, machine ms.22b's
+    /// <c>DskImage.ReadSector</c>) — populated only alongside <see cref="DirectoryMessage"/>, for
+    /// the same two fallback formats. Row format matches this codebase's existing hex-dump
+    /// convention (the debugger's memory watch window, `P2000.UI` CLAUDE.md §10): offset, 16
+    /// space-separated 2-digit uppercase hex bytes, then the ASCII rendering (printable bytes
+    /// verbatim, <c>.</c> for anything else).</summary>
+    [ObservableProperty] private IReadOnlyList<string> _sectorDump = [];
+
     /// <summary>Column header for <see cref="Programs"/> — varies with the mounted disk's
     /// detected directory format (project CLAUDE.md §14 milestone 15; machine ms.22's
     /// <c>DetectDirectoryFormat</c>): a JWSDOS mount gets two extra columns (Side, Track/Sector),
@@ -583,29 +603,50 @@ public sealed partial class DiskDriveVm : ObservableObject
 
     // ── Directory formatting (project CLAUDE.md §14 milestone 15) ──────────────────────────────
 
-    /// <summary>Resets <see cref="Programs"/>/<see cref="DirectoryHeader"/> to the empty,
-    /// no-disk-mounted state — shared by eject/cancel-mount, the one place that used to just set
-    /// <c>Programs = []</c> directly.</summary>
+    /// <summary>Resets <see cref="Programs"/>/<see cref="DirectoryHeader"/>/<see cref="DirectoryMessage"/>/
+    /// <see cref="SectorDump"/> to the empty, no-disk-mounted state — shared by eject/cancel-mount,
+    /// the one place that used to just set <c>Programs = []</c> directly.</summary>
     private void ClearDirectoryTable()
     {
         Programs = [];
         DirectoryHeader = LegacyDirectoryHeader;
+        DirectoryMessage = "";
+        SectorDump = [];
     }
 
     /// <summary>Dispatches on <see cref="DskImage.DetectDirectoryFormat"/> (machine milestones
-    /// 22/22a) and (re)builds both <see cref="Programs"/> and <see cref="DirectoryHeader"/> for
-    /// the mounted <paramref name="disk"/>. <see cref="DiskDirectoryFormat.Jwsdos"/> renders
-    /// milestone 14's original three columns plus two new ones (Side, Track/Sector).
-    /// <see cref="DiskDirectoryFormat.PdosWorking"/> (milestone 15a) renders PDOS's own shell —
-    /// filename, size, track/sector — with NO Side column (PDOS has no double-sided concept) and
-    /// continuation FCBs already pre-folded into one row each by the machine layer. Every other
-    /// format — <see cref="DiskDirectoryFormat.PdosSystem"/>/<see cref="DiskDirectoryFormat.Unknown"/>
-    /// — keeps milestone 14's ORIGINAL rendering unchanged (this milestone doesn't build the
-    /// fallback dump view; that's milestone 15b). The format-detection/parse logic itself lives
-    /// entirely in <c>DskImage</c> — nothing here re-derives it.</summary>
+    /// 22/22a/22b) and (re)builds whichever of <see cref="Programs"/>/<see cref="DirectoryHeader"/>
+    /// or <see cref="DirectoryMessage"/>/<see cref="SectorDump"/> applies for the mounted
+    /// <paramref name="disk"/> — exhaustive over all four <see cref="DiskDirectoryFormat"/> values,
+    /// exactly one branch ever wins:
+    /// <list type="bullet">
+    /// <item><see cref="DiskDirectoryFormat.PdosSystem"/>/<see cref="DiskDirectoryFormat.Unknown"/>
+    /// (milestone 15b) — replace the table entirely with a short message plus a hex/ascii dump of
+    /// sector 1; <see cref="Programs"/> stays empty so the table never shows alongside it.</item>
+    /// <item><see cref="DiskDirectoryFormat.PdosWorking"/> (milestone 15a) — PDOS's own shell:
+    /// filename, size, track/sector, no Side column (PDOS has no double-sided concept).</item>
+    /// <item><see cref="DiskDirectoryFormat.Jwsdos"/> (milestone 15) — milestone 14's original
+    /// three columns plus Side/Track-Sector.</item>
+    /// </list>
+    /// The format-detection/parse logic itself lives entirely in <c>DskImage</c> — nothing here
+    /// re-derives it.</summary>
     private void RefreshDirectoryTable(DskImage disk)
     {
         var format = disk.DetectDirectoryFormat();
+
+        if (format is DiskDirectoryFormat.PdosSystem or DiskDirectoryFormat.Unknown)
+        {
+            DirectoryMessage = format == DiskDirectoryFormat.PdosSystem
+                ? "PDOS system disk — no file directory"
+                : "Unknown disk contents/structure";
+            SectorDump = FormatSectorDump(disk.ReadSector(0, 0, 1));
+            Programs = [];
+            DirectoryHeader = LegacyDirectoryHeader;
+            return;
+        }
+
+        DirectoryMessage = "";
+        SectorDump = [];
 
         if (format == DiskDirectoryFormat.PdosWorking)
         {
@@ -622,25 +663,11 @@ public sealed partial class DiskDriveVm : ObservableObject
             return;
         }
 
-        // Side 2 directory location is unconfirmed (docs/P2000T-disk-formats.md §7 item 2) —
-        // ReadDirectory() itself only ever reads side 1's confirmed active region regardless
-        // of the mounted image's Sides; nothing extra needed here to enforce that.
+        // format == DiskDirectoryFormat.Jwsdos — the only value left. Side 2 directory location is
+        // unconfirmed (docs/P2000T-disk-formats.md §7 item 2) — ReadDirectory() itself only ever
+        // reads side 1's confirmed active region regardless of the mounted image's Sides; nothing
+        // extra needed here to enforce that.
         var entries = disk.ReadDirectory();
-
-        if (format != DiskDirectoryFormat.Jwsdos)
-        {
-            var legacyRows = new string[entries.Count];
-            for (var i = 0; i < entries.Count; i++)
-            {
-                var e = entries[i];
-                var type = char.IsControl((char)e.FileType) ? ' ' : (char)e.FileType;
-                legacyRows[i] = $"{e.FullName,-16} {type,-2} {e.FileLength,8}";
-            }
-            Programs = legacyRows;
-            DirectoryHeader = LegacyDirectoryHeader;
-            return;
-        }
-
         var rows = new string[entries.Count];
         for (var i = 0; i < entries.Count; i++)
         {
@@ -687,6 +714,33 @@ public sealed partial class DiskDriveVm : ObservableObject
     {
         var zeroBased = logicalSector - 1;
         return (zeroBased / DskImage.SectorsPerTrack + 1, zeroBased % DskImage.SectorsPerTrack + 1);
+    }
+
+    /// <summary>Formats a 256-byte sector as 16 rows of 16 bytes — offset, space-separated
+    /// 2-digit uppercase hex, then an ASCII rendering — matching this codebase's existing hex-dump
+    /// convention (the debugger's memory watch window, `P2000.UI` CLAUDE.md §10:
+    /// <c>MemoryWatchRow.Refresh</c>'s own printable-byte/<c>'.'</c> rule), reused here rather than
+    /// inventing a second one (project CLAUDE.md §14 milestone 15b). A static one-shot dump of a
+    /// mounted disk image, not live executing memory — no per-byte change-highlighting is needed
+    /// or built, unlike the fully interactive memory watch window this borrows its layout from.</summary>
+    private static IReadOnlyList<string> FormatSectorDump(ReadOnlySpan<byte> sector)
+    {
+        const int bytesPerRow = 16;
+        var rows = new string[sector.Length / bytesPerRow];
+        for (var row = 0; row < rows.Length; row++)
+        {
+            var offset = row * bytesPerRow;
+            var hex = new System.Text.StringBuilder();
+            var ascii = new char[bytesPerRow];
+            for (var i = 0; i < bytesPerRow; i++)
+            {
+                var b = sector[offset + i];
+                hex.Append(b.ToString("X2")).Append(' ');
+                ascii[i] = b is >= 0x20 and <= 0x7E ? (char)b : '.';
+            }
+            rows[row] = $"{offset:X2}  {hex.ToString().TrimEnd()}  {new string(ascii)}";
+        }
+        return rows;
     }
 
     private static Avalonia.Controls.TopLevel? GetTopLevel()

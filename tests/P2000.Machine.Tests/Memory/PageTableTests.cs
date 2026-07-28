@@ -195,6 +195,33 @@ public class PageTableTests
         Assert.Equal(0x02, pageTable.Read(PageTable.BankedWindowStart));
     }
 
+    /// <summary>Regression guard for a real coverage gap found 2026-07-28 (reference doc §5d's
+    /// "Disk I/O error" investigation — the owner asked directly whether ALL configured banks,
+    /// not just 0/1, had ever been verified isolated): every prior banking test only ever
+    /// exercised banks 0 and 1. T102 configures 6 banks (0-5); this writes a distinct marker byte
+    /// to EVERY one of them and confirms all 6 persist independently — a bug isolating only
+    /// SOME higher-index bank (an off-by-one in the allocation loop, say) would have passed every
+    /// existing test here.</summary>
+    [Fact]
+    public void BankedWindow_AllSixT102Banks_AreMutuallyIsolated()
+    {
+        var pageTable = Create(new MachineConfig { RamVariant = RamVariant.T102 });
+
+        for (byte b = 0; b < 6; b++)
+        {
+            pageTable.SelectBank(b);
+            pageTable.Write(PageTable.BankedWindowStart, (byte)(0x10 + b));
+            pageTable.Write(PageTable.BankedWindowEnd, (byte)(0x20 + b)); // both ends of the window
+        }
+
+        for (byte b = 0; b < 6; b++)
+        {
+            pageTable.SelectBank(b);
+            Assert.Equal((byte)(0x10 + b), pageTable.Read(PageTable.BankedWindowStart));
+            Assert.Equal((byte)(0x20 + b), pageTable.Read(PageTable.BankedWindowEnd));
+        }
+    }
+
     [Fact]
     public void BankedWindow_IndexAtOrBeyondBankCount_IsOpenBus()
     {

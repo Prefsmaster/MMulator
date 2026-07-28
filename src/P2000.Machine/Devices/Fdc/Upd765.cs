@@ -62,7 +62,7 @@ public sealed class Upd765 : IDevice
     private const int ByteTransferTStates = 32;
 
     private enum Phase { Idle, CommandPhase, ExecutionPhase, ResultPhase }
-    private enum PendingAction { None, SeekSettle, ByteReady }
+    private enum PendingAction { None, SeekSettle, ByteReady, ForcedCompletion }
 
     /// <summary>Which of the 15 commands is driving the current execution-phase byte loop —
     /// needed because the loop's shape (direction, per-byte meaning, completion behaviour)
@@ -179,6 +179,13 @@ public sealed class Upd765 : IDevice
     /// INTERRUPT STATUS/SENSE DRIVE STATUS/READ ID (which complete via an immediate result
     /// phase rather than an execution-phase transfer).</summary>
     public event Action? ResultReady;
+
+    /// <summary>Optional diagnostic sink invoked for every command-phase dispatch and every
+    /// result-phase completion — full command bytes in, full result bytes (ST0-ST2/C/H/R/N or a
+    /// shorter shape) out. Null by default (zero cost when unused); set by a host/test wanting a
+    /// live FDC trace (reference doc §5d, "Disk I/O error" bug investigation, 2026-07-28).
+    /// Temporary/debug instrumentation — not part of the chip's own behavior.</summary>
+    public Action<string>? Trace { get; set; }
 
     /// <summary>Mounts a disk image on the given drive (0-3; the ROM driver only ever
     /// addresses drive 1 per the confirmed command bytes, but the chip itself is drive-agnostic).</summary>
@@ -305,6 +312,7 @@ public sealed class Upd765 : IDevice
             if (!CommandLengths.TryGetValue(baseOpcode, out _expectedLength))
             {
                 // Unknown opcode — invalid command, standard µPD765 1-byte ST0=0x80 result.
+                Trace?.Invoke($"CMD {value:X2} -- unknown opcode (base {baseOpcode:X2}), invalid command");
                 SetResult(0x80);
                 return;
             }
@@ -351,6 +359,7 @@ public sealed class Upd765 : IDevice
     {
         _enabled = (value & CtrlEnable) != 0;
         _motorOn = (value & CtrlMotor) != 0;
+        Trace?.Invoke($"CTRL {value:X2} -- enable={_enabled} motor={_motorOn} reset={(value & CtrlReset) != 0} tc={(value & CtrlTerminalCount) != 0} phase={_phase}");
 
         if ((value & CtrlReset) != 0 && _phase == Phase.Idle)
         {
@@ -384,15 +393,27 @@ public sealed class Upd765 : IDevice
 
         if ((value & CtrlTerminalCount) != 0 && _phase == Phase.ExecutionPhase)
         {
-            // Force-ends a transfer early (real µPD765 TC pin). Not exercised by the ROM's
-            // fixed-EOT reads (which end naturally), but honoured for chip fidelity.
-            CompleteTransfer();
+            // Force-ends a transfer early (real µPD765 TC pin) — deferred by
+            // MinimumLostWakeupGuardTStates rather than completed synchronously here, for the exact
+            // same "lost wakeup" reason documented on that constant: a real driver issues this
+            // OUT then waits (HALT) for the disk-complete interrupt. Completing (and firing
+            // ResultReady, and having the full IM2 dispatch + ISR + RETI run) INSIDE this very
+            // OUT instruction would deliver and fully consume the interrupt before the driver
+            // ever reaches its own HALT a few instructions later — a real bug, confirmed via a
+            // live repro (reference doc §5d, "Disk I/O error" investigation, 2026-07-28): real
+            // Philips Disk BASIC's resident LOAD driver requests a wide EOT window, takes the one
+            // sector it wants, then TC-aborts the rest — exactly this pattern, previously
+            // unexercised by anything else in this project (the ROM's own fixed-EOT boot reads
+            // always end NATURALLY, on the last real byte, never via TC).
+            _byteReady = false;
+            _pending = PendingAction.ForcedCompletion;
+            _delayCounter = MinimumLostWakeupGuardTStates;
         }
     }
 
     /// <summary>Advances master-clock-driven delays: seek/recalibrate settle time and per-byte
     /// semi-DMA pacing. Authentic honours a realistic delay for both. Turbo still defers
-    /// SEEK/RECALIBRATE completion by <see cref="MinimumTurboSeekTStates"/> — NOT
+    /// SEEK/RECALIBRATE completion by <see cref="MinimumLostWakeupGuardTStates"/> — NOT
     /// synchronous with the command dispatch, see that constant's doc comment for why (a real,
     /// found-via-boot-hang bug). Per-byte semi-DMA readiness stays synchronous under Turbo
     /// (<see cref="StartByteDelay"/>) since the ROM only ever busy-polls for it, never waits on
@@ -421,6 +442,11 @@ public sealed class Upd765 : IDevice
                 _pending = PendingAction.None;
                 _byteReady = true;
                 break;
+
+            case PendingAction.ForcedCompletion:
+                _pending = PendingAction.None;
+                CompleteTransfer();
+                break;
         }
     }
 
@@ -430,6 +456,11 @@ public sealed class Upd765 : IDevice
     {
         var opcode = _commandBuffer[0];
         var baseOpcode = (byte)(opcode & OpcodeMask);
+        if (Trace is not null)
+        {
+            var bytes = string.Join(' ', _commandBuffer.ConvertAll(b => b.ToString("X2")));
+            Trace.Invoke($"CMD {bytes} -- base {baseOpcode:X2}, selected drive {_selectedDrive}, motor {(_motorOn ? "on" : "off")}");
+        }
         switch (baseOpcode)
         {
             case OpSpecify: DispatchSpecify(); break;
@@ -495,20 +526,33 @@ public sealed class Upd765 : IDevice
         BeginSeek(drive, target);
     }
 
-    /// <summary>Minimum settle delay under Turbo, in T-states. NOT zero — real bug, found via
-    /// a live boot-test hang and fixed here: the ROM always sends the SEEK/RECALIBRATE command
-    /// bytes and THEN executes an explicit `halt` a few instructions later, expecting to be
-    /// woken by ITS OWN completion interrupt (Disk.asm `disk_recall`/`disk_do_search`). If the
-    /// chip fires <see cref="ResultReady"/> SYNCHRONOUSLY inside the command dispatch (i.e.
-    /// before the ROM ever reaches that `halt`), the interrupt is accepted and fully serviced
-    /// (IM2 vector → ISR → RETI) at the very next instruction boundary — often still inside
-    /// `disk_send_command`'s own loop — and is gone by the time `halt` actually executes. A
-    /// real one-shot, level-cleared-on-Acknowledge interrupt that fires and is consumed BEFORE
-    /// the intended waiter ever looks is a lost wakeup: the CPU halts forever waiting for an
-    /// event that already happened. This constant only needs to safely outlast the handful of
-    /// T-states between command dispatch and the ROM's own `halt` (a RET + a few fetches,
-    /// nowhere near this many) — it is not meant to model a real seek time.</summary>
-    private const int MinimumTurboSeekTStates = 200;
+    /// <summary>Minimum delay (in T-states) before ANY chip completion whose natural real-hardware
+    /// latency could otherwise collapse to zero, to guard against a lost wakeup — a real bug,
+    /// first found via a live boot-test hang on SEEK/RECALIBRATE completion under Turbo, and
+    /// found a SECOND time (2026-07-28, reference doc §5d "Disk I/O error" investigation) on
+    /// TC-forced transfer completion under EITHER timing policy.
+    /// <list type="bullet">
+    /// <item><b>SEEK/RECALIBRATE (Turbo only — Authentic's own real settle delay already provides
+    /// ample gap):</b> the ROM always sends the command bytes and THEN executes an explicit
+    /// `halt` a few instructions later, expecting to be woken by ITS OWN completion interrupt
+    /// (Disk.asm `disk_recall`/`disk_do_search`).</item>
+    /// <item><b>TC-forced completion (both policies — the gap here is driver-code-length, not
+    /// transfer-pacing, so Authentic's per-byte delay doesn't help):</b> a driver requests a wide
+    /// EOT window, takes only the sectors it wants via the data register, then writes the TC
+    /// control-latch bit to abort the rest — confirmed real usage, Philips Disk BASIC's resident
+    /// LOAD driver — and (like SEEK) expects to be woken by the completion interrupt a few
+    /// instructions later, not instantaneously.</item>
+    /// </list>
+    /// In both cases, if the chip fires <see cref="ResultReady"/> SYNCHRONOUSLY inside the
+    /// triggering write (i.e. before the driver ever reaches its own `halt`/wait), the interrupt
+    /// is accepted and fully serviced (IM2 vector → ISR → RETI) at the very next instruction
+    /// boundary — often still inside the driver's own command-issuing code — and is gone by the
+    /// time the intended wait point actually executes. A real one-shot, level-cleared-on-
+    /// Acknowledge interrupt that fires and is consumed BEFORE the intended waiter ever looks is a
+    /// lost wakeup. This constant only needs to safely outlast the handful of T-states between the
+    /// triggering write and the driver's own wait point (a RET + a few fetches, nowhere near this
+    /// many) — it is not meant to model a real seek/transfer-abort latency.</summary>
+    private const int MinimumLostWakeupGuardTStates = 200;
 
     private void BeginSeek(int drive, int targetCylinder)
     {
@@ -526,7 +570,7 @@ public sealed class Upd765 : IDevice
         var distance = Math.Abs(targetCylinder - _cylinder[drive]);
         if (Policy == TimingPolicy.Turbo)
         {
-            _delayCounter = MinimumTurboSeekTStates;
+            _delayCounter = MinimumLostWakeupGuardTStates;
         }
         else
         {
@@ -678,8 +722,15 @@ public sealed class Upd765 : IDevice
     {
         _byteReady = false;
         _pending = PendingAction.None;
+        Trace?.Invoke($"COMPLETE kind={_transferKind} transferIndex={_transferIndex} bufferLength={_transferBuffer.Length} startSector={_transferStartSector} sectorSize={_transferSectorSize}");
 
-        byte st0 = 0x00, st1 = 0x00, st2 = 0x00;
+        // ST0's D2 (HD) / D1-D0 (US1/US0) reflect the addressed head/drive on EVERY completion,
+        // not just error paths — datasheet-standard, already the pattern this class uses
+        // elsewhere (DispatchSenseInterruptStatus's `0x20 | drive`). Previously always 0x00 here
+        // regardless of which drive/head a data-shaped command actually addressed — invisible
+        // whenever drive 0/head 0 was involved (every prior test + the ROM's own boot read), but
+        // wrong for any other drive/head (reference doc §5d, 2026-07-28 "Disk I/O error" repro).
+        byte st0 = (byte)((_transferHead << 2) | _transferDrive), st1 = 0x00, st2 = 0x00;
         byte c, h, r, n;
 
         switch (_transferKind)
@@ -734,11 +785,30 @@ public sealed class Upd765 : IDevice
         ResultReady?.Invoke();
     }
 
+    /// <summary>Real µPD765 result-phase CHRN reflects the sector the head was actually ON when
+    /// the transfer ended — the LAST sector genuinely accessed, not however many sectors the
+    /// command's own EOT window originally requested. These coincide for a transfer that runs to
+    /// natural completion (<see cref="_transferIndex"/> == <see cref="_transferBuffer"/>.Length),
+    /// which is why this was invisible through milestones 19/19a's own tests and the ROM's own
+    /// fixed-shape boot read — but a transfer force-ended early via the TC control-latch bit (a
+    /// real, legitimate technique: request a wide EOT window, take only the sectors you actually
+    /// want, then TC-abort the rest) leaves <c>_transferIndex</c> well short of the buffer's full
+    /// requested length, and reporting the buffer's tail sector there is simply wrong — confirmed
+    /// against a real repro (reference doc §5d, "Disk I/O error" investigation, 2026-07-28): real
+    /// Philips Disk BASIC's resident LOAD driver does exactly this (READ DATA R=1 EOT=0x10, takes
+    /// 256 bytes, then TC), and the wrong R=0x10 this used to return instead of the correct R=0x01
+    /// is what made the driver's own read-back check fail and retry-then-report "Disk I/O error"
+    /// on every LOAD/SAVE, regardless of drive.</summary>
     private (byte c, byte h, byte r, byte n) LastSectorResultFields()
     {
-        var lastSector = _transferSectorSize > 0
-            ? _transferStartSector + _transferBuffer.Length / _transferSectorSize - 1
-            : _transferStartSector;
+        if (_transferSectorSize <= 0)
+            return ((byte)_transferCylinder, (byte)_transferHead, (byte)_transferStartSector, SizeCodeFor(_transferSectorSize));
+
+        var sectorsCompleted = _transferIndex / _transferSectorSize;
+        var stoppedOnBoundary = _transferIndex % _transferSectorSize == 0 && sectorsCompleted > 0;
+        var lastSector = stoppedOnBoundary
+            ? _transferStartSector + sectorsCompleted - 1 // last WHOLE sector actually finished
+            : _transferStartSector + sectorsCompleted;    // still mid-sector (or TC before any byte moved)
         return ((byte)_transferCylinder, (byte)_transferHead, (byte)lastSector,
             SizeCodeFor(_transferSectorSize));
     }
@@ -751,18 +821,23 @@ public sealed class Upd765 : IDevice
         return n;
     }
 
+    /// <summary>Only commits WHOLE sectors the host actually supplied via the data register —
+    /// same root cause and fix as <see cref="LastSectorResultFields"/> (2026-07-28 finding): a
+    /// TC-terminated early-abort WRITE DATA/WRITE DELETED DATA can leave <c>_transferIndex</c>
+    /// short of <c>_transferBuffer</c>'s full originally-requested length. Committing the untouched
+    /// (zero-initialized) tail past what the host really sent would silently corrupt sectors the
+    /// guest never intended to write.</summary>
     private void CommitSectorWrites()
     {
         var disk = _drives[_transferDrive];
         var sectorSize = DskImage.BytesPerSector;
-        if (disk is not null && _transferSectorSize == sectorSize && _transferBuffer.Length % sectorSize == 0)
+        if (disk is null || _transferSectorSize != sectorSize) return;
+
+        var sectorCount = _transferIndex / sectorSize;
+        for (var s = 0; s < sectorCount; s++)
         {
-            var sectorCount = _transferBuffer.Length / sectorSize;
-            for (var s = 0; s < sectorCount; s++)
-            {
-                disk.WriteSector(_transferCylinder, _transferHead, _transferStartSector + s,
-                    _transferBuffer.AsSpan(s * sectorSize, sectorSize));
-            }
+            disk.WriteSector(_transferCylinder, _transferHead, _transferStartSector + s,
+                _transferBuffer.AsSpan(s * sectorSize, sectorSize));
         }
     }
 
@@ -780,7 +855,12 @@ public sealed class Upd765 : IDevice
         var fill = new byte[DskImage.BytesPerSector];
         Array.Fill(fill, _formatFillByte);
 
-        for (var offset = 0; offset + FormatBytesPerSectorGroup <= _transferBuffer.Length; offset += FormatBytesPerSectorGroup)
+        // Same "only what was actually transferred" fix as LastSectorResultFields/
+        // CommitSectorWrites (2026-07-28 finding) — bound by _transferIndex, not the full
+        // originally-requested _transferBuffer.Length, in case a TC-abort ever cuts a real
+        // Format A Track short (no confirmed real caller does this yet, fixed for consistency).
+        var fedLength = Math.Min(_transferIndex, _transferBuffer.Length);
+        for (var offset = 0; offset + FormatBytesPerSectorGroup <= fedLength; offset += FormatBytesPerSectorGroup)
         {
             var h = _transferBuffer[offset + 1] & 0x01;
             var r = _transferBuffer[offset + 2];
@@ -802,12 +882,16 @@ public sealed class Upd765 : IDevice
         var disk = _drives[_transferDrive];
         var sectorSize = DskImage.BytesPerSector;
 
-        if (disk is null || _transferSectorSize != sectorSize || _transferBuffer.Length % sectorSize != 0)
+        // Same "bound by what was actually transferred" fix as LastSectorResultFields/
+        // CommitSectorWrites (2026-07-28 finding) — a TC-abort mid-scan should only compare
+        // whole sectors the host actually fed, not the full originally-requested EOT window (no
+        // confirmed real caller does this yet, fixed for consistency).
+        if (disk is null || _transferSectorSize != sectorSize || _transferIndex % sectorSize != 0)
         {
             return (0x04, 0x08); // ST1 ND (no data — nothing to compare against), ST2 SH still set (vacuously)
         }
 
-        var sectorCount = _transferBuffer.Length / sectorSize;
+        var sectorCount = _transferIndex / sectorSize;
         var sh = true;
         var sn = false;
 
@@ -844,6 +928,11 @@ public sealed class Upd765 : IDevice
         _resultLength = bytes.Length;
         _resultIndex = 0;
         _phase = Phase.ResultPhase;
+        if (Trace is not null)
+        {
+            var text = string.Join(' ', Array.ConvertAll(bytes, b => b.ToString("X2")));
+            Trace.Invoke($"RESULT {text}");
+        }
     }
 
     // ---- IDevice ----------------------------------------------------------------------------

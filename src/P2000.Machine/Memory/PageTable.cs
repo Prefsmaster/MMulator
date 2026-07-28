@@ -120,7 +120,20 @@ public sealed class PageTable
     /// range restriction on this register); an index at or beyond the configured bank
     /// count reads open bus, same as any other unpopulated region. <see cref="Machine"/>
     /// registers this as the port dispatch's write listener for <see cref="BankSelectPort"/>.</summary>
-    public void SelectBank(byte index) => _bankIndex = index;
+    public void SelectBank(byte index)
+    {
+        _bankIndex = index;
+        BankSelected?.Invoke(index);
+    }
+
+    /// <summary>Diagnostic-only: the raw currently-selected bank index (whatever was last written
+    /// to <see cref="BankSelectPort"/>) — not consulted by any dispatch logic, just an
+    /// observability hook for investigating banking-related bugs.</summary>
+    public byte CurrentBank => _bankIndex;
+
+    /// <summary>Diagnostic-only sink invoked on every bank-select write, null by default (zero
+    /// cost when unused) — mirrors <see cref="P2000.Machine.Devices.Fdc.Upd765.Trace"/>.</summary>
+    public Action<byte>? BankSelected { get; set; }
 
     /// <summary>True when <paramref name="addr"/> is backed by the DRAM array (VRAM,
     /// the SAA5020 fetch unit exclusively addresses this VRAM chip. Base RAM, expansion RAM,

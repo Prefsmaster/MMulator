@@ -1556,6 +1556,186 @@ marked synced. Do NOT edit the reference doc from this project.
 - **Synced:** yes (2026-07-05, into P2000T-reference.md + device guides)
 -->
 
+### 2026-07-28 — Bugfix investigation: "Disk I/O error" on every post-boot LOAD/SAVE — THREE real `Upd765` bugs found and fixed via instrumentation; root cause of the full symptom still not fully closed
+- **Trigger:** owner-reported bug, reference doc §5d "TRACKED, not fixed (owner-reported,
+  2026-07-28)". Per that entry's own instructions, instrumented `Upd765` (temporary `Trace`
+  diagnostic hook — `public Action<string>? Trace`, cheap/null by default, left in permanently as
+  a debug aid) rather than guessing, then drove the REAL repro end-to-end: real `Basic-24.bin`
+  cartridge, real `assets/Disks/diskbasic_1.6uk.dsk` boot floppy (drive 1) + real
+  `assets/Disks/volorg.dsk` (drive 2), booted through the real embedded monitor ROM into real
+  Philips Disk BASIC 1.6 UK, then typed `LOAD "B:VOLORG"` via the real keyboard-matrix device
+  (new test `tests/P2000.Machine.Tests/Boot/PdosLoadSaveRepro.cs` — see its own class doc comment
+  for the full trace-by-trace narrative).
+- **What the trace showed, and three real bugs found — all only reachable through a command
+  shape never previously exercised by anything else in this project: TC (Terminal Count)-forced
+  early transfer completion.** Real Disk BASIC's resident LOAD driver requests a WIDE EOT window
+  on READ DATA (`46 02 01 00 01 01 10 0E 00` — R=1, EOT=0x10, a 16-sector/whole-track window),
+  takes only the ONE sector it actually wants via the data register (256 bytes), then writes the
+  TC control-latch bit (`OUT (0x90),0x0E`) to abort the rest — a real, legitimate technique (the
+  ROM's own fixed-EOT boot reads always complete NATURALLY, never via TC, so this path was
+  entirely unexercised before now):
+  1. **`LastSectorResultFields()` reported the EOT window's TAIL sector (16), not the sector
+     actually transferred (1).** It computed the result's R field from
+     `_transferBuffer.Length` (the ORIGINALLY REQUESTED length) instead of `_transferIndex` (bytes
+     ACTUALLY moved before TC fired) — identical for a naturally-completing transfer (invisible to
+     every prior test + the ROM's own boot read), but wrong the instant TC ends things early.
+     Fixed: bound by `_transferIndex`. Same bug, same fix, also applied to `CommitSectorWrites`
+     (was about to commit the zero-initialized TAIL of the full requested WRITE DATA buffer, not
+     just what the host actually sent — directly relevant since the repro also reports SAVE
+     failing), and for consistency to `CommitFormat`/`CompleteScan` (same bug class, no confirmed
+     real caller uses TC with them yet, fixed anyway rather than shipping a known-latent copy).
+  2. **`CompleteTransfer`'s ST0 was unconditionally `0x00` on a normal completion, never encoding
+     the addressed drive/head (datasheet D2 HD / D1-D0 US1/US0) the way `DispatchSenseInterruptStatus`
+     already does (`0x20 | drive`).** Invisible whenever drive 0/head 0 was involved (every prior
+     test + the ROM's own boot read use drive 1 exclusively) — very much NOT invisible for THIS
+     repro's drive 2. This was the fix that stopped an observed 14-28× identical-sector retry loop
+     outright (drive-2 reads got ST0=0x00, and the driver's own integrity check evidently treats
+     the addressed-unit mismatch as a failure and retries the SAME read verbatim until giving up).
+  3. **TC-forced completion fired `ResultReady` SYNCHRONOUSLY inside the triggering `WriteControl`
+     call — the exact same "lost wakeup" bug class already found and fixed for SEEK/RECALIBRATE**
+     (the existing `MinimumTurboSeekTStates` guard, renamed `MinimumLostWakeupGuardTStates` since
+     it now has two real callers): a driver writes the TC bit then HALTs waiting for the disk-
+     complete interrupt a few instructions later; completing (full IM2 dispatch + ISR + RETI)
+     INSIDE the same OUT instruction delivers and fully consumes that interrupt before the driver
+     ever reaches its own HALT. Fixed by deferring TC-forced completion through the same
+     `PendingAction`/`Tick()` mechanism SEEK already uses (new `PendingAction.ForcedCompletion`),
+     applied under BOTH `TimingPolicy` values (unlike SEEK's Turbo-only guard — Authentic's own
+     per-byte transfer pacing does NOT provide a natural gap here, since the risk window is
+     driver-code-length between the TC-issuing OUT and its own wait point, not transfer pacing).
+     This fix alone changed the FDC's behavior from "identically retries sector 1 forever" into "a
+     real, complete, correctly-parameterized scan across all 16 directory sectors" — the search
+     started actually advancing once the chip stopped potentially eating its own wakeup signal.
+- **Combined effect, verified via the trace:** before these three fixes, EVERY `LOAD`/`SAVE`
+  against ANY drive hit at least bug #2 (wrong ST0 whenever the drive/head isn't 0/0) and, on any
+  read/write actually needing a TC-truncated transfer, bugs #1 and #3 too — matching the repro's
+  own "universal, not drive-selective" framing exactly. After all three fixes, the SAME repro's
+  FDC-level trace is now fully datasheet-correct (right status, right data, right timing) and the
+  driver performs a real, advancing, non-repeating directory scan — a dramatic, independently
+  verified improvement, NOT just a plausible-sounding rationalization: confirmed by literally
+  watching the sector sequence change from `1,1,1,1,1,1,1,1,1,1,1,1,1,1` (14-28×, identical) to
+  `1,7,13,3,9,15,5,11,2,8,14,4,10,16` (all 16 sectors, exactly once each).
+- **NOT fully resolved — genuinely stuck past this point, exactly the scenario this bug-fix
+  prompt's own instructions anticipated.** The repro's `LOAD "B:VOLORG"` (and `LOAD "B:VOLINFO"`,
+  tried separately to rule out the target FCB's own incidental `0xF3` first byte as a red herring)
+  still ends in "Disk I/O error" after the driver scans all 16 directory sectors — including the
+  one holding the target file's real, independently-byte-verified FCB (confirmed via
+  `DskImage.ReadPdosDirectory()`/`ReadSector` directly against `volorg.dsk`, matching milestone
+  22a's own prior fixture confirmation exactly). Two hypotheses were tested and DISPROVEN by
+  direct experiment rather than left unchecked: (a) the result's C (cylinder) field should echo
+  `track+1` rather than the true 0-based physical cylinder, by analogy with `jwsformat.asm`'s own
+  confirmed off-by-one — tested both with and without the ST0 fix in place, neither changed the
+  outcome; (b) the target FCB's own incidental `0xF3` first byte (coincidentally the SAME value as
+  the ROM's PDOS-system-disk signature) causes the driver to misidentify the disk — disproven by
+  getting the identical failure searching for `VOLINFO` instead, whose FCB does NOT start with
+  `0xF3`. **What would be needed to go further:** a disassembly of Philips Disk BASIC's own
+  resident LOAD driver (still not sourced/planned, per the reference doc block's own note) showing
+  exactly what it does with the 256 bytes read back from each candidate directory sector — the
+  trace proves the FDC's own command/status/data are now all correct by every datasheet-derivable
+  measure available without that source, so whatever check still fails is either a driver-internal
+  detail with no external signature (a checksum? a specific expected probe count/order?) or a
+  genuine PDOS-format-level nuance this project's `DskImage`/FCB model doesn't yet capture — not
+  something further trace-staring or guessing can distinguish.
+- **Follow-up (same day, owner's own question) — SAVE traced too, for comparison:** ran
+  `SAVE "B:TEST"` against the identical booted machine
+  (`Boot_ThenSaveTest_TraceFdcCommandsAndScreenOutput`). New information, not just a repeat of the
+  LOAD finding: SAVE reads directory track1/sector1 EXACTLY ONCE (same command shape, same
+  now-fixed-correct status/data the LOAD investigation already validated), then reports "Disk I/O
+  error" immediately — it **never issues SENSE DRIVE STATUS at all** (no write-protect check ever
+  runs) and **never attempts a WRITE DATA**. This rules out a write-protect-detection bug as the
+  cause (that code path isn't reached) and shows SAVE's give-up threshold differs from LOAD's
+  (SAVE bails after ONE read; LOAD's own search tries all 16 directory sectors before giving up) —
+  consistent with the two being different algorithms that both stumble on the same still-
+  unresolved check, but this doesn't further localize where that check lives. Sector 1 genuinely
+  has 6 free FCB slots in this fixture (only 2 of 8 occupied — VOLORG, VOLINFO), so a correctly
+  functioning free-slot search should succeed reading just this one sector. Still stuck at the
+  same point as the LOAD investigation — recorded here so a future disassembly-armed pass doesn't
+  have to re-derive that SAVE's failure is this early/this shaped.
+- **Second follow-up (same day, owner: "I tried a save on a clean disk. also got an disk I/O
+  error, but the error took... a little longer to appear") — a genuine, non-illusory difference,
+  now fully explained in SHAPE (not in root cause):** three-way comparison, all three ending in
+  "Disk I/O error":
+  1. Real `volorg.dsk` (VOLORG's own FCB happens to start with `0xF3`): SAVE reads sector 1 ONCE,
+     fails immediately (the finding directly above).
+  2. A genuinely blank/unformatted disk (`DskImage.CreateBlank`, all-zero, no `0xF3` anywhere):
+     SAVE scans ALL 16 directory sectors, in the EXACT same order LOAD's own search uses
+     (`1,7,13,3,9,15,5,11,2,8,14,4,10,16`), THEN fails — confirms the owner's "took longer"
+     observation was real.
+  3. Real `volorg.dsk` bytes, unchanged EXCEPT patching that one byte `0xF3`→`0x00` (VOLORG's FCB
+     stays fully occupied/non-zero otherwise): ALSO scans all 16 sectors like case 2, not just 1 —
+     isolating the variable decisively. **It's the `0xF3` BYTE VALUE specifically, not "occupied
+     vs. empty" directory content, that makes SAVE short-circuit to one read.**
+  Very plausibly Disk BASIC's own legitimate design, not an emulator bug: `0xF3` at this exact
+  track1/sector1/offset0 location is the SAME byte the ROM's own `getdos` checks to recognize a
+  PDOS system disk (reference doc §5d) — real Disk BASIC's SAVE very plausibly refuses to write
+  to what it believes is a system disk, protecting boot media from a naive SAVE, same as a real
+  DOS would. VOLORG's own FCB colliding with that exact byte value is the SAME "one genuine
+  ambiguity in the format" already flagged in `docs/P2000T-disk-formats.md` §7 item 8 (milestone
+  22a) — not a new finding, just a newly observed consequence of it. **Critically, this does NOT
+  explain the remaining bug** — cases 2 and 3 (no `0xF3` anywhere) BOTH still end in "Disk I/O
+  error" after their full scan, so the `0xF3` check only governs how many sectors get scanned
+  before failing, not whether the command ultimately succeeds. The real root cause remains exactly
+  as open as before this comparison, downstream of (or unrelated to) this `0xF3` gate.
+- **Third follow-up (same day, owner: since after the directory scan zero further FDC activity
+  happens before "Disk I/O error," maybe PDOS caches the directory in RAM — "could it be that
+  something is not working well in that caching area? Basic24 needs at least a switchable bank")
+  — chased the banking angle directly, then owner pushed further ("did you check that anything
+  landed in banked memory and that the banks are present, and that the switches have the desired
+  effect? The boot ROM doesn't perform extensive banked memory tests"), a fair challenge since the
+  first pass only searched for the delivered directory text, not the banking mechanism itself.
+  Three things checked:
+  1. **Real, closed coverage gap:** every prior banking test only ever verified banks 0 and 1
+     (`BankedWindow_SelectBank_SwitchesToAnIsolatedBank`) — banks 2-5 had literally never been
+     checked for isolation on their own. New
+     `tests/P2000.Machine.Tests/Memory/PageTableTests.cs`'s `BankedWindow_AllSixT102Banks_AreMutuallyIsolated`
+     writes a distinct marker to all 6 T102 banks and confirms all 6 persist independently — passes.
+  2. **Banks are genuinely present/populated/distinct in the LIVE repro machine**, not just in
+     isolated `PageTableTests` construction: dumping all 6 banks' own first 16 bytes at 0xE000
+     shows bank 1 holding real, recognizable Z80 code (`F3 ED 5E DD 22 32 F5 FB DB 00 3C 20 FB F3
+     ED 73` = DI/IM2/LD(nn),IX/LD(nn),A/EI/IN A,(0)/INC A/JR NZ,-3/DI/LD(nn),SP — a sensible ISR-
+     setup preamble, consistent with this being exactly the DOS driver code `getdos` loaded into
+     bank 1 at boot), banks 2-5 showing DIFFERENT still-untouched power-on noise (allocated
+     correctly, simply unused by this PDOS session), bank 0 all-zero (plausibly Disk BASIC's own
+     cleared extended-workspace use of that bank, unrelated to the disk driver). No open-bus,
+     aliasing, or cross-bank corruption visible.
+  3. **Switches have real, observable effect during the live SAVE attempt:** exactly 12 real
+     bank-select writes (alternating 0x01/0x00) occur while attempting to save just one directory
+     sector — consistent with BASIC's own code (bank 0) repeatedly calling into DOS driver
+     subroutines (bank 1) and switching back after each. Caught and fixed a real instrumentation
+     bug along the way: the diagnostic's own bank-dump helper temporarily re-selects banks to peek
+     at their content, which briefly polluted the SAME log meant to capture only the driver's real
+     switches — fixed by dumping "before" banks before subscribing to the trace, and unsubscribing
+     before the "after" dump.
+  **Conclusion:** the banking MECHANISM itself (isolation, persistence, real addressing effect)
+  checks out — doesn't look like a `PageTable` bug. Does NOT rule out a more specific timing/
+  ordering interaction between disk I/O and a bank switch (a switch landing one instruction off
+  from what real hardware would allow, say) — only a disassembly could confirm that one way or
+  the other. Still the same open root cause as the two follow-ups above; this narrows where it
+  ISN'T (the banking primitive), not where it is.
+- **Tests:** `tests/P2000.Machine.Tests/Boot/PdosLoadSaveRepro.cs` (new) — the real end-to-end
+  repro itself, with a regression assertion that the retry loop specifically (bugs #2+#3's
+  combined symptom) stays fixed: every READ DATA issued during the LOAD attempt must target a
+  DISTINCT sector, never repeat one. `tests/P2000.Machine.Tests/Devices/Fdc/Upd765Tests.cs` (+4,
+  synthetic, fast): TC-truncated READ DATA reports the sector actually read, not the EOT window's
+  tail; TC-truncated WRITE DATA commits only the sectors actually received (sector 2, never sent,
+  stays untouched); `CompleteTransfer` reports the addressed drive/head in ST0 (drive 2/head 0 →
+  `0x02`, not `0x00`); TC-forced completion is not synchronous (mirrors the existing
+  `Recalibrate_Turbo_CompletesAfterAFewTStates_FiresResultReady` test). Full
+  `P2000.Machine.Tests`: 568/568 green (was 561 before the 4 new `Upd765Tests.cs` cases; +3 net
+  for `PdosLoadSaveRepro.cs`'s own diagnostic tests — the LOAD repro, plus the three-way SAVE
+  comparison below); `P2000.UI.Tests`: 217/217 green, unaffected.
+- **Applies to:** `src/P2000.Machine/Devices/Fdc/Upd765.cs` (`Trace`, `LastSectorResultFields`,
+  `CommitSectorWrites`, `CommitFormat`, `CompleteScan`, `CompleteTransfer`'s ST0,
+  `MinimumLostWakeupGuardTStates` rename, `PendingAction.ForcedCompletion`, `WriteControl`'s TC
+  branch), `src/P2000.Machine/Memory/PageTable.cs` (`CurrentBank`, `BankSelected` — diagnostic-only
+  additions, same pattern as `Upd765.Trace`), `tests/P2000.Machine.Tests/Boot/PdosLoadSaveRepro.cs`
+  (new), `tests/P2000.Machine.Tests/Devices/Fdc/Upd765Tests.cs`,
+  `tests/P2000.Machine.Tests/Memory/PageTableTests.cs` (`BankedWindow_AllSixT102Banks_AreMutuallyIsolated`,
+  new). Reference doc §5d's "TRACKED, not fixed" block.
+- **Synced:** no yet — the three confirmed bugs/fixes and the still-open remainder both need to
+  land in reference doc §5d, replacing the "TRACKED, not fixed" framing with a "partially fixed,
+  see this entry" status — the human should decide the exact wording since the bug isn't fully
+  closed.
+
 ### 2026-07-28 — Milestone 22b IMPLEMENTED: raw sector-1 read for the fallback dump view (no new API)
 - **Trigger:** owner decision (reference doc §3a same RESOLVED block). Third and last of the
   three-part split — triggered whenever milestone 22/22a's dispatch returns `PdosSystem` or

@@ -123,7 +123,7 @@ public class Upd765Tests
     /// `halt` (Disk.asm `disk_recall`/`disk_do_search` always send the command, THEN halt,
     /// expecting to be woken by that same completion) — a lost wakeup, since the one-shot
     /// interrupt is already consumed by the time the intended waiter starts waiting. See
-    /// <see cref="Upd765.MinimumTurboSeekTStates"/>'s doc comment for the full trace.
+    /// <see cref="Upd765.MinimumLostWakeupGuardTStates"/>'s doc comment for the full trace.
     /// </summary>
     [Fact]
     public void Recalibrate_Turbo_CompletesAfterAFewTStates_FiresResultReady()
@@ -920,5 +920,138 @@ public class Upd765Tests
         {
             Assert.All(disk.ReadSector(0, 0, s).ToArray(), b => Assert.Equal(0x00, b));
         }
+    }
+
+    // ---- TC-forced early completion — real "Disk I/O error" bug investigation, 2026-07-28 -----
+    // (reference doc §5d). Real Philips Disk BASIC's resident LOAD driver requests a wide EOT
+    // window on READ DATA, takes only the sector(s) it actually wants via the data register, then
+    // writes the TC control-latch bit to abort the rest — a legitimate, previously-unexercised
+    // command shape (the ROM's own fixed-EOT boot reads always complete NATURALLY). Three real
+    // bugs surfaced here, all fixed together since a live repro needed all three to actually load.
+
+    [Fact]
+    public void ReadData_TcTerminatedEarly_ReportsTheSectorActuallyRead_NotTheEotWindowsTail()
+    {
+        var image = BuildSyntheticImage(tracks: 40, sides: 2);
+        for (var i = 0; i < 4096; i++) image[i] = (byte)i;
+        var disk = new DskImage(image);
+        var fdc = new Upd765 { Policy = TimingPolicy.Turbo };
+        fdc.MountDisk(0, disk);
+
+        // READ DATA (0x46): unit=0, cyl=0, head=0, R=1, N=1, EOT=0x10 (whole 16-sector track) —
+        // exactly Disk BASIC's own confirmed shape (reference doc §5d).
+        fdc.WriteData(0x46);
+        fdc.WriteData(0x00);
+        fdc.WriteData(0x00);
+        fdc.WriteData(0x00);
+        fdc.WriteData(0x01);
+        fdc.WriteData(0x01);
+        fdc.WriteData(0x10);
+        fdc.WriteData(0x00);
+        fdc.WriteData(0x00);
+
+        for (var i = 0; i < 256; i++) fdc.ReadData(); // take exactly 1 sector (256 bytes)
+        fdc.WriteControl(0x0E);                       // TC — abort the rest of the 16-sector window
+        for (var i = 0; i < 300; i++) fdc.Tick();      // TC now completes via the lost-wakeup guard
+
+        fdc.ReadData(); // ST0
+        fdc.ReadData(); // ST1
+        fdc.ReadData(); // ST2
+        Assert.Equal(0x00, fdc.ReadData());            // C
+        Assert.Equal(0x00, fdc.ReadData());            // H
+        Assert.Equal(0x01, fdc.ReadData());            // R — the sector ACTUALLY read, not 0x10
+        Assert.Equal(0x01, fdc.ReadData());             // N
+    }
+
+    [Fact]
+    public void WriteData_TcTerminatedEarly_CommitsOnlyTheSectorsActuallyReceived()
+    {
+        var image = BuildSyntheticImage(tracks: 40, sides: 2);
+        var original = new byte[256];
+        Array.Fill(original, (byte)0xEE);
+        image.AsSpan(256, 256).Fill(0xEE); // sector 2 pre-filled with a known, distinct pattern
+        var disk = new DskImage(image);
+        var fdc = new Upd765 { Policy = TimingPolicy.Turbo };
+        fdc.MountDisk(0, disk);
+
+        // WRITE DATA (0x45): unit=0, cyl=0, head=0, R=1, N=1, EOT=0x10 — host only ever sends 1
+        // real sector's worth of bytes, then TC-aborts.
+        fdc.WriteData(0x45);
+        fdc.WriteData(0x00);
+        fdc.WriteData(0x00);
+        fdc.WriteData(0x00);
+        fdc.WriteData(0x01);
+        fdc.WriteData(0x01);
+        fdc.WriteData(0x10);
+        fdc.WriteData(0x00);
+        fdc.WriteData(0x00);
+
+        var pattern = new byte[256];
+        for (var i = 0; i < 256; i++) { pattern[i] = (byte)(i + 1); fdc.WriteData(pattern[i]); }
+        fdc.WriteControl(0x0E); // TC
+        for (var i = 0; i < 300; i++) fdc.Tick();
+
+        Assert.Equal(pattern, disk.ReadSector(0, 0, 1).ToArray());
+        // Sector 2 (never sent by the host) must be untouched — NOT overwritten with the
+        // zero-initialized tail of the originally-requested 16-sector buffer.
+        Assert.All(disk.ReadSector(0, 0, 2).ToArray(), b => Assert.Equal(0xEE, b));
+    }
+
+    [Fact]
+    public void CompleteTransfer_ReportsAddressedDriveAndHeadInSt0_NotAlwaysZero()
+    {
+        var image = BuildSyntheticImage(tracks: 40, sides: 2);
+        var disk = new DskImage(image);
+        var fdc = new Upd765 { Policy = TimingPolicy.Turbo };
+        fdc.MountDisk(2, disk);
+
+        // READ DATA targeting drive 2 (US1/US0 = binary 10), head 0, single sector.
+        fdc.WriteData(0x46);
+        fdc.WriteData(0x02);
+        fdc.WriteData(0x00);
+        fdc.WriteData(0x00);
+        fdc.WriteData(0x01);
+        fdc.WriteData(0x01);
+        fdc.WriteData(0x01);
+        fdc.WriteData(0x00);
+        fdc.WriteData(0x00);
+        for (var i = 0; i < 256; i++) fdc.ReadData();
+
+        // ST0's D2 (HD)/D1-D0 (US1/US0) must reflect the addressed unit even on a normal
+        // completion — datasheet-standard, previously always 0x00 regardless of drive/head
+        // (invisible whenever drive 0/head 0 was used, wrong otherwise — reference doc §5d).
+        Assert.Equal(0x02, fdc.ReadData());
+    }
+
+    /// <summary>Mirrors <c>Recalibrate_Turbo_CompletesAfterAFewTStates_FiresResultReady</c> above
+    /// — same lost-wakeup guard, now also covering TC-forced transfer completion (the SECOND real
+    /// caller of <see cref="Upd765.MinimumLostWakeupGuardTStates"/>, reference doc §5d 2026-07-28):
+    /// a real driver writes TC then HALTs waiting for the completion interrupt a few instructions
+    /// later — completing synchronously inside the same OUT would deliver and fully consume that
+    /// interrupt before the driver ever reaches its own HALT.</summary>
+    [Fact]
+    public void ReadData_TcForcedCompletion_IsNotSynchronous_FiresResultReadyAfterAFewTStates()
+    {
+        var disk = new DskImage(BuildSyntheticImage(tracks: 40, sides: 2));
+        var fdc = new Upd765 { Policy = TimingPolicy.Turbo };
+        fdc.MountDisk(0, disk);
+        var fired = false;
+        fdc.ResultReady += () => fired = true;
+
+        fdc.WriteData(0x46);
+        fdc.WriteData(0x00);
+        fdc.WriteData(0x00);
+        fdc.WriteData(0x00);
+        fdc.WriteData(0x01);
+        fdc.WriteData(0x01);
+        fdc.WriteData(0x10);
+        fdc.WriteData(0x00);
+        fdc.WriteData(0x00);
+        for (var i = 0; i < 256; i++) fdc.ReadData();
+
+        fdc.WriteControl(0x0E); // TC
+        Assert.False(fired);    // not synchronous — see the doc comment above
+        for (var i = 0; i < 300; i++) fdc.Tick();
+        Assert.True(fired);
     }
 }

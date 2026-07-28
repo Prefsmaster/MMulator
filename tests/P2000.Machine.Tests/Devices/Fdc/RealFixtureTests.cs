@@ -128,12 +128,18 @@ public class RealFixtureTests
     }
 
     [Fact]
-    public void JwsSytemDsk_DetectDirectoryFormat_ReturnsJwsdos()
+    public void JwsSytemDsk_DetectDirectoryFormat_ReturnsUnknown()
     {
-        // Real, legitimately-empty directory (see the test just below) — still a valid JWSDOS
-        // detection, not "unknown."
+        // CHANGED (machine milestone 23): jws-sytem.dsk's real JWSDOS directory region (raw
+        // 0x1800) is legitimately empty (see the test just below) — that's now equally consistent
+        // with a blank PDOS working disk, so it no longer defaults to Jwsdos. Falls through to
+        // Unknown, same as any other all-empty directory region.
+        // NOT IsDirectoryRegionBlank(), though — track 1 (PDOS's own FCB region, raw 0x0000) holds
+        // this real disk's genuine JWSDOS boot code, not all-zero data, so only the JWSDOS
+        // directory offset is empty here, not both formats' regions.
         var disk = new DskImage(DiskPath("jws-sytem.dsk"));
-        Assert.Equal(DiskDirectoryFormat.Jwsdos, disk.DetectDirectoryFormat());
+        Assert.Equal(DiskDirectoryFormat.Unknown, disk.DetectDirectoryFormat());
+        Assert.False(disk.IsDirectoryRegionBlank());
     }
 
     [Fact]

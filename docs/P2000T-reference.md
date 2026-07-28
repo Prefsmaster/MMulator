@@ -120,8 +120,8 @@ docked toolbar under a standard menu bar.
   cassette/disk **activity LED** (critical — it's how the user sees an authentic-mode
   `.cas` load progressing), and current **model (T / M)**.
 
-**RESOLVED (owner, 2026-07-27) — the top-level menu bar consolidates from 7 items to 4:
-`Machine | Cassette | View | Windows`.** Triggered by the owner's own real-usage observation:
+**IMPLEMENTED (UI milestone 14h, 2026-07-27) — the top-level menu bar consolidates from 7 items to
+4: `Machine | Cassette | View | Windows`.** Triggered by the owner's own real-usage observation:
 today's bar (`Machine, Config, Debug, Input, Cassette, Disk, View`) has grown four top-level
 menus — Config, Debug, Input, Disk — that each exist purely to gate exactly one child command.
 That's pure overhead: an extra click to reach a single item, with no payoff a submenu wouldn't
@@ -160,7 +160,18 @@ give just as well.
   but the deferral itself stands on its own merits regardless: it's a distinct UI surface from the
   menu bar, and folding it into this milestone would still mix two independently-decidable changes
   into one commit for no real gain.
-- See UI milestone 14h for the concrete build item.
+- **Built exactly as designed, no corrections needed:** the `Config`/`Debug`/`Input`/`Disk`
+  top-level menus are gone; their four commands moved as-is into the new `Windows` menu, same
+  order, same `Command` bindings, zero functional change. `Disk` renamed to `Floppy Drives`
+  everywhere the label appeared (menu item text and the `DiskDriveWindow` window title, which
+  read "Disk Drives," not bare "Disk" as first assumed — same root label, renamed for the same
+  reasons regardless) and gained the missing `…`. `ConfigWindow`'s floppy-drives hint text, the
+  one other user-facing string naming the old window title, updated to match. `Cassette`/`View`
+  confirmed untouched, as specified. The `Menu` control gained an `x:Name="MainMenu"` (had none
+  before) so tests can reference it directly. **Tests:** new `MenuBarTests.cs` — top-level
+  order/count; the `Windows` submenu's 4 items in order, asserted via `Assert.Same` against the
+  VM's actual command instances (proves the relocated commands are identical objects, not
+  copies); `Cassette`'s 3 items unchanged; mnemonic-uniqueness at both menu levels.
 
 **FLAGGED (owner, 2026-07-27) — the Display window's global keyboard capture appears to swallow
 keys the menu bar itself needs, breaking keyboard-driven menu navigation.** Mnemonics work as far
@@ -180,6 +191,27 @@ current focus, only handling otherwise-unhandled key events, querying the menu's
 navigating state) is an implementation judgment call, not specified here. See UI milestone 14i for
 the concrete build item — a separate commit from 14h, since this is an unrelated pre-existing bug
 in adjacent territory, not part of the menu-bar consolidation itself.
+
+**IMPLEMENTED (UI milestone 14i, 2026-07-28) — root cause confirmed exactly as flagged above, not
+just "likely."** Read directly from Avalonia 11.1.0's own source: `DisplayWindow`'s host-key
+capture is a **Tunnel**-routed handler on the Window itself (the root of the visual tree), so it
+always runs first; Avalonia's own mnemonic dispatch (`AccessKeyHandler.OnKeyDown`) and arrow-key
+navigation (`Menu.KeyDown`/`DefaultMenuInteractionHandler`) are both plain **Bubble**-routed with
+no `handledEventsToo` — they only ever see an event that reaches them still unhandled. Since every
+P2000-matrix key the menu needs (`M`/`C`/`V`/`W`/`D`/`K`/`F`, all four arrows, Enter) is already in
+`KeyMap`, the old handler marked them `e.Handled = true` before Avalonia's own logic ever ran — Alt
+itself isn't mapped, so the mnemonic underlines (a separate Tunnel-only path) were never affected,
+exactly matching the reported symptom. **Fix:** `DisplayWindow.OnPreviewKeyDown`/`OnPreviewKeyUp`
+now check `MenuBase.IsOpen` first and return immediately (no `KeyTranslator` call) whenever it's
+`true` — confirmed `IsOpen` flips synchronously on Alt-release with no async gap a stale `false`
+could leak through. **Deliberately not gated on `KeyModifiers.Alt` held-down chords** (e.g. holding
+Alt and pressing `W` without releasing first) — outside the reported repro, and the P2000 has no
+host Alt key of its own to conflict with, so left unimplemented rather than added speculatively.
+Verified via `Avalonia.Headless`'s real `KeyPress`/`KeyRelease` simulation through the actual
+Tunnel-then-Bubble pipeline (not a direct call): menu closed → P2000 keys still reach the matrix;
+menu open → arrow keys and mnemonic letters do NOT reach the matrix; closing the menu restores
+routing. Both "menu open" cases were confirmed to actually catch the regression (temporarily
+reverting the fix reproduces the swallowed-event failure).
 
 ### Keyboard shortcuts (borrow familiar conventions)
 - **F5** run / pause
@@ -784,6 +816,36 @@ design text above didn't spell out:**
   physical side" convention the UI's "Save as `.cas`" feature already has (`docs/
   MDCR-implementation.md` §6) — not a new limitation, an existing one carried through consistently.
 
+**IMPLEMENTED (UI milestone 14a, 2026-07-24) — the `IsDirty` bit above now gates against silent
+data loss: eject/replace/mount on either device asks before discarding unsaved changes.** The
+machine-layer signal needed no changes — this milestone was purely the UI-layer wiring `IsDirty`/
+`MarkClean()` were built for. **The gate lives in the VM, not the view:** both `CassetteDeckVm` and
+`DiskDriveVm` gained a `ConfirmDiscardRequested` event (`Func<string, Task<bool>>`) and a private
+`ConfirmDiscardAsync(action)` helper that reads the live `IsDirty` bit directly (not a cached/
+throttled observable) and short-circuits to "proceed" when clean or when no view has subscribed —
+keeps headless tests dialog-free by default. `Eject`/`NewBlankTape`/`NewBlankDisk` became
+`EjectAsync`/`NewBlankTapeAsync`/`NewBlankDiskAsync` (CommunityToolkit's source generator strips
+the `Async` suffix, so the generated `EjectCommand`/`NewBlankTapeCommand`/`NewBlankDiskCommand`
+names — and every existing XAML binding — were unaffected) and all await the gate before mutating.
+**Mount needed a new gated entry point, not a retrofit onto `MountBytes`:** `MountBytes` stays the
+raw, unconditional primitive (existing unit tests call it directly, and it's still the right tool
+for a mount that shouldn't prompt, e.g. `.state` restore above). `TryMountBytesAsync` runs the same
+discard-confirmation, then calls `MountBytes` — every user-facing mount caller (file dialog,
+drag-drop, on both devices) now goes through it instead. `DiskDriveWindowVm` relays per-drive
+`ConfirmDiscardRequested` up to the window, the same aggregation pattern already used for
+`ShowMessageRequested` (one `TabControl`, N drives, one dialog owner); `CassetteDeckVm` has no such
+container since its window binds directly. The view-side dialog is a small Discard/Cancel `Window`,
+matching the existing error dialog's visual shape already duplicated in both windows' code-behind
+(kept that existing pattern rather than introducing a new shared-dialog module as an unscoped
+refactor). **Confirmed empirically, not just assumed, that the async conversion doesn't break
+existing sync-looking test assertions:** `ConfirmDiscardAsync` returns an already-completed
+`Task<bool>` on the clean/no-subscriber path, so the async state machine never actually suspends —
+`EjectCommand.Execute(null)` immediately followed by a `HasTape`/`HasImage` assertion still works.
++19 new tests cover clean eject/replace (no dialog, both devices), dirty (dialog shown), Cancel
+(image stays mounted and dirty), Discard (proceeds as an unconfirmed eject/replace), and
+`MarkClean()` (the Save/Save-as stand-in) silencing the dialog on a subsequent eject/replace.
+**Reset-with-dirty-media stays explicitly out of scope**, per the milestone's own text.
+
 ### File extensions (DECIDED)
 - **Monitor ROM / cartridges: standard `.bin` / `.rom` — NO custom extensions.** These are raw
   binary dumps identical to what MAME/preservation sites distribute; a custom `.p2kr`/`.p2kc`
@@ -1003,6 +1065,139 @@ bad disk before any recovery choice is made, and none of the recovery actions en
 afterward. Two fixes were offered (pause while the dialog is open; pause + auto-reset after a
 remediating choice) and the owner deliberately chose neither for now — recorded here only so it
 isn't lost, not because it's scheduled.
+
+**FIXED (2026-07-28) — Disk Drives window showed "No disk" for a drive mounted via a `.cfg`'s
+`FloppyDrives[i].ImagePath`.** Owner-reported: a config-authored Basic24k boot floppy boots into
+BASIC correctly (proving the machine-layer disk really is mounted), but opening the Floppy Drives
+window showed the drive as unmounted — even though the tab header's dirty asterisk proved
+otherwise. **Root cause:** `Machine`'s constructor mounts a config's `ImagePath` directly onto
+`Upd765`, bypassing `DiskDriveVm.MountBytes` entirely — the only place that used to set
+`HasImage`/`ImageLabel`/`IsWriteProtected`/`Programs`. `DiskDriveVm`'s constructor never read the
+machine's already-mounted disk, so those fields stayed at their defaults for the VM's lifetime,
+completely independent of the geometry-mismatch dialog (which only mutates the machine-layer
+`DskImage`, never the VM's display fields). **Fix:** the constructor now reads the already-mounted
+disk off the machine immediately after its existing `RefreshFromMachine()` call and syncs the same
+display fields `MountBytes` would have set, before the pending-mismatch check runs. **Related fix,
+same root cause:** `SaveAsync` relied on an `IStorageFile` a config-authored mount never populates
+either — plain Save would have silently fallen through to Save-As; added a `MountedPath`-based
+write-in-place fallback, and gave `SuggestedFileNameStem()` the same fallback.
+
+**RESOLVED (owner, 2026-07-28) — the Disk Drives window's directory browse table gets format
+auto-detection (JWSDOS vs. PDOS vs. neither) instead of unconditionally assuming JWSDOS, plus new
+per-file side and track/sector columns.** Owner request, split into three independent pieces per
+this project's "independent prompts for independent changes" rule — full detail (byte-level
+format facts) lives in `docs/P2000T-disk-formats.md` §6a/§7, not duplicated here:
+1. **Format-detection dispatch + JWSDOS enhancement — IMPLEMENTED (machine milestone 22, UI
+   milestone 15, 2026-07-28).** Built exactly as designed, with a few real findings along the way:
+   - `DiskDirectoryFormat` (`Jwsdos`/`PdosWorking`/`PdosSystem`/`Unknown`) and
+     `DskImage.DetectDirectoryFormat()` added. JWSDOS detection reuses `ReadDirectory()`'s
+     "non-empty slot" rule plus a new check that every non-empty slot's filename/extension/
+     filetype bytes are plausible printable ASCII/space — the same self-consistency-checking
+     spirit already used for `Mount`'s label validation. **Design call made during
+     implementation, not previously specified: an all-empty directory (every slot zero-padded)
+     still returns `Jwsdos`, not `Unknown`** — there's nothing there to contradict a valid,
+     just-empty JWSDOS directory. PDOS/PDOS-system branches are stubbed to `Unknown` (milestone
+     22a fills them in).
+   - **Found, not a new build item: `DiskDirectoryEntry.Head`/`StartSector`/`EndSector` were
+     already exposed** by the original milestone-19 `ReadDirectory()` — nothing needed adding at
+     the machine layer for the UI's new Side/Track-Sector columns to read directly.
+   - UI: `DiskDriveVm.RefreshDirectoryTable()` dispatches on the detected format. For `Jwsdos`,
+     appends **Side** ("Side 1"/"Side 2", from `Head`) and **Track/Sector** (a compact range,
+     e.g. `T39 S14-T40 S8`) to the existing 3-column table; every other format currently renders
+     identically to milestone 14 (unchanged) since PDOS detection isn't wired up yet.
+     `DirectoryHeader` had to become an instance property (was `static`) since the header text
+     now varies by detected format.
+   - **Real-fixture confirmations:** `volorg.dsk` (real PDOS working disk, owner-supplied) has no
+     JWSDOS label and non-printable-ASCII bytes at JWSDOS's directory offset — used directly as
+     the "must not false-positive as Jwsdos" test case, and separately confirms the non-Jwsdos
+     path keeps today's legacy table unchanged. `Spel1.dsk`'s `AUTORUN` entry (`StartSector`/
+     `EndSector` 622/632) renders as `T39 S14-T40 S8` via the 16-sectors/track formula — a
+     concrete real cross-check of that formula, not just the abstract math.
+   - **Flagged, not blocking:** no known real fixture has entries on both sides in one directory
+     (`Spel1.dsk`'s are all `Head=1`) or a defragmented-then-resaved fixture — the Side-column
+     label distinction itself is only exercised with a small synthetic image. Worth knowing if a
+     real mixed-side or post-defragment disk image turns up later.
+2. **PDOS FCB reader — IMPLEMENTED (machine milestone 22a, UI milestone 15a, 2026-07-28).** Built
+   as designed, plus one real correction and one flagged assumption:
+   - `DskImage.ReadPdosDirectory()` parses all 128 fixed slots on track 1, folding continuation
+     FCBs (same name+extension) into one logical `PdosDirectoryEntry`. Disambiguation implemented
+     exactly as resolved: validate the FIRST slot's name/extension/sector-count/allocation-map
+     regardless of what byte 0 says; if plausible, `PdosWorking` (even if byte 0 is `0xF3` — a
+     real per-file flag value, not the system-disk marker); if implausible AND byte 0 is `0xF3`,
+     `PdosSystem`; otherwise `Unknown`. **The "sane sector count" validation rule, not previously
+     specified down to this level:** a slot's sector-count byte must satisfy `ceil(sectorCount /
+     4) == recordCount` (the real record count from its own allocation map) — confirmed to hold
+     exactly across all three known real/worked FCB examples (`docs/P2000T-disk-formats.md` §6a).
+   - **CORRECTED — the track-formula shorthand above under-specified a needed `+1`.** 1-based
+     track = `(first record ÷ 4) + 1`, not `record ÷ 4` alone (this doc's own separately-stated
+     track↔record mapping, "(N-1)×4..(N-1)×4+3," already implied this; the shorthand phrasing
+     just didn't spell it out). Confirmed against real `volorg.dsk` data: record 8 → track 3
+     (`8÷4+1=3`), matching `docs/P2000T-disk-formats.md` §6a's own independently-reconstructed-
+     interleave finding ("`VOLINFO.BAS` (track 3, records 8-11)") exactly. **Sector count is
+     rendered via the existing size column** (sector count × 256 bytes), not a separate raw
+     figure — the UI shows a track-only range (e.g. `T2-T5`, or `T3` with no dash when a file
+     stays within one track), not a track+sector range.
+   - **Flagged, not sourced — continuation-FCB folding is currently an assumption:** each
+     contributing FCB's sector count is summed and their allocation maps concatenated in
+     ascending position-1 order. No real multi-FCB disk has been found to confirm or correct
+     this; exercised only by a synthetic test.
+   - **Real-fixture confirmation:** `volorg.dsk`'s `VOLORG` FCB (byte 0 = `0xF3`) validates as
+     plausible and correctly returns `PdosWorking`, not `PdosSystem` — the exact real case this
+     disambiguation exists for. `VOLORG.BAS` renders as `T2-T5`, `VOLINFO.BAS` as `T3`, neither
+     with a Side column (PDOS has no double-sided concept, `docs/P2000T-disk-formats.md` §6a's
+     geometry ceiling rules it out) or a filetype column (PDOS has no such byte). The
+     owner-supplied real "Disk BASIC 24K" system-disk fixture now correctly returns `PdosSystem`
+     — previously only a synthetic `0xF3`-patched image had been used for that boot path.
+3. **System-disk / unknown fallback view — IMPLEMENTED (machine milestone 22b, UI milestone 15b,
+   2026-07-28), completing the three-part split.**
+   - Machine: no new API needed — `DskImage.ReadSector(cylinder, head, sector)` (already built in
+     milestone 19) already does exactly what this milestone asked for, including the existing
+     `0x00` fill-byte convention for out-of-range/short mounts. Only tests were added, pinning the
+     specific `ReadSector(0, 0, 1)` call the UI fallback view makes. Confirmed byte-exact against
+     both `diskbasic_1.6uk.dsk` (real PDOS system disk) and `volorg.dsk`.
+   - UI: `DiskDriveVm` gained `DirectoryMessage`/`HasDirectoryMessage`/`SectorDump`. Dispatch order
+     is `PdosSystem`/`Unknown` checked FIRST, then `PdosWorking`, then `Jwsdos` — sets a short
+     message ("PDOS system disk — no file directory" / "Unknown disk contents/structure") plus a
+     16-row hex+ASCII dump of sector 1, and clears the file list so the two never show together.
+     Reuses the debugger's existing memory-watch hex-dump styling rather than inventing a new one.
+     Confirmed against the real system-disk fixture (dump correctly starts `F3 ED 5E DD...`, the
+     real boot code) and a synthetic garbage image (shows "Unknown").
+   - **IMPLEMENTED (machine milestone 23, UI milestone 16, 2026-07-28) — a genuinely blank disk
+     now routes to this fallback view, REVISITING milestone 22's "empty directory is still
+     `Jwsdos`" call, exactly per the owner's own reasoning** (an all-empty directory region is
+     EQUALLY consistent with a blank JWSDOS disk or a blank PDOS working disk — both formats'
+     directory areas read as all-zero before anything's written — so defaulting to `Jwsdos`
+     specifically was arbitrary, not a genuine detection).
+     - Machine: the carve-out is gone from `IsPlausibleJwsdosDirectory()` — it now requires at
+       least one non-empty slot (`sawNonEmptySlot`) before returning `true`; an all-empty region
+       falls through to `Unknown` **with no new fallthrough logic needed**, exactly as the
+       milestone predicted (`IsPlausiblePdosFcb`'s own all-zero-byte rejection already ruled out
+       the PDOS branch too). `DskImage.IsDirectoryRegionBlank()` was added for the UI — the
+       simplest option against the real types (no new `DiskDirectoryFormat` value, no side flag):
+       it reuses the same two directory-slot enumerations `DetectDirectoryFormat` already calls,
+       returning `true` only when NEITHER format's region has any non-empty slot at all.
+     - UI: `DiskDriveVm.RefreshDirectoryTable`'s `Unknown` branch now checks
+       `IsDirectoryRegionBlank()` to choose between two messages — **"Clean disk — no data
+       written yet"** for a genuinely blank region, or the unchanged "Unknown disk
+       contents/structure" for real unrecognized content. The sector-1 hex/ASCII dump still shows
+       alongside either message (all-zero for the blank case, itself informative).
+     - **Real-fixture confirmation:** a freshly-created blank disk (`NewBlankDiskCommand`, machine
+       milestone 20's `DskImage.CreateBlank`) shows the new "Clean disk" message; a synthetic
+       garbage image (implausible at both the JWSDOS and PDOS check offsets) still shows the
+       original "Unknown disk contents/structure" wording, confirming the change didn't widen the
+       blank-message case to cover real garbage too.
+     - **Existing tests updated, not just extended, since real fixtures changed category:**
+       `jwssytem.dsk`'s own real all-empty track 2 (previously asserted `Jwsdos` by milestone 22's
+       own test) now asserts `Unknown` — that expectation was flipped rather than left
+       contradicting the new behavior; every real non-empty-`Jwsdos` fixture (`Spel1.dsk`,
+       `jwssytem.dsk`'s non-empty side) confirmed unaffected. UI's
+       `MountBytes_NormalJwsdosImage_HasNoDirectoryMessage_RegressionGuard` test, which previously
+       relied on an all-empty synthetic image to exercise the "normal Jwsdos mount" path, now
+       writes a real non-empty directory entry to keep testing what it was meant to test.
+- **Applies to:** `P2000.Machine` CLAUDE.md §13 (machine milestones 22/22a/22b/23 — format
+  detection, PDOS FCB parsing, raw sector read for the dump view, blank-disk detection),
+  `P2000.UI` CLAUDE.md §14 (UI milestones 15/15a/15b/16 — table columns, fallback views,
+  blank-disk message), `docs/P2000T-disk-formats.md` §6a/§7.
 
 ---
 
@@ -2683,9 +2878,30 @@ reconstructed MT/MF/SK bit-flag decomposition of the opcode:**
 | SPECIFY | `0x03` | `03 60 34` | none (2 param bytes: SRT/HUT, HLT/ND) |
 | RECALIBRATE | `0x07` | `07 01` | seeks to track 0; completion via INT |
 | SEEK | `0x0F` | `0F 01 01` | drive/head + cylinder byte |
-| READ DATA | `0x42` | `42 01 01 00 01 01 10 0E 00` | data phase, semi-DMA (above) |
+| READ A TRACK (see correction below) | `0x42` | `42 01 01 00 01 01 10 0E 00` | data phase, semi-DMA (above) |
 | WRITE DATA | `0x45` | same shape, opcode `0x45` | data phase, semi-DMA (above) |
 | SENSE INTERRUPT STATUS | `0x08` | `08` | 2 result bytes (ST0 + PCN) |
+
+**CORRECTED (machine milestone 19a, 2026-07-24) — the `0x42` byte above is READ A TRACK, not READ
+DATA.** Derived from already-established project facts, not new disassembly: WRITE DATA's own
+confirmed byte (`0x45 = 0x05|0x40`) already proves the MF bit (bit 6) is set platform-wide,
+settling this doc's own FM-vs-MFM open item — MFM is confirmed. Given MF is set, `0x42` can only
+decode as `0x02|0x40` (READ A TRACK's base opcode) — it can never equal `0x06|0x40 = 0x46` (READ
+DATA's real byte). **Behaviourally invisible in every known real usage:** R is always `1` in the
+confirmed bytes, and READ A TRACK's "ignore R, always start at sector 1" reads byte-identical to
+"R=1, respected," so nothing that previously worked (`getdos`'s two-track load, both real
+disk-image fixtures) changes. A genuine, separate READ DATA (`0x06`) has no known real P2000
+caller and is modeled from the general datasheet alone.
+
+**Also corrected (same milestone) — the result phase is NOT dead weight after all.** This doc
+previously carried "the ROM driver never reads it" for READ A TRACK's 7-byte result phase. Re-
+reading `docs/Monitor Documented Disassembly/Disk.asm` while implementing the full 15-command set
+found the opposite: the disk-complete interrupt handler (`disk_IO_interrupt` → `read_IO_status`)
+calls `read_status_bytes` with **B=7** — the ROM has always drained exactly 7 result bytes after a
+completed READ A TRACK. Under the old no-result-phase model this silently read back open-bus
+`0xFF`×7 into a buffer nothing else consulted, so it happened to work by accident; the chip now
+correctly stays busy until those 7 bytes are drained, matching real ROM behavior rather than
+coincidentally tolerating its absence.
 
 **A seventh command, CONFIRMED separately (2026-07-23, design-doc maintainer's own read of
 `docs/jwsdos5.0.asm`) — SENSE DRIVE STATUS, issued by JWSDOS's resident driver, not `getdos`
@@ -3001,6 +3217,111 @@ monitor-ROM disassembly** (presence probe + driver command sequence), the owner'
    no-candidate) were built as plain-code `Window`s in `DiskDriveWindow.axaml.cs`, matching this
    file's existing error/discard-dialog style. Full `P2000.UI.Tests`: 182/182 green (was 170
    before this and the preceding round).
+
+**PARTIALLY FIXED (2026-07-28) — THREE real `Upd765` bugs found via instrumentation and fixed;
+the owner's original "Disk I/O error" symptom is NOT fully closed, root cause of what remains is
+still open.** Original repro (owner-reported, 2026-07-28): 2 drives configured, 35-track SS, the
+sourced `Basic24k.bin` cartridge + boot floppy in drive 1, `volorg.dsk` in drive 2 — both
+write-enabled. Boot succeeds cleanly into "Philips Disk BASIC, release 1.6 UK, 27568 bytes
+free," but every subsequent `LOAD`/`SAVE` failed with "Disk I/O error," on any drive, regardless
+of letter. Per this entry's own prior instruction, `Upd765` was instrumented with a trace hook
+(kept in permanently as a debug aid) and driven through the real repro end-to-end (real ROM,
+real cartridge, real disk images, real keyboard input) rather than guessed at.
+
+**Three real, confirmed bugs found and fixed — all only reachable through a command shape
+nothing had exercised before this: TC (Terminal Count)-forced early transfer completion.** Real
+Disk BASIC's LOAD driver requests a wide EOT window on READ DATA, takes only the one sector it
+wants, then writes the TC control-latch bit to abort the rest — legitimate real technique, but
+the ROM's own fixed-EOT boot reads always complete naturally, so this path was never exercised
+before now:
+1. **The result phase reported the EOT window's TAIL sector, not the sector actually
+   transferred** — computed from the requested length instead of bytes actually moved before TC
+   fired. Same bug also affected `WRITE DATA`'s commit (would have written the zero-initialized
+   tail of the full requested buffer, not just what was actually sent) and, preventively, the
+   FORMAT/scan paths (no confirmed real caller uses TC there yet). All fixed to bound by actual
+   bytes transferred.
+2. **`CompleteTransfer`'s ST0 was unconditionally `0x00`, never encoding the addressed
+   drive/head** the way SENSE INTERRUPT STATUS already did. Invisible for drive 1/head 0 (every
+   prior test and the ROM's own boot read use drive 1 exclusively) — broke immediately for drive
+   2 (this repro). **This was the fix that stopped an observed 14-28× identical-sector retry
+   loop outright** — the driver's own integrity check evidently treats an addressed-unit
+   mismatch in ST0 as failure and retries the same read verbatim until giving up.
+3. **TC-forced completion fired its result-ready signal SYNCHRONOUSLY inside the triggering
+   port write** — the same "lost wakeup" bug class already fixed for SEEK/RECALIBRATE (a driver
+   writes TC then HALTs waiting for the completion interrupt; completing it inline delivers and
+   consumes that interrupt before the driver ever reaches its own HALT). Fixed by deferring
+   TC-forced completion through the same deferred-completion mechanism SEEK already uses, applied
+   under both timing policies (unlike SEEK's fast-mode-only guard, since here the risk window is
+   driver-code-length, not transfer pacing).
+
+**Combined effect, independently verified, not just argued for:** before these fixes, the FDC
+trace showed the directory scan repeating sector 1 forever (`1,1,1,1,1,...`, 14-28×); after all
+three fixes, it advances through all 16 directory sectors in the exact confirmed physical
+interleave order — `1,7,13,3,9,15,5,11,2,8,14,4,10,16` — matching `docs/P2000T-disk-formats.md`
+§6a's interleave finding exactly. **This is now a THIRD independent confirmation of that
+interleave pattern** (previously: the source docx's own table, and `VOLINFO.BAS`'s real text
+reconstructing correctly under it) — this time from watching a real, unmodified Z80 driver's
+actual behavior under emulation, not static disk inspection.
+
+**NOT fully resolved — genuinely stuck past this point.** `LOAD "B:VOLORG"` (and separately
+`LOAD "B:VOLINFO"`, to rule out a red herring) still ends in "Disk I/O error" after the driver
+correctly scans all 16 directory sectors, including the one holding the target file's real,
+independently-verified FCB. Two hypotheses tested and DISPROVEN by direct experiment: (a) the
+result's cylinder field should echo `track+1` rather than the true 0-based cylinder, by analogy
+with `jwsformat.asm`'s confirmed off-by-one — no change either way; (b) the target FCB's own
+incidental `0xF3` first byte (the same value as the system-disk signature) confuses the driver —
+disproven, since `VOLINFO` (no `0xF3`) fails identically. **What would be needed to go further:
+a disassembly of Philips Disk BASIC's own resident LOAD driver — still not available/planned
+(owner, 2026-07-28) — showing what it does with the 256 bytes read back from each candidate
+sector.** The FDC's own command/status/data are now correct by every datasheet-derivable measure
+available without that source; whatever still fails is either a driver-internal check with no
+external signature, or a genuine PDOS-format nuance this project's model doesn't yet capture.
+
+**SAVE traced separately (owner's own follow-up question) — a different failure shape, same
+open root cause.** `SAVE "B:TEST"` reads directory sector 1 exactly ONCE (same now-correct
+command shape) then fails immediately — it never issues SENSE DRIVE STATUS (no write-protect
+check ever runs) and never attempts a WRITE DATA. Rules out a write-protect-detection bug;
+shows SAVE's give-up threshold differs from LOAD's (one read vs. LOAD's full 16-sector search).
+
+**Second owner follow-up ("I tried a save on a clean disk, also got Disk I/O error, but it took
+longer to appear") — real, explained in SHAPE, not in root cause.** Three-way comparison, all
+ending in "Disk I/O error": `volorg.dsk` as-is (VOLORG's FCB starts `0xF3`) — SAVE reads sector 1
+once, fails immediately. A genuinely blank disk (all-zero, no `0xF3` anywhere) — SAVE scans all
+16 sectors in the same confirmed order, then fails. `volorg.dsk` with just that one `0xF3` byte
+patched to `0x00` (rest of the FCB unchanged/occupied) — ALSO scans all 16, isolating that it's
+specifically the `0xF3` byte VALUE, not occupied-vs-empty content, that makes SAVE short-circuit.
+**Very plausibly legitimate real Disk BASIC behavior, not a bug:** `0xF3` at this exact location
+is the same byte `getdos` itself checks for a system disk (§5d) — real Disk BASIC's SAVE quite
+plausibly refuses to write to what it believes is a system disk, protecting boot media, exactly
+as a real DOS would. This is the same "one genuine ambiguity in the format"
+`docs/P2000T-disk-formats.md` §7 item 8 already flagged (milestone 22a) — not a new finding, a
+newly-observed consequence of it. **Does not explain the remaining bug** — the blank-disk and
+patched-disk cases (no `0xF3` anywhere) still fail after their full scan, so this gate only
+governs how many sectors get scanned before failing, not whether the command ultimately
+succeeds.
+
+**Third owner follow-up (pushing on a banking hypothesis — "Basic24 needs at least a switchable
+bank; did you check anything landed in banked memory and the switches have real effect?") —
+chased directly, banking mechanism itself cleared, root cause still open.** A real, previously-
+unclosed test gap was found along the way: only banks 0-1 (of 6 real T102 banks) had ever been
+tested for mutual isolation — banks 2-5 never had a dedicated test; now added and passing. In
+the live repro: bank 1 holds real, recognizable Z80 ISR-setup code at `0xE000` (consistent with
+`getdos`'s own driver load target), banks 2-5 show distinct untouched power-on noise (correctly
+allocated, simply unused this session), bank 0 is all-zero (plausibly Disk BASIC's own cleared
+workspace) — no open-bus, aliasing, or cross-bank corruption. Exactly 12 real bank-select writes
+occur during a single SAVE attempt, consistent with BASIC (bank 0) repeatedly calling into the
+DOS driver (bank 1) and switching back. **Conclusion: the banking mechanism (isolation,
+persistence, real addressing effect) checks out — doesn't look like a `PageTable` bug.** Does
+NOT rule out a specific timing/ordering interaction between disk I/O and a bank switch; only a
+disassembly could confirm that. Narrows where the root cause ISN'T, not where it is.
+
+**Confirmed (owner, 2026-07-28):** the monitor ROM is only supportive during this phase (its
+role is the initial boot/presence-probe, §5b/§5d) — Disk BASIC's own resident driver (cartridge
++ the two system tracks loaded at boot) is what actually owns LOAD/SAVE I/O once BASIC is
+running. **No disassembly of Philips Disk BASIC's own disk driver exists or is planned** — the
+`Disk.asm`/`jwsdos5.0.asm` disassemblies already on hand were weeks of the owner's own manual
+labor, not to be repeated lightly. The three real bugs above were found entirely from trace
+evidence, without one — but the remaining mystery may genuinely need it, per the analysis above.
 
 ---
 

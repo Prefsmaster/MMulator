@@ -233,7 +233,7 @@ return_to_basic:
 jump_to_basic_error:
     jp BASIC_Errormessage               ; handle BASIC error
 
-    jp print_file_info                  ; I guess addresses usable from bassic/ml
+    jp print_file_info                  ; I guess addresses usable from basic/ml
     jp disk_list_dir                    ; to allow user-access to dos-functionality
     jp perform_read                     ;
     jp perform_write                    ;
@@ -2809,6 +2809,7 @@ usr_replace_exit:                       ; validate checksum
     ld e,(hl)                           ; start value for checksum in de
     inc hl
     ld d,(hl)
+call_checksum:
     call checksum_control               ; decode/check will not return / reset when chcksum incorrect
 
     ld a,001h                           ; set basic active (1)                                          ; f089  3e 01   > .
@@ -2952,6 +2953,7 @@ checksum_loop:
     jr nz,checksum_next_byte
 
     ld a,d                              ; checksum OK (DE == 0)?
+byte_to_fix:
     or e
     ret z                               ; yes, all good!
 

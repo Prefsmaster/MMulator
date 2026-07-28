@@ -575,14 +575,49 @@ public class DskImageTests
     }
 
     [Fact]
-    public void DetectDirectoryFormat_AllEmptyDirectory_StillReturnsJwsdos()
+    public void DetectDirectoryFormat_AllEmptyDirectory_ReturnsUnknown()
     {
-        // jws-sytem.dsk's real track 2 is legitimately all-zero (§2) — an empty directory is a
-        // valid, just-empty JWSDOS directory, not "unknown."
+        // CHANGED (machine milestone 23): an all-empty directory is EQUALLY consistent with a
+        // blank PDOS working disk as with a blank JWSDOS disk (jws-sytem.dsk's real track 2) — no
+        // longer defaults to Jwsdos. Falls through to Unknown, same as any other unrecognized
+        // region. See IsDirectoryRegionBlank_* below for how a caller tells this apart from real
+        // garbage.
         var image = BuildSyntheticImage(tracks: 40, sides: 2); // no entries written
         var disk = new DskImage(image);
 
-        Assert.Equal(DiskDirectoryFormat.Jwsdos, disk.DetectDirectoryFormat());
+        Assert.Equal(DiskDirectoryFormat.Unknown, disk.DetectDirectoryFormat());
+    }
+
+    [Fact]
+    public void IsDirectoryRegionBlank_AllEmptyDirectory_ReturnsTrue()
+    {
+        // A genuinely blank/unformatted disk (machine milestone 20's create-blank: no label
+        // written, no directory initialized) — unlike BuildSyntheticImage's synthetic images,
+        // which always stamp geometry-label bytes into track 1's own PDOS FCB region (0x0FEF/
+        // 0x0FFF fall within FCB slot 127).
+        var disk = DskImage.CreateBlank(tracks: 40, sides: 2);
+
+        Assert.True(disk.IsDirectoryRegionBlank());
+    }
+
+    [Fact]
+    public void IsDirectoryRegionBlank_RealJwsdosEntries_ReturnsFalse()
+    {
+        var image = BuildSyntheticImage(tracks: 40, sides: 2);
+        WriteDirectoryEntry(image, 0, "TRALIEENSPEL", "BAS", 'B', 12345, 0x6547, 0, 1, 48);
+        var disk = new DskImage(image);
+
+        Assert.False(disk.IsDirectoryRegionBlank());
+    }
+
+    [Fact]
+    public void IsDirectoryRegionBlank_NonBlankGarbage_ReturnsFalse()
+    {
+        var image = BuildSyntheticImage(tracks: 40, sides: 2);
+        for (var i = 0; i < 20; i++) image[0x1800 + i] = 0x01; // non-empty, non-printable garbage
+        var disk = new DskImage(image);
+
+        Assert.False(disk.IsDirectoryRegionBlank());
     }
 
     [Fact]

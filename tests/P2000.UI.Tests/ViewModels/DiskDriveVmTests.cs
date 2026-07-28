@@ -712,14 +712,61 @@ public class DiskDriveVmTests
     {
         // The fallback-view fields must stay empty for every OTHER format — otherwise the
         // message/dump could linger from a previous mount and wrongly hide a real directory table.
+        // Needs an actual (non-empty) directory entry, not just the geometry label — machine
+        // milestone 23 changed an all-empty directory from Jwsdos to Unknown.
         var runner = await NewFloppyRunnerAsync();
         var vm = NewVm(runner);
+        var image = BuildSyntheticImage(tracks: 40, sides: 2);
+        WriteDirectoryEntry(image, 0, "SPEL1", "BAS", 'B', 256, 0x6547, head: 0, startSector: 1, endSector: 1);
 
-        vm.MountBytes(BuildSyntheticImage(tracks: 40, sides: 2), "SPEL1");
+        vm.MountBytes(image, "SPEL1");
 
         Assert.False(vm.HasDirectoryMessage);
         Assert.Empty(vm.DirectoryMessage);
         Assert.Empty(vm.SectorDump);
+
+        runner.Dispose();
+    }
+
+    // ---- Blank-disk message (project CLAUDE.md §14 milestone 16; machine ms.23) ---------------
+
+    [AvaloniaFact]
+    public async Task NewBlankDisk_ShowsCleanDiskMessage_NotUnknownDiskContents()
+    {
+        // A freshly-created blank disk (milestone 14's own "New" feature) has no label, no
+        // directory — genuinely blank at both formats' directory regions, so DetectDirectoryFormat
+        // reports Unknown but IsDirectoryRegionBlank() distinguishes it from real garbage.
+        var runner = await NewFloppyRunnerAsync();
+        var vm = NewVm(runner);
+
+        vm.NewBlankDiskCommand.Execute(null);
+
+        Assert.Equal(DiskDirectoryFormat.Unknown,
+            runner.Machine.Fdc!.GetDisk(0)!.DetectDirectoryFormat());
+        Assert.True(vm.HasDirectoryMessage);
+        Assert.Contains("Clean disk", vm.DirectoryMessage);
+        Assert.DoesNotContain("Unknown disk contents/structure", vm.DirectoryMessage);
+        Assert.Empty(vm.Programs);
+
+        runner.Dispose();
+    }
+
+    [AvaloniaFact]
+    public async Task MountBytes_GarbageImage_StillShowsUnknownMessage_NotCleanDisk_RegressionGuard()
+    {
+        // Genuinely unrecognized non-blank content must keep today's "unknown" wording unchanged
+        // — this milestone only adds a new sub-case, it must not widen to cover real garbage too.
+        var image = new byte[40 * 1 * 16 * 256];
+        for (var i = 0; i < 20; i++) image[i] = 0xFF; // implausible PDOS first FCB slot, not 0xF3
+        for (var i = 0; i < 20; i++) image[0x1800 + i] = 0x01; // implausible JWSDOS entries
+        var runner = await NewFloppyRunnerAsync();
+        var vm = NewVm(runner);
+
+        vm.MountBytes(image, "GARBAGE");
+
+        Assert.True(vm.HasDirectoryMessage);
+        Assert.Contains("Unknown disk contents/structure", vm.DirectoryMessage);
+        Assert.DoesNotContain("Clean disk", vm.DirectoryMessage);
 
         runner.Dispose();
     }

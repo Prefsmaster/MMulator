@@ -1340,6 +1340,26 @@ builds did. Do not advance while the current milestone is red. Record spec corre
       message + sector-1 dump (all zeros/fill-byte for a blank image), not an exception or an
       empty table.
 
+16. **Blank-disk message — distinguish "clean disk" from "unknown disk contents/structure"**
+    (NEW, owner decision 2026-07-28, fast-follow onto milestone 15 — reference doc §3a same
+    RESOLVED block's part-3 bullet). Depends on machine milestone 23 (an all-empty directory now
+    reaches `Unknown` instead of short-circuiting to `Jwsdos`).
+    - A genuinely blank/freshly-formatted disk (all-zero at the relevant offsets — machine
+      milestone 23 decides exactly how this is surfaced, a new enum value, a flag, or just the
+      UI inspecting the already-available sector-1 bytes itself) should show a distinct message
+      from garbage/unrecognized content — something like "clean disk" or "blank disk — no data
+      written yet," your call on exact wording, rather than the more alarming-sounding "unknown
+      disk contents/structure." Still show the sector-1 hex/ascii dump alongside it (it'll just
+      be all-zero/fill-byte, which is itself informative — confirms "blank," not "corrupt").
+    - **Genuinely unrecognized non-blank content keeps today's "unknown disk contents/structure"
+      wording unchanged** — this milestone only adds a new sub-case for the all-zero situation,
+      it doesn't touch the existing garbage-data path.
+    - **Tests:** a freshly-created blank disk (milestone 14's own "New" blank-disk feature is a
+      convenient real source for this fixture) shows the new "clean disk"-style message, not
+      "unknown disk contents/structure"; a genuinely unrecognizable non-blank image (garbage
+      bytes) still shows the original "unknown" message, unchanged — regression guard that this
+      milestone didn't accidentally widen the blank-message case to cover real garbage too.
+
 ---
 
 ## 15. Deferred (build the seams now, implement later)
@@ -1398,6 +1418,35 @@ project.
 - **Synced:** yes (YYYY-MM-DD)
 -->
 
+### 2026-07-28 — Milestone 16 IMPLEMENTED: blank-disk message distinguished from "unknown disk contents/structure"
+- **Trigger:** owner decision, fast-follow onto milestone 15 (reference doc §3a same RESOLVED
+  block's part-3 bullet). Depends on machine milestone 23 (an all-empty directory now reaches
+  `Unknown` instead of short-circuiting to `Jwsdos`, plus the new `DskImage.IsDirectoryRegionBlank()`
+  query).
+- **Built:** `DiskDriveVm.RefreshDirectoryTable`'s `Unknown` branch now checks
+  `disk.IsDirectoryRegionBlank()` to pick between two messages: "Clean disk — no data written yet"
+  for a genuinely blank region (both formats' directory areas all-zero), or the pre-existing
+  "Unknown disk contents/structure" wording, unchanged, for real unrecognized content. The
+  sector-1 hex/ASCII dump still shows alongside either message (unchanged from milestone 15b) —
+  for the blank case it's simply all-zero, itself informative.
+- **Real-fixture confirmation:** a freshly-created blank disk (`NewBlankDiskCommand`, machine
+  ms.20's `DskImage.CreateBlank` — no label, no directory) shows the new "Clean disk" message; a
+  synthetic garbage image (implausible at both the JWSDOS and PDOS check offsets) still shows the
+  original "Unknown disk contents/structure" wording — confirmed this milestone did not
+  accidentally widen the blank-message case to cover real garbage too.
+- **Existing test needed updating, not just extending:** `MountBytes_NormalJwsdosImage_
+  HasNoDirectoryMessage_RegressionGuard` previously mounted an all-empty (label-only) synthetic
+  image to exercise the "normal Jwsdos mount" path — machine milestone 23 changed that exact case
+  from `Jwsdos` to `Unknown`, so the test now writes a real (non-empty) directory entry to keep
+  testing what it was meant to test.
+- **Applies to:** `src/P2000.UI/ViewModels/DiskDriveVm.cs` (`RefreshDirectoryTable`'s `Unknown`
+  branch), `tests/P2000.UI.Tests/ViewModels/DiskDriveVmTests.cs`, machine ms.23
+  (`IsDirectoryRegionBlank`, consumed here), `docs/P2000T-disk-formats.md` §7 item 8.
+- **Synced:** yes (2026-07-28, into `docs/P2000T-reference.md` §3a — the RESOLVED block's part-3
+  bullet updated to IMPLEMENTED, covering the two-message dispatch, the real-fixture
+  confirmations, and the regression-guard test update; `docs/P2000T-disk-formats.md` §7 item 8's
+  third sub-question also updated to IMPLEMENTED).
+
 ### 2026-07-28 — Milestone 15b IMPLEMENTED: PDOS-system / unknown fallback view
 - **Trigger:** owner decision (reference doc §3a same RESOLVED block). Third and last of the
   three-part split — depends on machine milestone 22b's raw sector-1 read (no new API needed,
@@ -1439,9 +1488,11 @@ project.
   dispatch), `src/P2000.UI/Views/DiskDriveWindow.axaml`,
   `tests/P2000.UI.Tests/ViewModels/DiskDriveVmTests.cs`, machine ms.22b (`ReadSector`, consumed
   here), `docs/P2000T-disk-formats.md` §6a/§7 item 8.
-- **Synced:** no — reference doc §3a's RESOLVED block already describes the target end-state;
-  nothing here contradicts or extends it (see the "short/blank mount" flag above for the one point
-  that may need owner reconciliation).
+- **Synced:** yes (2026-07-28, into `docs/P2000T-reference.md` §3a — part-3 bullet updated to
+  IMPLEMENTED, including the dispatch order, the real-fixture confirmations, and the "short/blank
+  mount" tension carried forward as an explicit open design question for the owner — a blank disk
+  currently shows as an empty `Jwsdos` table, never reaching this fallback view, because of
+  milestone 22's own "empty directory is still `Jwsdos`" decision).
 
 ### 2026-07-28 — Milestone 15a IMPLEMENTED: PDOS FCB directory rendering
 - **Trigger:** owner decision (reference doc §3a same RESOLVED block; `docs/P2000T-disk-formats.md`
@@ -1638,7 +1689,10 @@ project.
 - **Applies to:** reference doc §3a "RESOLVED — the top-level menu bar consolidates from 7 items
   to 4" block; `P2000.UI` §5/§6/§14 (menu bar description references, updated in this file where
   the old menu names appeared).
-- **Synced:** no
+- **Synced:** yes (2026-07-28, into `docs/P2000T-reference.md` §3a — the block's header updated
+  from "RESOLVED" to "IMPLEMENTED (UI milestone 14h)," with a new "Built exactly as designed"
+  paragraph covering the rename/relocation details, the `x:Name` addition, and the new
+  `MenuBarTests.cs` coverage).
 
 ### 2026-07-27 — Milestone 14d IMPLEMENTED: drive-count axis assigns real-hardware indices
 - **Trigger:** owner's own first real end-to-end test with a sourced `Basic24k.bin` cartridge +
@@ -2251,7 +2305,10 @@ missing.
   `src/P2000.UI/ViewModels/DiskDriveVm.cs`, `src/P2000.UI/ViewModels/DiskDriveWindowVm.cs`,
   `src/P2000.UI/Views/CassetteDeckWindow.axaml.cs`, `src/P2000.UI/Views/DiskDriveWindow.axaml.cs`,
   `src/P2000.UI/Views/DisplayWindow.axaml.cs`.
-- **Synced:** no
+- **Synced:** yes (2026-07-28, into `docs/P2000T-reference.md` — new "IMPLEMENTED (UI milestone
+  14a)" paragraph added directly after the machine milestone 20/20a `IsDirty`-persistence writeup,
+  covering the VM-side gate, the `TryMountBytesAsync` entry point, the dialog relay pattern, and
+  the async-conversion test confirmation).
 
 ### 2026-07-23 — Milestone 14 IMPLEMENTED: Disk drive UI
 - **Assumed (per the milestone's own text):** the Config window already had an

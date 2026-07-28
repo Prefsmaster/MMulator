@@ -636,9 +636,16 @@ public sealed partial class DiskDriveVm : ObservableObject
 
         if (format is DiskDirectoryFormat.PdosSystem or DiskDirectoryFormat.Unknown)
         {
+            // Unknown splits into two sub-cases (project CLAUDE.md §14 milestone 16; machine
+            // ms.23's DskImage.IsDirectoryRegionBlank): a genuinely blank/freshly-formatted disk
+            // (all-zero at both formats' directory regions) gets a distinct, friendlier message
+            // than real unrecognized garbage — the sector-1 dump alongside it is itself
+            // informative either way (confirms "blank," not "corrupt").
             DirectoryMessage = format == DiskDirectoryFormat.PdosSystem
                 ? "PDOS system disk — no file directory"
-                : "Unknown disk contents/structure";
+                : disk.IsDirectoryRegionBlank()
+                    ? "Clean disk — no data written yet"
+                    : "Unknown disk contents/structure";
             SectorDump = FormatSectorDump(disk.ReadSector(0, 0, 1));
             Programs = [];
             DirectoryHeader = LegacyDirectoryHeader;

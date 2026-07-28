@@ -443,7 +443,11 @@ cause.
 lookalike below.** This active directory's `AUTORUN` entry (raw `0x19C0`) is a genuine
 32-byte file entry — filename `"AUTORUN"`, extension `"BAS"`, loads at `0x7000` — i.e. this
 specific disk really does have an autorun program, and the boot-code string constant noted
-below is what the DOS uses to search for and match it.
+below is what the DOS uses to search for and match it. **Concrete real cross-check of the
+16-sectors/track linear formula (Claude Code, machine/UI milestone 22/15, 2026-07-28):** this
+entry's `DE_start_sector`/`DE_end_sector` = 622/632, which the formula maps to track 39 sector
+14 through track 40 sector 8 — confirmed rendering correctly in the Disk Drives window's new
+Track/Sector column as `T39 S14-T40 S8`, not just verified abstractly.
 
 **RESOLVED — offsets 29–31, previously three unconfirmed candidate explanations, now
 sourced with certainty from `jwsdos5.0.asm`.** These bytes are **not** persisted per-file
@@ -575,13 +579,15 @@ performs the actual JWSDOS-aware load:
      NEW (owner, 2026-07-20, from external documentation research), separate from and
      unrelated to `jwsdos5.0.asm`'s directory format (§4).** The owner is still researching;
      what's confirmed so far is the name and that it loads via the same `getdos` mechanism.
-     **Presumed but NOT yet confirmed:** that "Disk BASIC 24K" (the official Philips
-     cartridge+disk product, already identified as the `0xF3`-signed image above) is itself a
-     PDOS disk. Plausible and consistent with everything found so far, but not independently
-     verified — treat as the working assumption, not a settled fact, until the owner's
-     research confirms it directly. **PDOS's own directory format is completely unsourced** —
-     don't assume it matches `jwsdos5.0.asm`'s `DE_*` struct (§4); that layout is JWSDOS's own,
-     not necessarily shared with the official DOS it's compatible with at the boot level only.
+     **CONFIRMED (owner, 2026-07-28, real end-to-end test) — no longer just presumed.** The owner
+     booted a real `Basic24k.bin` cartridge + boot floppy and it came up as "Philips Disk BASIC,
+     release 1.6 UK" — i.e. the `0xF3`-signed "Disk BASIC 24K" image genuinely is a PDOS disk,
+     directly observed, not inferred. **PDOS's own directory format**, once "completely
+     unsourced" here, is now the fully-detailed FCB scheme in §6a (track 1, 128 entries, 32-byte
+     layout) — sourced from official Dutch-language documentation plus real `volorg.dsk`
+     byte-inspection, and does NOT match `jwsdos5.0.asm`'s `DE_*` struct (§4); confirmed as two
+     genuinely distinct directory schemes sharing only the physical boot convention, exactly as
+     this note originally cautioned.
    - Not a bug or an emulator-relevant contradiction either way — two different DOSes, one
      boot convention, only one of them (its originator) carries the signature it checks for.
    **`sysdisk_status`-gates-the-launch question — evidence now stronger, still not fully
@@ -648,31 +654,64 @@ on record unless the owner wants to specify further).
   already established elsewhere in this doc/reference doc.
 - **Directory — the FCB ("File Control Block"), 32 bytes, one per file:** lives on **track 1
   of a "werkschijf" (data/working disk) ONLY — explicitly NOT the system disk**, whose track 1
-  serves the boot-load convention instead (§6). Layout (1-based byte positions, as the source
-  document states them):
-  - Position 1: unconfirmed/unlabeled first byte (`0x00` in the worked example below). **Update,
-    real-disk byte inspection (below):** not a constant — a real disk's two FCB entries show
-    `0xF3` and `0x00` respectively at this position, so it varies per file and isn't simply
-    "always zero."
-    **PLAUSIBLE, owner-proposed, not confirmed:** `0xF3` is already established elsewhere in
-    this doc (§6, provenance log 2026-07-13) as the confirmed official Philips disk-BASIC system
-    signature — the real first byte at `0xE000` in a genuine "Disk BASIC 24K" IMD image. The
-    owner independently recalled this same association (checked directly in a hex editor,
-    separately from this doc's own tooling) and floated a matching hypothesis here: position 1
-    could be a system/protected-file flag, `0xF3` marking a file as part of the official
-    Basic-24K product (cartridge + boot disk + this "werkschijf"/utility volume) rather than an
-    ordinary user file. It fits this specific disk cleanly — `VOLORG.BAS` (the actual utility
-    program, `0xF3`) vs. `VOLINFO.BAS` (a plain-text help screen, `0x00`) is exactly the kind of
-    file pair you'd expect to be split "core product" vs. "ordinary content" if that's what the
-    byte means. Genuinely plausible and worth recording, but it's the same *value* reused in a
-    structurally different context (a directory-entry attribute byte vs. a boot-time first
-    opcode) — that alone doesn't guarantee the same semantics, so this stays a hypothesis pending
-    a disk with more files (ideally a mix of official and clearly-user-created ones) to test it
-    against. No confirmed meaning yet.
+  serves the boot-load convention instead (§6) — **RESOLVED (owner, 2026-07-28, official
+  Dutch-language 24K Disk BASIC documentation, direct quote): "Het eerste spoor van werkschijven
+  (niet van de systeemschijf) bevat de index. Hierin staan de FCB's... van de programma's en
+  bestanden"** ("The first track of working disks (not the system disk) contains the index. This
+  contains the FCBs... of the programs and files") — upgrades this from inference (previously
+  reasoned only from allocation maps never referencing records `00`–`03`) to a directly-quoted
+  source fact. **Capacity — RESOLVED (owner, 2026-07-28): 128 entries.** One track is 4096 bytes
+  (16 sectors × 256 B); 4096 ÷ 32 B/FCB = 128 slots exactly, filling the whole track with no
+  spare region left over for anything else — a clean fit, not a partial-track figure. A directory
+  reader can therefore just iterate all 128 fixed slots rather than needing a separate
+  end-of-list terminator convention; an unused slot is presumed all-zero (matching the "unused
+  allocation-map entry" convention already confirmed below), though no real disk with unused
+  slots has been byte-inspected yet to confirm this directly. Layout (1-based byte positions, as
+  the source document states them):
+  - **Position 1 — RESOLVED (owner, 2026-07-28): a continuation-sequence index, not a flag.**
+    `0x00` marks a file's primary (or only) FCB. If a file needs more allocation-map room than
+    one FCB's 16 records (16 KB) can describe, additional FCBs are appended to the index with the
+    **same filename and extension** and this byte incrementing — `0x01` for the second FCB,
+    `0x02` for the third, and so on. Direct owner-stated fact; supersedes the earlier
+    "unconfirmed/unlabeled" framing below.
+    **Flagged, not sourced (Claude Code, machine milestone 22a, 2026-07-28): how a reader should
+    COMBINE multiple FCBs for one file is currently an unconfirmed assumption, not a documented
+    fact.** `DskImage.ReadPdosDirectory()` sums each contributing FCB's sector-count byte for a
+    combined file length and concatenates their allocation maps in ascending position-1 order —
+    a reasonable implementation guess, but no real multi-FCB disk has been found yet to confirm
+    or correct it; only exercised by a synthetic test so far.
+    **Reconciling with the real-disk `0xF3` finding (still open, but now narrower):** a genuine
+    continuation index only ever needs to reach small integers in practice — a file would need
+    to exceed 16 KB roughly 243 times over (several megabytes) to legitimately reach `0xF3`/243
+    this way, essentially impossible on a 140–160 KB disk. So `0xF3` on `VOLORG.BAS`'s FCB (real-
+    disk confirmation below) can't be a continuation index under this scheme — it's still most
+    plausibly the owner's separately-floated hypothesis, a distinct system/protected-file flag
+    value chosen precisely because normal continuation counting could never reach it, not a
+    competing interpretation of the same field. **Not fully confirmed** (still one disk, one file
+    pair), but no longer in tension with the continuation-index fact — both can be true of the
+    same byte position at different value ranges.
+    **Detection-collision consequence, flagged for the disk-directory-view feature (§14 milestone
+    TBD, not yet resolved as a design decision):** a system disk's track 1 offset 0 is also
+    `0xF3` (§6, the boot signature). Since a working disk's *first* FCB slot could legitimately
+    carry an `0xF3` flag value too (if that file happens to occupy slot 1), a bare "byte 0 at
+    track 1 == `0xF3`" test cannot safely distinguish "no directory here, this is a system disk"
+    from "there is a directory, and its first entry happens to be flagged." Disambiguating needs
+    at least one more check — e.g. whether positions 2–9 look like a plausible padded filename
+    (printable ASCII/space) and position 16 plus the allocation map look like plausible
+    sector/record data — before falling back to "system disk, no directory."
+    **Planned owner test (2026-07-28, not yet run):** a concise `VOLORG` manual surfaced a
+    "set/reset file protect" menu option — the owner intends to save a file, byte-inspect its
+    FCB, toggle protect, and byte-inspect again, which would directly test the "position 1 =
+    protected-file flag" hypothesis (rather than just the one-disk `VOLORG`/`VOLINFO` coincidence
+    above) by watching which byte(s) actually flip when protection is toggled on a file the owner
+    controls. Results pending — will fold in as CONFIRMED/CORRECTED once run.
   - Positions 2–9 (8 bytes): filename, space-padded if shorter than 8 characters (e.g.
     `"MONITORE"`).
-  - Positions 10–15: unlabeled in the source (an extension-like `"BAS"` + reserved bytes in the
-    worked example — plausibly a file-type/extension field, not confirmed).
+  - **Positions 10–12 (3 bytes): extension** (e.g. `"BAS"` in the worked example) — refined from
+    "10–15 unlabeled" now that the source document's worked example has been checked byte-by-byte
+    against its own stated 1-based position numbering.
+  - Positions 13–15 (3 bytes): unlabeled/reserved — `0x00 0x00 0x00` in every worked/confirmed
+    example so far (the docx example and both real `volorg.dsk` entries); purpose unconfirmed.
   - **Position 16: sector count** — the file's real length in sectors (e.g. `0x1B` = 27 →
     file is under 27 × 256 = 6912 bytes).
   - **Positions 17–32 (16 bytes) — the Disk Allocation Map:** one byte per **record** number
@@ -773,7 +812,12 @@ on record unless the owner wants to specify further).
    values don't mean what this doc assumed" half of the tangle is resolved — they do mean
    physical side, confirmed from source (§2).** Location is still open on its own terms: the
    formula's head=0 branch is confirmed, its head=1 branch (where side 2 actually sits) is not
-   yet checked against real bytes.
+   yet checked against real bytes. **Flagged (Claude Code, UI milestone 15, 2026-07-28): no
+   known real fixture has a directory with entries on BOTH sides** — `Spel1.dsk`'s active
+   entries are uniformly `Head=1`. The new Side column's "Side 1" vs. "Side 2" label rendering
+   is currently only exercised against a small synthetic image, not real mixed-side data. Worth
+   a real disk if one with genuinely mixed sides (or a defragmented-then-resaved history) ever
+   turns up.
 3. **Origin of the stale 20-entry directory cluster at raw `0x1000`–`0x17FF`** (§2) — read as
    real, valid, cross-validated directory entries, but not touched by the current build's
    read/save routines and sharing no filenames with the 18-entry active directory.
@@ -822,6 +866,44 @@ on record unless the owner wants to specify further).
    as a second, separate DOS at all (directory browsing, write support, etc.), or whether
    JWSDOS-only support is sufficient scope — still an open scoping question for whoever picks
    this up, now unblocked by a real source if the answer turns out to be "yes."
+
+8. ~~New (2026-07-28), raised by the disk-directory-view UI feature: how should format detection
+   disambiguate a genuine PDOS system disk from a PDOS working disk whose first FCB slot happens
+   to carry the `0xF3` flag value?~~ **RESOLVED (owner, 2026-07-28), IMPLEMENTED (machine
+   milestone 22a, 2026-07-28).** Both read identically at "track 1 offset 0 == `0xF3`," so byte 0
+   alone can't decide it. Validate the rest of the entry before concluding "system disk": only
+   fall back to "no directory, this is a system disk" if that validation fails; if it passes,
+   treat track 1 as a working disk's FCB directory (even though its first entry happens to carry
+   the flag value) — see §6a's "detection-collision consequence" note for the exact validation
+   this implies (plausible padded filename, plausible sector count/allocation map). **Confirmed
+   against real data:** `volorg.dsk`'s `VOLORG` FCB (byte 0 = `0xF3`) validates as plausible and
+   correctly returns `PdosWorking`; the real "Disk BASIC 24K" system-disk fixture correctly
+   returns `PdosSystem`. **The "sane sector count" check, not previously specified this
+   precisely:** `ceil(sectorCount / 4) == recordCount` (the real record count from the entry's
+   own allocation map) — holds exactly across all three known real/worked FCB examples (the
+   docx's 27/7, `VOLORG`'s 44/11, `VOLINFO`'s 14/4). **(A second sub-question — whether the UI's
+   PDOS track/sector column should show raw record numbers or convert through the physical
+   interleave table — is also RESOLVED, owner, 2026-07-28, IMPLEMENTED (UI milestone 15a):**
+   neither: derive a track-only range from **1-based track = `(first/last record ÷ 4) + 1`** —
+   **note the `+1`, corrected 2026-07-28 (machine milestone 22a's own findings-log entry): the
+   shorthand "record ÷ 4" recorded earlier under-specified this** and would be off by one (e.g.
+   record 8 is track 3, not track 2 — confirmed against real `volorg.dsk` data and this doc's own
+   §6a interleave finding). Sector count is shown via the existing size column (sector count ×
+   256 bytes), not a separate raw figure; no interleave-table conversion needed for display. See
+   `P2000.UI` CLAUDE.md milestone 15a.)** **(A third sub-question, raised by the fallback view's
+   own implementation — RESOLVED, owner, 2026-07-28, IMPLEMENTED (machine milestone 23, UI
+   milestone 16, 2026-07-28):** an all-empty directory region is equally consistent with a blank
+   JWSDOS disk or a blank PDOS working disk, so it does NOT default to `Jwsdos` (milestone 22's
+   original carve-out, now removed from `IsPlausibleJwsdosDirectory()`) — it falls through to
+   `Unknown` like any other unrecognized content, with no new fallthrough logic needed (confirmed,
+   not just predicted). The UI shows a distinct **"Clean disk — no data written yet"** message
+   rather than the generic "unknown disk contents/structure" wording for the specifically-all-zero
+   case, via a new `DskImage.IsDirectoryRegionBlank()` query (no new `DiskDirectoryFormat` value
+   needed). **Confirmed against real fixtures:** `jwssytem.dsk`'s own real all-empty track 2 now
+   returns `Unknown` (that fixture's own milestone-22 test expectation was flipped, not left
+   contradicting); a freshly-created blank disk shows the new message; every real non-empty
+   `Jwsdos`/garbage fixture is unaffected. See `P2000.Machine` CLAUDE.md milestone 23 / `P2000.UI`
+   CLAUDE.md milestone 16.)**
 
 **Resolved since the last revision (moved out of this list):** **`sysdisk_status`'s ambiguous
 initial-value comment (2026-07-20)** — explained, not just flagged: the exact `0xF3` branch
@@ -1009,3 +1091,44 @@ convention: `0xF3` is the official Philips disk-BASIC signature (verified agains
   reference" rule: dated findings-log entries in both `CLAUDE.md` files, `docs/
   CLAUDE_machine_findings_archive.md`, and `docs/implementation-handoff-2026-07-22.md` (itself a
   dated point-in-time snapshot).
+- **2026-07-28 (owner-supplied "PDOS info.docx," official Dutch-language 24K Disk BASIC
+  documentation, a second excerpt from the same manual family as the 2026-07-27 source):**
+  direct-quote upgrade of the FCB directory's location from inference to sourced fact ("Het
+  eerste spoor van werkschijven (niet van de systeemschijf) bevat de index..."), plus the same
+  document's own worked FCB hex dump and full track(1–40)-to-record-number table (independently
+  confirming the `(N-1)×4`..`(N-1)×4+3` formula already in this doc, transcribed in full in the
+  source but not reproduced here since the formula already covers it exactly). → this doc §6a.
+- **2026-07-28 (owner, direct statement):** FCB position 1 is a continuation-sequence index —
+  `0x00` for a file's primary FCB, `0x01`/`0x02`/… for additional FCBs appended (same name +
+  extension) when a file's allocation map can't describe it in one 16-record entry. Resolves
+  most of the "position 1 varies" open question from 2026-07-27; the `0xF3` real-disk value
+  (`VOLORG.BAS`) is now understood as a distinct flag value outside plausible continuation range,
+  not a competing explanation of the same byte — see §6a for the full reconciliation and the
+  detection-collision consequence this raises for the disk-directory-view feature. → this doc
+  §6a.
+- **2026-07-28 (owner, direct statement, refining an initial "64" figure to 128):** the FCB
+  directory's capacity is 128 entries — one full track (4096 B) ÷ 32 B/FCB, with no leftover
+  space unaccounted for. → this doc §6a.
+- **2026-07-28 (owner, planned test, not yet run):** a concise `VOLORG` manual surfaced a
+  "set/reset file protect" menu option, letting the owner directly test the position-1
+  `0xF3`/protected-file hypothesis (save → inspect FCB → protect → inspect FCB again) instead of
+  relying on the one-disk `VOLORG`/`VOLINFO` coincidence. Results pending. → this doc §6a.
+- **2026-07-28 (Claude Code, machine milestone 22 / UI milestone 15 — prompt 9 implemented):**
+  real-fixture confirmation of the 16-sectors/track linear formula against `Spel1.dsk`'s
+  `AUTORUN` entry (`DE_start_sector`/`DE_end_sector` 622/632 → track 39 sector 14 through track
+  40 sector 8, confirmed rendering correctly in the new Disk Drives Track/Sector column);
+  `volorg.dsk` independently confirmed as a real (not fabricated) "must not false-positive as
+  JWSDOS" test case, since it has no JWSDOS label and non-printable-ASCII bytes at JWSDOS's
+  directory offset; flagged that no known real fixture has a directory with entries on both
+  sides, so the Side column's label logic is only exercised against a synthetic image so far. →
+  this doc §4, §7 item 2.
+- **2026-07-28 (Claude Code, "Disk I/O error" bugfix investigation): the `{1,7,13,3}/{9,15,5,11}/
+  {2,8,14,4}/{10,16,6,12}` physical interleave pattern gets a THIRD independent confirmation,** on
+  top of the two above (the source docx table, and the `VOLINFO.BAS` real-data reconstruction) —
+  this time from live driver behavior under emulation rather than static analysis. After fixing
+  three real `Upd765` FDC bugs (see `P2000T-reference.md` §5d for the full account), Philips Disk
+  BASIC's own directory-scan routine was traced issuing sector requests in exactly the sequence
+  `1,7,13,3,9,15,5,11,2,8,14,4,10,16` — the documented interleave order, reproduced by the real
+  resident driver itself, not by this project's own code re-deriving it. The scan itself now
+  completes correctly; the still-open remainder of that bug (LOAD/SAVE still failing afterwards)
+  is tracked separately and does not affect this confirmation. → this doc §6a.

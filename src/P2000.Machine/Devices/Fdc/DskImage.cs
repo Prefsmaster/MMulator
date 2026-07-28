@@ -431,9 +431,17 @@ public sealed class DskImage
     /// (offsets 0-19) to be plausible printable ASCII/space — matching this codebase's existing
     /// self-consistency-checking spirit (e.g. <see cref="Mount"/>'s label-length validation): a
     /// non-JWSDOS image (PDOS, garbage) has arbitrary binary data at this offset, which "bytes
-    /// are present" alone would wrongly accept. An all-empty directory (every slot zero-padded,
-    /// e.g. <c>jws-sytem.dsk</c>'s real empty track 2) still counts as a valid, just-empty JWSDOS
-    /// directory — there is nothing here to contradict that.
+    /// are present" alone would wrongly accept. <b>CHANGED (machine milestone 23):</b> an
+    /// all-empty directory (every slot zero-padded) no longer counts as a valid JWSDOS
+    /// directory — it is EQUALLY consistent with a blank PDOS working disk (PDOS's own track-1
+    /// directory also reads as all-zero before anything's written), so defaulting to
+    /// <see cref="DiskDirectoryFormat.Jwsdos"/> here was an arbitrary pick between two
+    /// equally-plausible blank states, not a real detection. An all-empty region now requires at
+    /// least one non-empty slot to be considered a plausible JWSDOS directory at all, so it falls
+    /// through to the PDOS check below (which also fails on an all-zero first FCB slot — zero
+    /// bytes aren't plausible printable-ASCII/space) and ultimately reaches
+    /// <see cref="DiskDirectoryFormat.Unknown"/>. See <see cref="IsDirectoryRegionBlank"/> for how
+    /// a caller distinguishes this genuinely-blank case from real unrecognized garbage.
     ///
     /// <b>PDOS check (milestone 22a) — the one genuine ambiguity in either format:</b> a PDOS
     /// system disk's track 1 offset 0 is the SAME byte value (<c>0xF3</c>) a working disk's own
@@ -459,8 +467,10 @@ public sealed class DskImage
 
     private bool IsPlausibleJwsdosDirectory()
     {
+        var sawNonEmptySlot = false;
         foreach (var (_, entry) in EnumerateDirectorySlots())
         {
+            sawNonEmptySlot = true;
             // Filename (0-15) + extension (16-18) + filetype (19) — the fields real JWSDOS
             // filenames/extensions occupy — must all be printable ASCII or space.
             for (var i = 0; i < 20; i++)
@@ -469,8 +479,20 @@ public sealed class DskImage
                 if (b < 0x20 || b > 0x7E) return false;
             }
         }
-        return true; // every slot empty, or every non-empty slot looked plausible
+        // An all-empty directory is no longer treated as a plausible JWSDOS directory (machine
+        // milestone 23) — see this method's own doc comment for why.
+        return sawNonEmptySlot;
     }
+
+    /// <summary>True when NEITHER a JWSDOS directory slot (raw <c>0x1800</c>-<c>0x1FFF</c>) NOR a
+    /// PDOS FCB slot (track 1, raw <c>0x0000</c>) has any non-empty entry — i.e. this image is
+    /// genuinely blank at both formats' directory regions, not just unrecognized (machine
+    /// milestone 23). Meaningful only when <see cref="DetectDirectoryFormat"/> has already
+    /// returned <see cref="DiskDirectoryFormat.Unknown"/> — a caller (the UI fallback view) uses
+    /// this to show a distinct "clean disk" message instead of the generic "unknown disk
+    /// contents/structure" wording for genuine garbage.</summary>
+    public bool IsDirectoryRegionBlank() =>
+        !EnumerateDirectorySlots().Any() && !EnumeratePdosFcbSlots().Any();
 
     /// <summary>Reads one raw 32-byte PDOS FCB slot (1-based positions in
     /// <c>docs/P2000T-disk-formats.md</c> §6a map to 0-based <paramref name="index"/>*32 + (position-1)

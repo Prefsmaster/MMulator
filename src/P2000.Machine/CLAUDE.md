@@ -1483,6 +1483,33 @@ is NO machine-layer runner milestone here — it's promoted in with the external
     - **Applies to:** `src/P2000.Machine/Devices/Fdc/DskImage.cs`, UI milestone 15b (consumes
       this).
 
+23. **Blank-disk detection — stop defaulting an all-empty directory to `Jwsdos`** (NEW, owner
+    decision 2026-07-28, fast-follow onto milestone 22 — reference doc §3a same RESOLVED block's
+    part-3 bullet). An all-empty directory region is equally consistent with a blank JWSDOS disk
+    or a blank PDOS working disk (both formats read as all-zero there before anything's written)
+    — milestone 22's "empty still counts as `Jwsdos`" carve-out was an arbitrary pick between two
+    equally-plausible blank states, not a real detection.
+    - **Remove the "all-empty slots still count as a valid, just-empty `Jwsdos` directory"
+      special case** added in milestone 22. Let an all-empty (or otherwise unrecognized) region
+      fall through the same dispatch chain as anything else — it should reach `Unknown` on its
+      own once that carve-out is gone, since an all-zero first FCB slot also won't pass
+      milestone 22a's "plausible PDOS FCB" validation (zero bytes aren't printable ASCII/space).
+      Confirm this falls out naturally rather than needing new fallthrough logic; if it doesn't,
+      that's worth understanding before forcing it.
+    - **Expose enough for the UI to distinguish "genuinely blank" from "unrecognized garbage"**
+      when rendering the `Unknown` case (milestone 16 needs this) — your call whether that's a
+      new `DiskDirectoryFormat` value, a separate bool/flag alongside `Unknown`, or just letting
+      the UI inspect the already-available sector-1 bytes itself (all-zero → blank) without any
+      new machine-layer surface at all. Whichever is simplest against the real types.
+    - **Tests:** a genuinely blank/freshly-formatted image (all-zero at both the JWSDOS directory
+      offset and PDOS's track-1 offset) returns `Unknown` — REGRESSION-FLIPS milestone 22's own
+      existing test asserting `Jwsdos` for this exact case; update that test's expectation rather
+      than leaving two contradictory assertions. A real JWSDOS disk with actual (non-empty,
+      plausible) entries still returns `Jwsdos` as before — this change must not affect any
+      disk with real content, only the all-zero case.
+    - **Applies to:** `src/P2000.Machine/Devices/Fdc/DskImage.cs` (`DetectDirectoryFormat`), UI
+      milestone 16 (consumes this), `docs/P2000T-disk-formats.md` §7 item 8.
+
 ---
 
 ## 14. Deferred (build the seams now, implement later)
@@ -1555,6 +1582,45 @@ marked synced. Do NOT edit the reference doc from this project.
 - **Applies to:** reference doc §… / <file/port>
 - **Synced:** yes (2026-07-05, into P2000T-reference.md + device guides)
 -->
+
+### 2026-07-28 — Milestone 23 IMPLEMENTED: blank-disk detection no longer defaults to `Jwsdos`
+- **Trigger:** owner decision, fast-follow onto milestone 22 (reference doc §3a same RESOLVED
+  block's part-3 bullet; `docs/P2000T-disk-formats.md` §7 item 8's third sub-question). Milestone
+  22's own "an all-empty directory still counts as a valid, just-empty JWSDOS directory" carve-out
+  was an arbitrary pick between two equally-plausible blank states (a blank JWSDOS disk and a
+  blank PDOS working disk both read as all-zero at their own directory offsets before anything's
+  written) — not a real detection.
+- **Removed the carve-out from `IsPlausibleJwsdosDirectory()`:** it now requires at least one
+  non-empty slot (`sawNonEmptySlot`) before returning `true`; an all-empty region returns `false`
+  instead of vacuously `true`. Confirmed this falls through to `Unknown` on its own, exactly as
+  the milestone predicted — no new fallthrough logic was needed: `DetectDirectoryFormat()`'s
+  existing PDOS check (`IsPlausiblePdosFcb`) already rejects an all-zero first FCB slot (its name/
+  extension bytes are `0x00`, not printable ASCII/space), and byte 0 of an all-zero slot is `0x00`,
+  not `0xF3`, so the final `PdosSystem`/`Unknown` branch correctly lands on `Unknown`.
+- **Exposed `DskImage.IsDirectoryRegionBlank()`** for the UI to distinguish "genuinely blank" from
+  "unrecognized garbage" once `DetectDirectoryFormat()` returns `Unknown` — simplest option against
+  the real types (no new `DiskDirectoryFormat` enum value, no new flag alongside it): reuses the
+  same two enumerations (`EnumerateDirectorySlots`/`EnumeratePdosFcbSlots`) `DetectDirectoryFormat`
+  itself already calls, returning `true` only when NEITHER has any non-empty slot at all — i.e. both
+  formats' directory regions are genuinely all-zero, not just individually implausible.
+- **Real JWSDOS disks with actual entries are unaffected — verified, not just assumed:** every
+  existing `Jwsdos`-detection test (`Spel1.dsk`, `jwssytem.dsk`'s non-empty side) still returns
+  `Jwsdos`; only `jwssytem.dsk`'s own real all-empty track 2 (previously the milestone-22 test's
+  `Jwsdos` assertion) now returns `Unknown` — that test's expectation was flipped, not left
+  contradicting the new one.
+- **Tests:** `DskImageTests` — the milestone-22 test asserting `Jwsdos` for an all-empty directory
+  had its expectation flipped to `Unknown`; new test confirms `IsDirectoryRegionBlank()` is `true`
+  for that same all-empty fixture and `false` for both a real non-empty JWSDOS fixture and a
+  genuinely non-blank garbage image; existing non-empty-JWSDOS-fixture tests (`Spel1.dsk` etc.)
+  confirmed unchanged.
+- **Applies to:** `src/P2000.Machine/Devices/Fdc/DskImage.cs` (`IsPlausibleJwsdosDirectory`,
+  `IsDirectoryRegionBlank`), `tests/P2000.Machine.Tests/Devices/Fdc/DskImageTests.cs`, UI milestone
+  16 (consumes `IsDirectoryRegionBlank`), `docs/P2000T-disk-formats.md` §7 item 8.
+- **Synced:** yes (2026-07-28, into `docs/P2000T-reference.md` §3a — the RESOLVED block's part-3
+  bullet updated from "RESOLVED" to "IMPLEMENTED," covering the removed carve-out, the
+  no-new-fallthrough-logic confirmation, `IsDirectoryRegionBlank()`'s mechanism, and the
+  real-fixture confirmations; `docs/P2000T-disk-formats.md` §7 item 8's third sub-question also
+  updated to IMPLEMENTED).
 
 ### 2026-07-28 — Bugfix investigation: "Disk I/O error" on every post-boot LOAD/SAVE — THREE real `Upd765` bugs found and fixed via instrumentation; root cause of the full symptom still not fully closed
 - **Trigger:** owner-reported bug, reference doc §5d "TRACKED, not fixed (owner-reported,
@@ -1731,10 +1797,11 @@ marked synced. Do NOT edit the reference doc from this project.
   (new), `tests/P2000.Machine.Tests/Devices/Fdc/Upd765Tests.cs`,
   `tests/P2000.Machine.Tests/Memory/PageTableTests.cs` (`BankedWindow_AllSixT102Banks_AreMutuallyIsolated`,
   new). Reference doc §5d's "TRACKED, not fixed" block.
-- **Synced:** no yet — the three confirmed bugs/fixes and the still-open remainder both need to
-  land in reference doc §5d, replacing the "TRACKED, not fixed" framing with a "partially fixed,
-  see this entry" status — the human should decide the exact wording since the bug isn't fully
-  closed.
+- **Synced:** yes (2026-07-28, into `docs/P2000T-reference.md` §5d — the "TRACKED, not fixed"
+  block replaced with "PARTIALLY FIXED," covering the three confirmed bugs, the combined-effect
+  interleave-order confirmation, the disproven hypotheses, the SAVE-specific trace, both owner
+  follow-ups (the `0xF3` write-refusal explanation and the banking-mechanism-cleared finding),
+  and the still-open root cause).
 
 ### 2026-07-28 — Milestone 22b IMPLEMENTED: raw sector-1 read for the fallback dump view (no new API)
 - **Trigger:** owner decision (reference doc §3a same RESOLVED block). Third and last of the
@@ -1754,8 +1821,10 @@ marked synced. Do NOT edit the reference doc from this project.
 - **Applies to:** `tests/P2000.Machine.Tests/Devices/Fdc/DskImageTests.cs`,
   `tests/P2000.Machine.Tests/Devices/Fdc/RealFixtureTests.cs`, `P2000.UI` milestone 15b (consumes
   `ReadSector` directly).
-- **Synced:** no — reference doc §3a's RESOLVED block already anticipates this ("likely needs no
-  new API at all"); nothing here contradicts or extends it.
+- **Synced:** yes (2026-07-28, into `docs/P2000T-reference.md` §3a — part-3 bullet updated from
+  "fully UNBLOCKED" to "IMPLEMENTED," noting `ReadSector` needed no changes and citing the real-
+  fixture byte-exact confirmation; `docs/P2000T-disk-formats.md` §6 also got the "Disk BASIC 24K
+  is confirmed, not just presumed, a PDOS disk" update from the owner's real boot test).
 
 ### 2026-07-28 — Milestone 22a IMPLEMENTED: PDOS FCB directory reader + system-disk disambiguation
 - **Trigger:** owner decision (reference doc §3a same RESOLVED block; `docs/P2000T-disk-formats.md`
@@ -2233,10 +2302,10 @@ marked synced. Do NOT edit the reference doc from this project.
   table + opcode-identity note), `tests/P2000.Machine.Tests/Devices/Fdc/Upd765Tests.cs`,
   `tests/P2000.Machine.Tests/Devices/Fdc/MultiDriveFloppyTests.cs`,
   `tests/P2000.UI.Tests/ViewModels/DiskDriveVmTests.cs`.
-- **Synced:** no yet — the opcode-identity correction (READ A TRACK not READ DATA for the real
-  ROM byte) needs to land in reference doc §5d's command-bytes table alongside the existing
-  MF-bit/FM-vs-MFM resolution it settles; the result-phase-drain finding (`read_IO_status`
-  B=7) is worth a line in §5d too since it corrects milestone 19's own "never reads it" claim.
+- **Synced:** yes (2026-07-28, into `docs/P2000T-reference.md` §5d — the command-bytes table's
+  `0x42` row relabeled READ A TRACK with a "CORRECTED" note explaining the MF-bit derivation and
+  behavioral invisibility, plus a second note correcting the old "ROM never reads the result
+  phase" claim with the `read_IO_status` B=7 finding).
 
 ### 2026-07-23 — New milestone flagged (not yet implemented): FDC full 15-command set, plus two real findings from a direct source read
 - **Trigger — owner:** don't stop the FDC at "passes the current boot/run test" — implement all

@@ -610,6 +610,155 @@ public class DskImageTests
         Assert.Equal(DiskDirectoryFormat.Unknown, disk.DetectDirectoryFormat());
     }
 
+    // ---- PDOS FCB directory (project CLAUDE.md §13 milestone 22a; docs/P2000T-disk-formats.md
+    // §6a/§7 item 8) ------------------------------------------------------------------------------
+
+    private static byte[] BuildSyntheticPdosImage(int tracks = 35, int sides = 1)
+    {
+        var image = new byte[tracks * sides * DskImage.SectorsPerTrack * DskImage.BytesPerSector];
+        // Corrupt the JWSDOS directory region (raw 0x1800) so a fresh all-zero image doesn't
+        // false-positive as an "empty but valid" JWSDOS directory (prompt 9's own logic treats an
+        // all-zero directory as a valid, just-empty Jwsdos) — PDOS has nothing meaningful there at
+        // all, so these tests need that region to genuinely fail the JWSDOS check first.
+        for (var i = 0; i < 20; i++) image[0x1800 + i] = 0x01;
+        return image;
+    }
+
+    /// <summary>Pokes one 32-byte PDOS FCB into track 1 (raw offset 0), 1-based source positions
+    /// mapped to 0-based array offsets (docs/P2000T-disk-formats.md §6a).</summary>
+    private static void WritePdosFcb(byte[] image, int slotIndex, byte continuationIndex,
+        string name, string extension, byte sectorCount, byte[] allocationMap)
+    {
+        var offset = slotIndex * 32;
+        image[offset] = continuationIndex; // position 1
+        System.Text.Encoding.ASCII.GetBytes(name.PadRight(8)).CopyTo(image, offset + 1); // positions 2-9
+        System.Text.Encoding.ASCII.GetBytes(extension.PadRight(3)).CopyTo(image, offset + 9); // positions 10-12
+        // positions 13-15 (reserved) left at 0x00
+        image[offset + 15] = sectorCount; // position 16
+        var map = new byte[16];
+        allocationMap.CopyTo(map, 0); // remaining entries default to 0x00 padding
+        map.CopyTo(image, offset + 16); // positions 17-32
+    }
+
+    [Fact]
+    public void DetectDirectoryFormat_PlausiblePdosFcb_ReturnsPdosWorking()
+    {
+        var image = BuildSyntheticPdosImage();
+        WritePdosFcb(image, 0, continuationIndex: 0x00, "TESTFILE", "BAS",
+            sectorCount: 16, allocationMap: new byte[] { 4, 5, 6, 7 });
+
+        var disk = new DskImage(image);
+
+        Assert.Equal(DiskDirectoryFormat.PdosWorking, disk.DetectDirectoryFormat());
+    }
+
+    [Fact]
+    public void DetectDirectoryFormat_PlausibleFcbCarrying0xF3Flag_StillReturnsPdosWorking()
+    {
+        // The real VOLORG.BAS case (docs/P2000T-disk-formats.md §7 item 8): a working disk's own
+        // first FCB can legitimately carry 0xF3 as ITS flag value, not a system-disk marker —
+        // disambiguation must validate the rest of the slot regardless of byte 0.
+        var image = BuildSyntheticPdosImage();
+        WritePdosFcb(image, 0, continuationIndex: 0xF3, "VOLORG", "BAS",
+            sectorCount: 44, allocationMap: new byte[] { 4, 5, 6, 7, 12, 13, 14, 15, 16, 17, 18 });
+
+        var disk = new DskImage(image);
+
+        Assert.Equal(DiskDirectoryFormat.PdosWorking, disk.DetectDirectoryFormat());
+    }
+
+    [Fact]
+    public void DetectDirectoryFormat_ImplausibleFirstSlotWith0xF3_ReturnsPdosSystem()
+    {
+        // A genuine PDOS system disk: track 1 offset 0 is the official 0xF3 boot signature, and
+        // real boot code (not a plausible FCB) occupies the rest of the region.
+        var image = BuildSyntheticPdosImage();
+        image[0] = 0xF3;
+        for (var i = 1; i < 20; i++) image[i] = 0xFF; // non-ASCII boot-code-shaped bytes
+
+        var disk = new DskImage(image);
+
+        Assert.Equal(DiskDirectoryFormat.PdosSystem, disk.DetectDirectoryFormat());
+    }
+
+    [Fact]
+    public void DetectDirectoryFormat_ImplausibleFirstSlotWithout0xF3_ReturnsUnknown()
+    {
+        var image = BuildSyntheticPdosImage();
+        image[0] = 0x42; // not the system-disk marker either
+        for (var i = 1; i < 20; i++) image[i] = 0xFF; // non-ASCII garbage
+
+        var disk = new DskImage(image);
+
+        Assert.Equal(DiskDirectoryFormat.Unknown, disk.DetectDirectoryFormat());
+    }
+
+    [Fact]
+    public void DetectDirectoryFormat_AllocationMapReferencesReservedRecord_ReturnsUnknown()
+    {
+        // Records 00-03 are permanently reserved for track 1's own index — a plausible-looking
+        // name/extension with an allocation map that references one anyway must not validate.
+        var image = BuildSyntheticPdosImage();
+        WritePdosFcb(image, 0, continuationIndex: 0x00, "TESTFILE", "BAS",
+            sectorCount: 8, allocationMap: new byte[] { 2, 3 });
+
+        var disk = new DskImage(image);
+
+        Assert.Equal(DiskDirectoryFormat.Unknown, disk.DetectDirectoryFormat());
+    }
+
+    [Fact]
+    public void ReadPdosDirectory_SingleFcbEntry_ParsesNameExtensionSizeAndTrackRange()
+    {
+        var image = BuildSyntheticPdosImage();
+        WritePdosFcb(image, 0, continuationIndex: 0x00, "TESTFILE", "BAS",
+            sectorCount: 16, allocationMap: new byte[] { 4, 5, 6, 7 });
+
+        var disk = new DskImage(image);
+        var entries = disk.ReadPdosDirectory();
+
+        var entry = Assert.Single(entries);
+        Assert.Equal("TESTFILE", entry.Name);
+        Assert.Equal("BAS", entry.Extension);
+        Assert.Equal("TESTFILE.BAS", entry.FullName);
+        Assert.Equal(16 * 256, entry.FileLength);
+        Assert.Equal(2, entry.StartTrack); // record 4 -> track (4/4)+1 = 2
+        Assert.Equal(2, entry.EndTrack);   // record 7 -> track (7/4)+1 = 2
+        Assert.Equal(16, entry.TotalSectors); // 4 records x 4
+    }
+
+    [Fact]
+    public void ReadPdosDirectory_ContinuationFcbs_FoldIntoOneEntry_WithCombinedSectorCount()
+    {
+        // A file over 16 KB (one FCB's 16-record ceiling) spans a second FCB with the same
+        // filename+extension and an incrementing continuation index (docs/P2000T-disk-formats.md
+        // §6a) — must appear as ONE logical row, not two.
+        var image = BuildSyntheticPdosImage();
+        WritePdosFcb(image, 0, continuationIndex: 0x00, "BIGFILE", "BAS", sectorCount: 64,
+            allocationMap: new byte[] { 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19 });
+        WritePdosFcb(image, 1, continuationIndex: 0x01, "BIGFILE", "BAS", sectorCount: 16,
+            allocationMap: new byte[] { 20, 21, 22, 23 });
+
+        var disk = new DskImage(image);
+        var entries = disk.ReadPdosDirectory();
+
+        var entry = Assert.Single(entries);
+        Assert.Equal("BIGFILE", entry.Name);
+        Assert.Equal((64 + 16) * 256, entry.FileLength);
+        Assert.Equal(2, entry.StartTrack); // first record 4 -> track 2
+        Assert.Equal(6, entry.EndTrack);   // last record 23 -> track (23/4)+1 = 6
+        Assert.Equal(80, entry.TotalSectors); // 20 combined records x 4
+    }
+
+    [Fact]
+    public void ReadPdosDirectory_EmptyDirectory_ReturnsEmpty()
+    {
+        var image = BuildSyntheticPdosImage();
+        var disk = new DskImage(image);
+
+        Assert.Empty(disk.ReadPdosDirectory());
+    }
+
     [Fact]
     public void ReadDirectory_OnUnpaddedShortImage_ReturnsEmpty_NotException()
     {

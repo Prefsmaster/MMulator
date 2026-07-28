@@ -1398,6 +1398,42 @@ project.
 - **Synced:** yes (YYYY-MM-DD)
 -->
 
+### 2026-07-28 — Milestone 15a IMPLEMENTED: PDOS FCB directory rendering
+- **Trigger:** owner decision (reference doc §3a same RESOLVED block; `docs/P2000T-disk-formats.md`
+  §6a/§7 item 8). Second of the three-part split — depends on machine milestone 22a's
+  `DetectDirectoryFormat`/`ReadPdosDirectory` (parse + disambiguation logic lives there; this
+  milestone only renders it).
+- **Added:** `DiskDriveVm.RefreshDirectoryTable` gained a `DiskDirectoryFormat.PdosWorking` branch
+  (checked first, before the existing Jwsdos/legacy dispatch) — renders each machine-layer
+  `PdosDirectoryEntry` as filename+extension (`FullName`), size, and a track-only range
+  (`FormatPdosTrackRange`, e.g. "T2-T5" for a multi-track file or just "T3" when it stays within
+  one) via a dedicated `PdosDirectoryHeader` with NO "Ty" column (PDOS has no file-type byte) and
+  NO "Side" column (PDOS has no double-sided concept at all, `docs/P2000T-disk-formats.md` §6a's
+  hard geometry ceiling rules it out). Continuation FCBs already arrive pre-folded into one
+  `PdosDirectoryEntry` from the machine layer — nothing here re-groups them.
+- **Found — an existing prompt-9 test needed updating, not just extending:** `volorg.dsk` was
+  originally used as the "non-JWSDOS → keeps legacy table" regression case
+  (`MountBytes_NonJwsdosDetectedFormat_KeepsLegacyTableUnchanged`), back when milestone 22's PDOS
+  branches were still stubbed to `Unknown`. Now that milestone 22a implements real PDOS detection,
+  that fixture correctly reports `PdosWorking`, so the test's own premise changed — renamed to
+  `MountBytes_UnknownDetectedFormat_KeepsLegacyTableUnchanged` and switched to a synthetic garbage
+  image (implausible at BOTH the JWSDOS and PDOS check offsets, byte 0 not `0xF3` either) so the
+  "legacy table for a non-Jwsdos, non-PdosWorking format" regression guard still has a genuinely
+  `Unknown`-detected fixture to test against.
+- **Real-fixture confirmation:** `volorg.dsk` (`VOLORG`/`VOLINFO`) renders both rows correctly —
+  `VOLORG.BAS` at "T2-T5" (records 4-18 span tracks 2 through 5) with size `44 × 256` bytes,
+  `VOLINFO.BAS` at "T3" (records 8-11, entirely within one track — no dash) with size `14 × 256`
+  bytes; neither row shows a Side column. No real fixture mixes multiple PDOS files needing
+  continuation FCBs — that path is exercised only by the machine layer's own synthetic test (see
+  its CLAUDE.md §17 finding).
+- **Applies to:** `src/P2000.UI/ViewModels/DiskDriveVm.cs` (`RefreshDirectoryTable`'s new branch,
+  `PdosDirectoryHeader`, `FormatPdosTrackRange`), `tests/P2000.UI.Tests/ViewModels/DiskDriveVmTests.cs`,
+  machine ms.22a (`ReadPdosDirectory`/`PdosDirectoryEntry`, consumed here),
+  `docs/P2000T-disk-formats.md` §6a/§7 item 8.
+- **Synced:** no — reference doc §3a's RESOLVED block already describes the target end-state;
+  nothing here contradicts or extends it (see machine CLAUDE.md §17's own finding for the one
+  correction that DOES need syncing — the track-formula `+1`).
+
 ### 2026-07-28 — Milestone 15 IMPLEMENTED: directory-format dispatch + JWSDOS Side/Track-Sector columns
 - **Trigger:** owner decision (reference doc §3a "RESOLVED — the Disk Drives window's directory
   browse table gets format auto-detection..."), first of a three-part split — this milestone

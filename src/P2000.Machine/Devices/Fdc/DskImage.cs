@@ -40,6 +40,20 @@ public sealed class DskImage
     private const int DirectorySize = 0x0800; // 2048 B = 8 sectors = 64 × 32-byte entries
     private const int DirectoryEntrySize = 32;
 
+    /// <summary>PDOS's own FCB directory region — track 1 (raw <c>0x0000</c>-<c>0x0FFF</c>,
+    /// <c>getdos</c>'s own name for cylinder 0), 128 fixed 32-byte slots
+    /// (<c>docs/P2000T-disk-formats.md</c> §6a: "the first track of working disks... contains the
+    /// index"). Completely separate from JWSDOS's side-1 directory above — a different DOS, a
+    /// different on-disk region.</summary>
+    private const int PdosFcbOffset = 0x0000;
+    private const int PdosFcbSize = 32;
+    private const int PdosFcbCount = 0x1000 / PdosFcbSize; // 4096 B / 32 B/FCB = 128, a clean full-track fit
+
+    /// <summary>PDOS's allocation unit — 4 sectors = 1024 bytes (<c>docs/P2000T-disk-formats.md</c>
+    /// §6a) — used to convert an allocation-map record number into a track number for display
+    /// (milestone 22a/UI ms.15a).</summary>
+    private const int PdosSectorsPerRecord = 4;
+
     private byte[] _data;
 
     /// <summary>Per-track sector-order (interleave) maps carried over verbatim from a mounted
@@ -406,12 +420,11 @@ public sealed class DskImage
         }
     }
 
-    /// <summary>Auto-detects which directory format this image's side-1 directory region holds
-    /// (project CLAUDE.md §13 milestone 22; reference doc §3a "RESOLVED — the Disk Drives
-    /// window's directory browse table gets format auto-detection..."). Tries JWSDOS first
-    /// (this method's own logic below); PDOS/PDOS-system/unknown are NOT yet implemented — they
-    /// depend on milestone 22a's disambiguation decision, so they all fall through to
-    /// <see cref="DiskDirectoryFormat.Unknown"/> for now.
+    /// <summary>Auto-detects which directory format this image holds (project CLAUDE.md §13
+    /// milestones 22/22a; reference doc §3a "RESOLVED — the Disk Drives window's directory browse
+    /// table gets format auto-detection..."). Tries JWSDOS first (side-1 directory, raw
+    /// <c>0x1800</c>); then PDOS's own FCB directory (track 1, raw <c>0x0000</c>,
+    /// <c>docs/P2000T-disk-formats.md</c> §6a).
     ///
     /// <b>JWSDOS check:</b> reuses the same "non-empty slot" rule as <see cref="ReadDirectory"/>,
     /// then additionally requires every non-empty slot's filename+extension+filetype bytes
@@ -420,15 +433,28 @@ public sealed class DskImage
     /// non-JWSDOS image (PDOS, garbage) has arbitrary binary data at this offset, which "bytes
     /// are present" alone would wrongly accept. An all-empty directory (every slot zero-padded,
     /// e.g. <c>jws-sytem.dsk</c>'s real empty track 2) still counts as a valid, just-empty JWSDOS
-    /// directory — there is nothing here to contradict that.</summary>
+    /// directory — there is nothing here to contradict that.
+    ///
+    /// <b>PDOS check (milestone 22a) — the one genuine ambiguity in either format:</b> a PDOS
+    /// system disk's track 1 offset 0 is the SAME byte value (<c>0xF3</c>) a working disk's own
+    /// first FCB slot could legitimately carry as its own flag (<c>docs/P2000T-disk-formats.md</c>
+    /// §7 item 8) — so byte 0 alone can never decide it. Instead, validate the REST of the first
+    /// FCB slot (name/extension/sector-count/allocation-map, <see cref="IsPlausiblePdosFcb"/>)
+    /// regardless of what byte 0 says. If it looks like a plausible FCB, this is
+    /// <see cref="DiskDirectoryFormat.PdosWorking"/> even if byte 0 happens to be <c>0xF3</c> (that
+    /// disk's own flag value, not a system-disk marker). Only when validation fails AND byte 0 is
+    /// genuinely <c>0xF3</c> is this reported as <see cref="DiskDirectoryFormat.PdosSystem"/> (no
+    /// directory at all, real boot code occupies this region instead); validation failing with any
+    /// other byte 0 value falls through to <see cref="DiskDirectoryFormat.Unknown"/> — neither
+    /// format matched.</summary>
     public DiskDirectoryFormat DetectDirectoryFormat()
     {
         if (IsPlausibleJwsdosDirectory()) return DiskDirectoryFormat.Jwsdos;
 
-        // TODO: milestone 22a — PDOS working-disk FCB directory detection (track 1) and the
-        // 0xF3-flagged-entry-vs-system-disk disambiguation (docs/P2000T-disk-formats.md §7 item 8).
-        // TODO: milestone 22a — PDOS-system-disk marker detection (same disambiguation).
-        return DiskDirectoryFormat.Unknown;
+        var firstFcbSlot = ReadPdosFcbSlot(0);
+        if (IsPlausiblePdosFcb(firstFcbSlot)) return DiskDirectoryFormat.PdosWorking;
+
+        return firstFcbSlot[0] == 0xF3 ? DiskDirectoryFormat.PdosSystem : DiskDirectoryFormat.Unknown;
     }
 
     private bool IsPlausibleJwsdosDirectory()
@@ -445,6 +471,158 @@ public sealed class DskImage
         }
         return true; // every slot empty, or every non-empty slot looked plausible
     }
+
+    /// <summary>Reads one raw 32-byte PDOS FCB slot (1-based positions in
+    /// <c>docs/P2000T-disk-formats.md</c> §6a map to 0-based <paramref name="index"/>*32 + (position-1)
+    /// here) — same "reads as 0x00 past an unpadded short image" convention as
+    /// <see cref="ReadSector"/>, so this never throws regardless of the mounted image's real length.</summary>
+    private byte[] ReadPdosFcbSlot(int index)
+    {
+        var slot = new byte[PdosFcbSize];
+        var offset = PdosFcbOffset + index * PdosFcbSize;
+        if (offset < _data.Length)
+        {
+            var available = Math.Min(PdosFcbSize, _data.Length - offset);
+            _data.AsSpan(offset, available).CopyTo(slot);
+        }
+        return slot;
+    }
+
+    /// <summary>Walks PDOS's 128 fixed FCB slots and yields only the non-empty ones — an unused
+    /// slot is presumed all-zero, <c>docs/P2000T-disk-formats.md</c> §6a.</summary>
+    private IEnumerable<(int Index, byte[] Slot)> EnumeratePdosFcbSlots()
+    {
+        for (var i = 0; i < PdosFcbCount; i++)
+        {
+            var slot = ReadPdosFcbSlot(i);
+            if (Array.TrueForAll(slot, b => b == 0x00)) continue;
+            yield return (i, slot);
+        }
+    }
+
+    /// <summary>Validates that a 32-byte PDOS FCB slot's non-flag fields look like a plausible
+    /// file entry — printable ASCII/space name (positions 2-9) and extension (10-12), and a
+    /// sector count (position 16) consistent with its own allocation map's real record span
+    /// (positions 17-32, never referencing records <c>00</c>-<c>03</c>, permanently reserved for
+    /// track 1's own index — <c>docs/P2000T-disk-formats.md</c> §6a). Deliberately does NOT look
+    /// at position 1 (the continuation-index/flag byte) — that field is exactly what milestone
+    /// 22a's disambiguation needs to stay independent of (a working disk's first FCB can
+    /// legitimately carry <c>0xF3</c> there too, §7 item 8).</summary>
+    private static bool IsPlausiblePdosFcb(byte[] slot)
+    {
+        // Positions are 1-based in the source doc; slot[] is 0-based, so position P is slot[P-1].
+        for (var pos = 2; pos <= 12; pos++) // name (2-9) + extension (10-12)
+        {
+            var b = slot[pos - 1];
+            if (b < 0x20 || b > 0x7E) return false;
+        }
+
+        if (!TryCountPdosAllocationMapRecords(slot.AsSpan(16, 16), out var recordCount)) return false;
+        if (recordCount == 0) return false;
+
+        var sectorCount = slot[15]; // position 16
+        if (sectorCount == 0) return false;
+        // A file's real length in sectors must be accounted for by its own allocation map's
+        // record span — ceil(sectorCount / 4) == recordCount, confirmed exactly against every
+        // known real/worked example (docs/P2000T-disk-formats.md §6a: VOLORG 44/11 exact fit,
+        // VOLINFO 14/4 with 2 sectors' slack, the source docx's own 27/7 worked example).
+        var impliedRecordCount = (sectorCount + PdosSectorsPerRecord - 1) / PdosSectorsPerRecord;
+        return impliedRecordCount == recordCount;
+    }
+
+    /// <summary>Counts the real (non-padding) record numbers in a 16-byte PDOS allocation map,
+    /// enforcing the two structural rules <c>docs/P2000T-disk-formats.md</c> §6a confirms against
+    /// real data: <c>0x00</c> only ever appears as trailing padding (never followed by a real
+    /// record), and no real record number is ever <c>00</c>-<c>03</c> (permanently reserved for
+    /// track 1's own index/FCB area). Returns false — an implausible map — if either rule is
+    /// violated.</summary>
+    private static bool TryCountPdosAllocationMapRecords(ReadOnlySpan<byte> map, out int recordCount)
+    {
+        recordCount = 0;
+        var seenPadding = false;
+        foreach (var b in map)
+        {
+            if (seenPadding)
+            {
+                if (b != 0x00) return false; // a real value after padding already started
+                continue;
+            }
+            if (b == 0x00) { seenPadding = true; continue; }
+            if (b <= 0x03) return false; // records 00-03 are permanently reserved, never file data
+            recordCount++;
+        }
+        return true;
+    }
+
+    /// <summary>Parses PDOS's FCB directory (track 1, raw <c>0x0000</c>) into logical file
+    /// entries (project CLAUDE.md §13 milestone 22a; <c>docs/P2000T-disk-formats.md</c> §6a).
+    /// Position 1 of each slot is a continuation-sequence index, not a per-file flag in general
+    /// (<c>0x00</c> = a file's primary/only FCB; <c>0x01</c>/<c>0x02</c>/… = additional FCBs for
+    /// the same filename+extension when one FCB's 16-record allocation map isn't enough) — every
+    /// slot sharing a (name, extension) pair is folded into ONE logical entry here, ordered by
+    /// that continuation index, so a caller never sees the same file split across multiple rows.
+    /// Only meaningful once <see cref="DetectDirectoryFormat"/> has already returned
+    /// <see cref="DiskDirectoryFormat.PdosWorking"/> for this image — this method itself does not
+    /// re-validate plausibility, it trusts every non-empty slot the same way <see cref="ReadDirectory"/>
+    /// trusts every non-empty JWSDOS slot once already inside that directory's own region.</summary>
+    public IReadOnlyList<PdosDirectoryEntry> ReadPdosDirectory()
+    {
+        var order = new List<(string Name, string Extension)>();
+        var membersByKey = new Dictionary<(string Name, string Extension), List<(int ContinuationIndex, byte SectorCount, byte[] AllocationMap)>>();
+
+        foreach (var (_, slot) in EnumeratePdosFcbSlots())
+        {
+            var continuationIndex = slot[0];
+            var name = System.Text.Encoding.ASCII.GetString(slot.AsSpan(1, 8)).TrimEnd();
+            var extension = System.Text.Encoding.ASCII.GetString(slot.AsSpan(9, 3)).TrimEnd();
+            var sectorCount = slot[15];
+            var allocationMap = slot[16..32];
+
+            var key = (name, extension);
+            if (!membersByKey.TryGetValue(key, out var members))
+            {
+                members = new List<(int, byte, byte[])>();
+                membersByKey[key] = members;
+                order.Add(key);
+            }
+            members.Add((continuationIndex, sectorCount, allocationMap));
+        }
+
+        var entries = new List<PdosDirectoryEntry>(order.Count);
+        foreach (var key in order)
+        {
+            var members = membersByKey[key];
+            members.Sort((a, b) => a.ContinuationIndex.CompareTo(b.ContinuationIndex));
+
+            var records = new List<int>();
+            var totalSectorCount = 0;
+            foreach (var member in members)
+            {
+                totalSectorCount += member.SectorCount;
+                foreach (var b in member.AllocationMap)
+                {
+                    if (b == 0x00) break; // trailing padding within this FCB's own map
+                    records.Add(b);
+                }
+            }
+
+            var startTrack = records.Count > 0 ? RecordToTrack(records[0]) : 0;
+            var endTrack = records.Count > 0 ? RecordToTrack(records[^1]) : 0;
+            entries.Add(new PdosDirectoryEntry(
+                key.Name, key.Extension, totalSectorCount * BytesPerSector,
+                startTrack, endTrack, records.Count * PdosSectorsPerRecord));
+        }
+
+        return entries;
+    }
+
+    /// <summary>Converts a PDOS allocation-map record number into a 1-based track number, matching
+    /// this doc's own confirmed mapping (<c>docs/P2000T-disk-formats.md</c> §6a: "track N's four
+    /// records are numbered (N-1)×4 through (N-1)×4+3" — e.g. records 8-11 are track 3, confirmed
+    /// directly against real <c>volorg.dsk</c> content). UI milestone 15a's own "record ÷ 4"
+    /// phrasing is shorthand for this same formula, not a distinct 0-based scheme — see this
+    /// project's CLAUDE.md §17 findings log for the reconciliation.</summary>
+    private static int RecordToTrack(int record) => record / PdosSectorsPerRecord + 1;
 }
 
 /// <summary>One parsed 32-byte JWSDOS directory entry (<c>docs/P2000T-disk-formats.md</c> §4,
@@ -464,29 +642,46 @@ public readonly record struct DiskDirectoryEntry(
     public string FullName => Extension.Length > 0 ? $"{Filename}.{Extension}" : Filename;
 }
 
-/// <summary>Which directory format a <see cref="DskImage"/>'s side-1 directory region holds
-/// (project CLAUDE.md §13 milestone 22; reference doc §3a "RESOLVED — the Disk Drives window's
-/// directory browse table gets format auto-detection..."), as returned by
-/// <see cref="DskImage.DetectDirectoryFormat"/>. Only <see cref="Jwsdos"/> has real detection
-/// logic so far — <see cref="PdosWorking"/>/<see cref="PdosSystem"/> are milestone 22a's still-
-/// open disambiguation (docs/P2000T-disk-formats.md §7 item 8), stubbed to fall through to
-/// <see cref="Unknown"/> until then.</summary>
+/// <summary>One logical PDOS file entry (<c>docs/P2000T-disk-formats.md</c> §6a), as returned by
+/// <see cref="DskImage.ReadPdosDirectory"/> — already folded from however many physical 32-byte
+/// FCB slots the file's allocation map needed (a file over 16 KB spans more than one FCB, chained
+/// via position 1's continuation index; callers never see the same file split across multiple
+/// entries). <see cref="StartTrack"/>/<see cref="EndTrack"/> are pre-derived from the combined
+/// allocation map's record numbers (`record ÷ 4` + 1, confirmed against real <c>volorg.dsk</c>
+/// content) so the UI (milestone 15a) never needs to re-derive the formula itself.
+/// <b>No Side field</b> — PDOS has no double-sided concept at all (§6a's own hard geometry
+/// ceiling rules out anything wider than single-sided 35/40-track).</summary>
+public readonly record struct PdosDirectoryEntry(
+    string Name,
+    string Extension,
+    int FileLength,
+    int StartTrack,
+    int EndTrack,
+    int TotalSectors)
+{
+    public string FullName => Extension.Length > 0 ? $"{Name}.{Extension}" : Name;
+}
+
+/// <summary>Which directory format a <see cref="DskImage"/> holds (project CLAUDE.md §13
+/// milestones 22/22a; reference doc §3a "RESOLVED — the Disk Drives window's directory browse
+/// table gets format auto-detection..."), as returned by
+/// <see cref="DskImage.DetectDirectoryFormat"/>.</summary>
 public enum DiskDirectoryFormat
 {
     /// <summary>A JWSDOS directory (docs/P2000T-disk-formats.md §4) — real logic, milestone 22.</summary>
     Jwsdos,
 
-    /// <summary>A PDOS working disk's FCB directory (track 1) — NOT YET DETECTED (milestone 22a
-    /// stub only; this value is never actually returned until then).</summary>
+    /// <summary>A PDOS working disk's FCB directory (track 1, docs/P2000T-disk-formats.md §6a) —
+    /// real logic, milestone 22a. Read it via <see cref="DskImage.ReadPdosDirectory"/>.</summary>
     PdosWorking,
 
-    /// <summary>A PDOS system disk (no file directory, track 1 offset 0 = <c>0xF3</c>) — NOT YET
-    /// DETECTED (milestone 22a stub only; this value is never actually returned until then).</summary>
+    /// <summary>A PDOS system disk (no file directory — track 1 offset 0 is the official <c>0xF3</c>
+    /// boot signature, and the rest of that first FCB slot did NOT validate as a plausible working-
+    /// disk entry) — real logic, milestone 22a.</summary>
     PdosSystem,
 
-    /// <summary>Neither JWSDOS nor (once milestone 22a lands) a validated PDOS directory/system
-    /// marker matched — the catch-all case, also what every non-JWSDOS image reports today since
-    /// PDOS detection isn't implemented yet.</summary>
+    /// <summary>Neither JWSDOS nor a validated PDOS directory/system marker matched — the
+    /// catch-all case (garbage, an unrecognized format, or a genuinely blank/unformatted image).</summary>
     Unknown,
 }
 

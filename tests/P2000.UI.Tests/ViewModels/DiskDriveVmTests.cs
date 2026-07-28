@@ -624,22 +624,56 @@ public class DiskDriveVmTests
     }
 
     [AvaloniaFact]
-    public async Task MountBytes_NonJwsdosDetectedFormat_KeepsLegacyTableUnchanged()
+    public async Task MountBytes_UnknownDetectedFormat_KeepsLegacyTableUnchanged()
     {
-        // volorg.dsk is a real PDOS working disk: no JWSDOS label, garbage bytes at the JWSDOS
-        // directory offset — DetectDirectoryFormat (machine ms.22, still stubbed for PDOS) reports
-        // Unknown here, so this milestone's own instruction applies: keep milestone 14's ORIGINAL
-        // rendering (no Side/Track-Sector columns) exactly as it was before this change.
-        var bytes = await File.ReadAllBytesAsync(DiskFixturePath("volorg.dsk"));
+        // Neither JWSDOS (garbage at the JWSDOS directory offset) nor a plausible PDOS FCB (also
+        // garbage, and byte 0 isn't the 0xF3 system-disk marker either) — DetectDirectoryFormat
+        // reports Unknown, so this milestone's own instruction applies: keep milestone 14's
+        // ORIGINAL rendering (no Side/Track-Sector/PDOS columns) exactly as it was before this
+        // change. PdosSystem/Unknown's own fallback view is milestone 15b, not built here.
+        var image = new byte[40 * 1 * 16 * 256];
+        for (var i = 0; i < 20; i++) image[i] = 0xFF; // implausible PDOS first FCB slot, not 0xF3
+        for (var i = 0; i < 20; i++) image[0x1800 + i] = 0x01; // implausible JWSDOS entries
         var runner = await NewFloppyRunnerAsync(); // 40-track/single default — no label to override it
         var vm = NewVm(runner);
 
-        vm.MountBytes(bytes, "VOLORG");
+        vm.MountBytes(image, "GARBAGE");
 
         Assert.DoesNotContain("Side", vm.DirectoryHeader);
         Assert.DoesNotContain("Track/Sector", vm.DirectoryHeader);
         Assert.Equal(DiskDirectoryFormat.Unknown,
             runner.Machine.Fdc!.GetDisk(0)!.DetectDirectoryFormat());
+
+        runner.Dispose();
+    }
+
+    // ---- PDOS FCB directory rendering (project CLAUDE.md §14 milestone 15a; machine ms.22a) ----
+
+    [AvaloniaFact]
+    public async Task MountBytes_RealVolorgDsk_ShowsPdosColumns_NoSideColumn()
+    {
+        // volorg.dsk is a real PDOS working disk (VOLORG/VOLINFO, docs/P2000T-disk-formats.md
+        // §6a) — VOLORG's FCB legitimately carries the 0xF3 flag value, the exact disambiguation
+        // case milestone 22a exists for.
+        var bytes = await File.ReadAllBytesAsync(DiskFixturePath("volorg.dsk"));
+        var runner = await NewFloppyRunnerAsync(); // 35-track/single default — no JWSDOS label here
+        var vm = NewVm(runner, capacity: 35, sides: DiskSides.Single);
+
+        vm.MountBytes(bytes, "VOLORG");
+
+        Assert.Equal(DiskDirectoryFormat.PdosWorking,
+            runner.Machine.Fdc!.GetDisk(0)!.DetectDirectoryFormat());
+        Assert.Contains("Track/Sector", vm.DirectoryHeader);
+        Assert.DoesNotContain("Side", vm.DirectoryHeader);
+        Assert.Equal(2, vm.Programs.Count);
+
+        var volorgRow = Assert.Single(vm.Programs, row => row.Contains("VOLORG"));
+        Assert.Contains("T2-T5", volorgRow); // records 4-18 -> track 2 through track 5
+        Assert.Contains((44 * 256).ToString(), volorgRow); // sector count 0x2C=44 x 256 bytes
+
+        var volinfoRow = Assert.Single(vm.Programs, row => row.Contains("VOLINFO"));
+        Assert.Contains("T3", volinfoRow); // records 8-11 -> track 3 only, no dash
+        Assert.DoesNotContain("T3-", volinfoRow);
 
         runner.Dispose();
     }

@@ -137,14 +137,75 @@ public class RealFixtureTests
     }
 
     [Fact]
-    public void VolorgDsk_DetectDirectoryFormat_ReturnsUnknown_NotFalsePositiveJwsdos()
+    public void VolorgDsk_DetectDirectoryFormat_ReturnsPdosWorking()
     {
         // A real PDOS working-disk fixture: no JWSDOS label, and the bytes sitting at JWSDOS's
-        // directory offset (0x1800) are arbitrary binary data, not plausible filenames. Milestone
-        // 22a (not yet implemented) is what will eventually recognize this as PdosWorking; for
-        // now it must fall through to Unknown rather than a false-positive Jwsdos.
+        // directory offset (0x1800) are arbitrary binary data, not plausible filenames — correctly
+        // NOT Jwsdos. Milestone 22a's disambiguation validates track 1's own first FCB slot
+        // (VOLORG, which legitimately carries the 0xF3 flag value at position 1 — the exact real
+        // case this disambiguation exists for, docs/P2000T-disk-formats.md §7 item 8) and finds it
+        // plausible, so this is PdosWorking — no longer Unknown now that milestone 22a is implemented.
         var disk = new DskImage(DiskPath("volorg.dsk"));
-        Assert.Equal(DiskDirectoryFormat.Unknown, disk.DetectDirectoryFormat());
+        Assert.Equal(DiskDirectoryFormat.PdosWorking, disk.DetectDirectoryFormat());
+    }
+
+    [Fact]
+    public void DiskBasicDsk_DetectDirectoryFormat_ReturnsPdosSystem_NotFalsePositiveDirectory()
+    {
+        // A real official Philips "Disk BASIC 24K" system disk (owner-supplied): track 1 offset 0
+        // is the genuine 0xF3 boot signature, and the REST of that first FCB-shaped slot is real
+        // Z80 boot code, not a plausible filename/allocation-map — the disambiguation logic
+        // (docs/P2000T-disk-formats.md §7 item 8) exists precisely to get this case right instead
+        // of reporting a false-positive PdosWorking directory.
+        var disk = new DskImage(DiskPath("diskbasic_1.6uk.dsk"));
+        Assert.Equal(DiskDirectoryFormat.PdosSystem, disk.DetectDirectoryFormat());
+    }
+
+    // ---- PDOS FCB directory parse (project CLAUDE.md §13 milestone 22a; docs/P2000T-disk-formats.md
+    // §6a) -------------------------------------------------------------------------------------------
+
+    [Fact]
+    public void VolorgDsk_ReadPdosDirectory_ReturnsBothRealEntries_InOrder()
+    {
+        var disk = new DskImage(DiskPath("volorg.dsk"));
+        var entries = disk.ReadPdosDirectory();
+
+        Assert.Equal(2, entries.Count);
+        Assert.Equal("VOLORG", entries[0].Name);
+        Assert.Equal("BAS", entries[0].Extension);
+        Assert.Equal("VOLINFO", entries[1].Name);
+        Assert.Equal("BAS", entries[1].Extension);
+    }
+
+    [Fact]
+    public void VolorgDsk_ReadPdosDirectory_Volorg_HasConfirmedSizeAndTrackRange()
+    {
+        // docs/P2000T-disk-formats.md §6a: VOLORG's real allocation map is
+        // [04,05,06,07,0C,0D,0E,0F,10,11,12] (11 records, exact-fit sector count 0x2C=44) — the
+        // 0xF3-flagged-but-still-valid case this whole disambiguation feature exists for.
+        var disk = new DskImage(DiskPath("volorg.dsk"));
+        var volorg = disk.ReadPdosDirectory().Single(e => e.Name == "VOLORG");
+
+        Assert.Equal(44 * 256, volorg.FileLength);
+        Assert.Equal(2, volorg.StartTrack); // first record 0x04 -> track (4/4)+1 = 2
+        Assert.Equal(5, volorg.EndTrack);   // last record 0x12=18 -> track (18/4)+1 = 5
+        Assert.Equal(44, volorg.TotalSectors); // 11 records x 4, exact fit
+    }
+
+    [Fact]
+    public void VolorgDsk_ReadPdosDirectory_Volinfo_HasConfirmedSizeAndTrackRange()
+    {
+        // docs/P2000T-disk-formats.md §6a/§7 item 8: VOLINFO's real allocation map is
+        // [08,09,0A,0B] (4 records, track 3 exactly — independently confirmed via the real
+        // interleave-reconstruction finding, "VOLINFO.BAS (track 3, records 8-11)"), sector count
+        // 0x0E=14 with 2 sectors' slack (16 allocated, 14 real).
+        var disk = new DskImage(DiskPath("volorg.dsk"));
+        var volinfo = disk.ReadPdosDirectory().Single(e => e.Name == "VOLINFO");
+
+        Assert.Equal(14 * 256, volinfo.FileLength);
+        Assert.Equal(3, volinfo.StartTrack); // first record 0x08=8 -> track (8/4)+1 = 3
+        Assert.Equal(3, volinfo.EndTrack);   // last record 0x0B=11 -> track (11/4)+1 = 3
+        Assert.Equal(16, volinfo.TotalSectors); // 4 records x 4
     }
 
     // ---- Side / start-end sector fields (project CLAUDE.md §13 milestone 22) ---------------------

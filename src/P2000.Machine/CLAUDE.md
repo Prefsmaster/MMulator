@@ -1556,6 +1556,61 @@ marked synced. Do NOT edit the reference doc from this project.
 - **Synced:** yes (2026-07-05, into P2000T-reference.md + device guides)
 -->
 
+### 2026-07-28 — Milestone 22a IMPLEMENTED: PDOS FCB directory reader + system-disk disambiguation
+- **Trigger:** owner decision (reference doc §3a same RESOLVED block; `docs/P2000T-disk-formats.md`
+  §6a for the FCB byte-level spec, §7 item 8 for the disambiguation this milestone implements).
+  Second of the three-part split — depends on milestone 22's `DetectDirectoryFormat()` dispatch
+  (fills in the `PdosWorking`/`PdosSystem` branches it stubbed to `Unknown`).
+- **Added:** `DskImage.ReadPdosDirectory()` (parses all 128 fixed 32-byte FCB slots on track 1,
+  raw `0x0000`, folding continuation FCBs sharing a name+extension into one logical
+  `PdosDirectoryEntry`) and the disambiguation logic in `DetectDirectoryFormat()`: validate the
+  FIRST FCB slot's name/extension/sector-count/allocation-map (`IsPlausiblePdosFcb`) regardless of
+  what position 1 says; if plausible, `PdosWorking` (even if position 1 happens to be `0xF3` — a
+  real per-file flag value, not the system-disk marker); if not plausible AND byte 0 is genuinely
+  `0xF3`, `PdosSystem`; otherwise `Unknown` (neither format matched at all — this last branch isn't
+  explicitly spelled out in the milestone text but follows directly from reference doc §3a point 3
+  and milestone 22's own original stub behavior).
+- **Sane-sector-count check, not otherwise specified by the source doc:** a slot's own sector-count
+  byte (position 16) must satisfy `ceil(sectorCount / 4) == recordCount` (real record count from
+  its allocation map) — confirmed to hold EXACTLY across all three known real/worked examples
+  (`docs/P2000T-disk-formats.md` §6a: VOLORG 44/11 exact fit, VOLINFO 14/4 with 2 sectors' slack,
+  the source docx's own 27/7 worked example), so used as the "sane range" validation the milestone
+  asked for without further specifying the exact bound.
+- **Found, correcting the milestone/reference-doc's own shorthand:** both docs describe the
+  track/sector display formula as "start track = first record ÷ 4" (no `+1`). Real confirmed data
+  contradicts a literal reading of that: `docs/P2000T-disk-formats.md` §6a's own independently-
+  reconstructed-interleave finding states plainly **"`VOLINFO.BAS` (track 3, records 8-11)"** —
+  and `8 ÷ 4 = 2`, not `3`. The doc's OWN separately-stated track↔record mapping ("track N's four
+  records are numbered `(N-1)×4` through `(N-1)×4+3`") resolves this: 1-based track = `record ÷ 4
+  + 1`. Implemented with the `+1`; confirmed exactly against both real `volorg.dsk` entries
+  (`RecordToTrack`, verified: record 8 → track 3, matching the doc's own quoted fact). Flagging
+  here since the "resolved display formula" phrasing in both the reference doc and this file's own
+  milestone 22a text needs this correction synced.
+- **Continuation-FCB folding — an assumption, not sourced (no real multi-FCB fixture exists):**
+  each contributing FCB's own sector-count byte (position 16) is SUMMED for the folded entry's
+  total `FileLength`, and their allocation maps are concatenated in ascending position-1 order for
+  the combined track range. Exercised only by a synthetic test
+  (`ReadPdosDirectory_ContinuationFcbs_FoldIntoOneEntry_WithCombinedSectorCount`) — flagging this
+  as an assumption in case a real multi-FCB disk ever surfaces to confirm or correct it.
+- **Real-fixture confirmation:** `volorg.dsk` (`VOLORG`/`VOLINFO`) — `VOLORG`'s FCB carries
+  position 1 = `0xF3` and still validates as a plausible entry, exactly the real case this
+  disambiguation exists for; `DetectDirectoryFormat()` now returns `PdosWorking` for it (was
+  `Unknown` under milestone 22's stub). The owner-supplied real "Disk BASIC 24K" system-disk
+  fixture (`assets/Disks/diskbasic_1.6uk.dsk`, confirmed `0xF3` at track 1 offset 0, genuine Z80
+  boot code — not a plausible FCB — occupying the rest of that slot) now returns `PdosSystem`,
+  not a false-positive directory. Note: the existing `getdos`/§6 boot-path tests
+  (`tests/P2000.Machine.Tests/Boot/DiskBootTests.cs`) use a SYNTHETIC `0xF3`-patched `Spel1.dsk`
+  copy, not this real fixture — this milestone's tests are the first to use the real one.
+- **Applies to:** `src/P2000.Machine/Devices/Fdc/DskImage.cs` (`ReadPdosDirectory`,
+  `PdosDirectoryEntry`, `IsPlausiblePdosFcb`, `TryCountPdosAllocationMapRecords`,
+  `EnumeratePdosFcbSlots`, `ReadPdosFcbSlot`, `RecordToTrack`),
+  `tests/P2000.Machine.Tests/Devices/Fdc/DskImageTests.cs`,
+  `tests/P2000.Machine.Tests/Devices/Fdc/RealFixtureTests.cs`, `P2000.UI` milestone 15a (consumes
+  this), `docs/P2000T-disk-formats.md` §6a/§7 item 8.
+- **Synced:** no — the track-formula correction above should be synced into reference doc §3a's
+  "record ÷ 4" phrasing (or at least cross-referenced) since it currently under-specifies the
+  needed `+1`.
+
 ### 2026-07-28 — Milestone 22 IMPLEMENTED: `DiskDirectoryFormat` detection dispatch (JWSDOS-only part)
 - **Trigger:** owner decision (reference doc §3a "RESOLVED — the Disk Drives window's directory
   browse table gets format auto-detection..."), first of a three-part split — this milestone

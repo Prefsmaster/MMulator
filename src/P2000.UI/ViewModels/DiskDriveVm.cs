@@ -89,6 +89,13 @@ public sealed partial class DiskDriveVm : ObservableObject
     private static readonly string JwsdosDirectoryHeader =
         $"{"Filename",-16} {"Ty",-2} {"Size",8}  {"Side",-6}  {"Track/Sector"}";
 
+    /// <summary>PDOS has no file-type byte (unlike JWSDOS's <c>DE_filetype</c>) and no double-
+    /// sided concept at all (project CLAUDE.md §14 milestone 15a; docs/P2000T-disk-formats.md
+    /// §6a's hard geometry ceiling rules out anything wider than single-sided) — no "Ty" or
+    /// "Side" column here, matching the JWSDOS header's overall shell otherwise.</summary>
+    private static readonly string PdosDirectoryHeader =
+        $"{"Filename",-16} {"Size",8}  {"Track/Sector"}";
+
     /// <summary>Raised when a save error should be surfaced as a dialog.</summary>
     public event Action<string>? ShowMessageRequested;
 
@@ -585,22 +592,40 @@ public sealed partial class DiskDriveVm : ObservableObject
         DirectoryHeader = LegacyDirectoryHeader;
     }
 
-    /// <summary>Dispatches on <see cref="DskImage.DetectDirectoryFormat"/> (machine milestone 22)
-    /// and (re)builds both <see cref="Programs"/> and <see cref="DirectoryHeader"/> for the
-    /// mounted <paramref name="disk"/>. For <see cref="DiskDirectoryFormat.Jwsdos"/>, renders
-    /// milestone 14's original three columns plus two new ones (Side, Track/Sector). Every other
-    /// format — <see cref="DiskDirectoryFormat.PdosWorking"/>/<see cref="DiskDirectoryFormat.PdosSystem"/>/
-    /// <see cref="DiskDirectoryFormat.Unknown"/>, all currently stubbed to <c>Unknown</c> at the
-    /// machine layer — keeps milestone 14's ORIGINAL rendering unchanged (this milestone doesn't
-    /// build any PDOS-specific or fallback-view UI; that's milestones 15a/15b). The format-
-    /// detection logic itself lives entirely in <c>DskImage</c> — nothing here re-derives it.</summary>
+    /// <summary>Dispatches on <see cref="DskImage.DetectDirectoryFormat"/> (machine milestones
+    /// 22/22a) and (re)builds both <see cref="Programs"/> and <see cref="DirectoryHeader"/> for
+    /// the mounted <paramref name="disk"/>. <see cref="DiskDirectoryFormat.Jwsdos"/> renders
+    /// milestone 14's original three columns plus two new ones (Side, Track/Sector).
+    /// <see cref="DiskDirectoryFormat.PdosWorking"/> (milestone 15a) renders PDOS's own shell —
+    /// filename, size, track/sector — with NO Side column (PDOS has no double-sided concept) and
+    /// continuation FCBs already pre-folded into one row each by the machine layer. Every other
+    /// format — <see cref="DiskDirectoryFormat.PdosSystem"/>/<see cref="DiskDirectoryFormat.Unknown"/>
+    /// — keeps milestone 14's ORIGINAL rendering unchanged (this milestone doesn't build the
+    /// fallback dump view; that's milestone 15b). The format-detection/parse logic itself lives
+    /// entirely in <c>DskImage</c> — nothing here re-derives it.</summary>
     private void RefreshDirectoryTable(DskImage disk)
     {
+        var format = disk.DetectDirectoryFormat();
+
+        if (format == DiskDirectoryFormat.PdosWorking)
+        {
+            var pdosEntries = disk.ReadPdosDirectory();
+            var pdosRows = new string[pdosEntries.Count];
+            for (var i = 0; i < pdosEntries.Count; i++)
+            {
+                var e = pdosEntries[i];
+                var trackRange = FormatPdosTrackRange(e.StartTrack, e.EndTrack);
+                pdosRows[i] = $"{e.FullName,-16} {e.FileLength,8}  {trackRange}";
+            }
+            Programs = pdosRows;
+            DirectoryHeader = PdosDirectoryHeader;
+            return;
+        }
+
         // Side 2 directory location is unconfirmed (docs/P2000T-disk-formats.md §7 item 2) —
         // ReadDirectory() itself only ever reads side 1's confirmed active region regardless
         // of the mounted image's Sides; nothing extra needed here to enforce that.
         var entries = disk.ReadDirectory();
-        var format = disk.DetectDirectoryFormat();
 
         if (format != DiskDirectoryFormat.Jwsdos)
         {
@@ -632,6 +657,15 @@ public sealed partial class DiskDriveVm : ObservableObject
         Programs = rows;
         DirectoryHeader = JwsdosDirectoryHeader;
     }
+
+    /// <summary>Formats a PDOS entry's pre-derived start/end track (already <c>record ÷ 4 + 1</c>
+    /// from the machine layer, milestone 22a) as a compact range — e.g. "T4-T6" for a file
+    /// spanning multiple tracks, or just "T3" when it stays within one (docs/P2000T-disk-formats.md
+    /// §6a/§7 item 8's resolved display formula: no physical-interleave conversion, no sector-
+    /// within-track figure — PDOS's own allocation granularity is the whole record/track, unlike
+    /// JWSDOS's per-sector precision).</summary>
+    private static string FormatPdosTrackRange(int startTrack, int endTrack) =>
+        startTrack == endTrack ? $"T{startTrack}" : $"T{startTrack}-T{endTrack}";
 
     /// <summary>Formats a JWSDOS entry's <c>DE_start_sector</c>/<c>DE_end_sector</c> (logical
     /// sector numbers spanning the whole side) as a compact track/sector range, via the confirmed

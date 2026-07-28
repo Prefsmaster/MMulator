@@ -519,10 +519,129 @@ public class DiskDriveVmTests
         return image;
     }
 
-    [Fact]
-    public void DirectoryHeader_IsFormattedColumnRow()
+    /// <summary>Pokes one 32-byte JWSDOS directory entry into a synthetic image's side-1
+    /// directory region (docs/P2000T-disk-formats.md §4) — same layout as
+    /// <c>DskImageTests.WriteDirectoryEntry</c>, duplicated here so this file doesn't need an
+    /// inter-project test dependency for one helper.</summary>
+    private static void WriteDirectoryEntry(byte[] image, int slotIndex, string filename,
+        string extension, char fileType, ushort fileLength, ushort transferAddress,
+        byte head, ushort startSector, ushort endSector)
     {
-        Assert.Contains("Filename", DiskDriveVm.DirectoryHeader);
+        var offset = 0x1800 + slotIndex * 32;
+        var nameBytes = System.Text.Encoding.ASCII.GetBytes(filename.PadRight(16));
+        var extBytes = System.Text.Encoding.ASCII.GetBytes(extension.PadRight(3));
+        nameBytes.CopyTo(image, offset);
+        extBytes.CopyTo(image, offset + 16);
+        image[offset + 19] = (byte)fileType;
+        image[offset + 20] = (byte)(fileLength & 0xFF);
+        image[offset + 21] = (byte)(fileLength >> 8);
+        image[offset + 22] = (byte)(transferAddress & 0xFF);
+        image[offset + 23] = (byte)(transferAddress >> 8);
+        image[offset + 24] = head;
+        image[offset + 25] = (byte)(startSector & 0xFF);
+        image[offset + 26] = (byte)(startSector >> 8);
+        image[offset + 27] = (byte)(endSector & 0xFF);
+        image[offset + 28] = (byte)(endSector >> 8);
+    }
+
+    private static string FindRepoRoot()
+    {
+        var dir = AppContext.BaseDirectory;
+        while (dir is not null)
+        {
+            if (File.Exists(Path.Combine(dir, "MMulator.sln")))
+                return dir;
+            dir = Path.GetDirectoryName(dir);
+        }
+        throw new DirectoryNotFoundException("Could not locate repo root.");
+    }
+
+    private static string DiskFixturePath(string filename) =>
+        Path.Combine(FindRepoRoot(), "assets", "Disks", filename);
+
+    [AvaloniaFact]
+    public async Task DirectoryHeader_NoImageMounted_IsLegacyThreeColumnHeader()
+    {
+        var runner = await NewFloppyRunnerAsync();
+        var vm = NewVm(runner);
+
+        Assert.Contains("Filename", vm.DirectoryHeader);
+        Assert.DoesNotContain("Side", vm.DirectoryHeader);
+        Assert.DoesNotContain("Track/Sector", vm.DirectoryHeader);
+
+        runner.Dispose();
+    }
+
+    // ---- Directory-format auto-detection + Side/Track-Sector columns (project CLAUDE.md §14
+    // milestone 15; machine ms.22's DetectDirectoryFormat) --------------------------------------
+
+    [AvaloniaFact]
+    public async Task MountBytes_JwsdosImage_MixedSides_ShowsSideAndTrackSectorColumns()
+    {
+        // No real fixture mixes side-1 (DE_head=0) and side-2 (DE_head=1) entries in one
+        // directory — Spel1.dsk's real entries are ALL side 2 (see the real-fixture test below).
+        // This synthetic image is what exercises the Side-1-vs-Side-2 label distinction itself.
+        var image = BuildSyntheticImage(tracks: 40, sides: 2);
+        WriteDirectoryEntry(image, 0, "ONESIDE", "BAS", 'B', 256, 0x6547, head: 0, startSector: 1, endSector: 1);
+        WriteDirectoryEntry(image, 1, "TWOSIDE", "BAS", 'B', 256, 0x6547, head: 1, startSector: 17, endSector: 17);
+
+        var runner = await NewFloppyRunnerAsync();
+        var vm = NewVm(runner, capacity: 40, sides: DiskSides.Double);
+
+        vm.MountBytes(image, "MIXED");
+
+        Assert.Contains("Side", vm.DirectoryHeader);
+        Assert.Contains("Track/Sector", vm.DirectoryHeader);
+        Assert.Equal(2, vm.Programs.Count);
+        Assert.Contains("Side 1", vm.Programs[0]);
+        Assert.Contains("T1 S1", vm.Programs[0]); // logical sector 1 -> track 1, sector 1
+        Assert.Contains("Side 2", vm.Programs[1]);
+        Assert.Contains("T2 S1", vm.Programs[1]); // logical sector 17 -> track 2, sector 1
+
+        runner.Dispose();
+    }
+
+    [AvaloniaFact]
+    public async Task MountBytes_RealSpel1Dsk_ShowsSide2AndCorrectTrackSectorRange()
+    {
+        // Spel1.dsk's real active-directory entries all carry DE_head=1 (docs/P2000T-disk-formats.md
+        // §4) — confirmed real per-disk data, not a fabricated fixture. AUTORUN's confirmed
+        // start/end sector (622/632, P2000.Machine.Tests' RealFixtureTests) maps via the 16-
+        // sectors/track formula to track 39 sector 14 through track 40 sector 8.
+        var bytes = await File.ReadAllBytesAsync(DiskFixturePath("Spel1.dsk"));
+        var runner = await NewFloppyRunnerAsync(); // configured 40-track/single, overridden by the real label
+        var vm = NewVm(runner);
+
+        vm.MountBytes(bytes, "SPEL1");
+
+        Assert.Contains("Side", vm.DirectoryHeader);
+        Assert.Equal(18, vm.Programs.Count);
+        Assert.All(vm.Programs, row => Assert.Contains("Side 2", row));
+        var autorunRow = Assert.Single(vm.Programs, row => row.Contains("AUTORUN"));
+        Assert.Contains("T39 S14-T40 S8", autorunRow);
+
+        runner.Dispose();
+    }
+
+    [AvaloniaFact]
+    public async Task MountBytes_NonJwsdosDetectedFormat_KeepsLegacyTableUnchanged()
+    {
+        // volorg.dsk is a real PDOS working disk: no JWSDOS label, garbage bytes at the JWSDOS
+        // directory offset — DetectDirectoryFormat (machine ms.22, still stubbed for PDOS) reports
+        // Unknown here, so this milestone's own instruction applies: keep milestone 14's ORIGINAL
+        // rendering (no Side/Track-Sector columns) exactly as it was before this change.
+        var bytes = await File.ReadAllBytesAsync(DiskFixturePath("volorg.dsk"));
+        var runner = await NewFloppyRunnerAsync(); // 40-track/single default — no label to override it
+        var vm = NewVm(runner);
+
+        vm.MountBytes(bytes, "VOLORG");
+
+        Assert.DoesNotContain("Side", vm.DirectoryHeader);
+        Assert.DoesNotContain("Track/Sector", vm.DirectoryHeader);
+        Assert.Equal(DiskDirectoryFormat.Unknown,
+            runner.Machine.Fdc!.GetDisk(0)!.DetectDirectoryFormat());
+
+        runner.Dispose();
     }
 
     // ---- Geometry-mismatch dialog decision logic (project CLAUDE.md milestone 14e; machine

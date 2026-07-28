@@ -1394,6 +1394,97 @@ is NO machine-layer runner milestone here — it's promoted in with the external
 
 ---
 
+22. **Directory-format detection dispatch + JWSDOS side/track-sector exposure** (NEW, owner
+    decision 2026-07-28, reference doc §3a "RESOLVED — the Disk Drives window's directory browse
+    table gets format auto-detection..." block; `docs/P2000T-disk-formats.md` §1/§4/§6a for the
+    underlying byte facts). First of a three-part split — this milestone covers only the part
+    that's fully unblocked; 22a/22b are placeholders pending owner decisions tracked in the
+    reference doc block and `docs/P2000T-disk-formats.md` §7 item 8.
+    - **Add a `DiskDirectoryFormat` result** (`Jwsdos` / `PdosWorking` / `PdosSystem` /
+      `Unknown`) and a detection entry point — e.g. `DskImage.DetectDirectoryFormat()` — that
+      tries JWSDOS's directory pattern first (reuse/extend the existing `ReadDirectory()`
+      validity checks — plausible printable-ASCII filenames at the known directory offset, not
+      just "bytes are present"), matching the order the owner's original request specified
+      (JWSDOS, then PDOS, then PDOS-system marker, then unknown). **Do not implement the PDOS or
+      PDOS-system/unknown branches of this dispatch yet** — those depend on milestone 22a's still-
+      open disambiguation decision; stub them to return `Unknown` for now with a clear TODO
+      pointing at 22a, so this milestone doesn't block on that decision.
+    - **Extend the JWSDOS directory-entry type with two new fields**, both derived from data the
+      existing M19 reader already parses per entry, not requiring any new byte-level parsing:
+      **Side** (0/1, straight from `DE_head`, offset 24) and **start/end sector** (already read
+      as `DE_start_sector`/`DE_end_sector`) — expose these on the entry so the UI (milestone 15)
+      can render its new Side and Track/Sector columns without re-deriving anything.
+    - **Tests:** `DskImageTests` — `DetectDirectoryFormat()` returns `Jwsdos` for every existing
+      JWSDOS fixture (`Spel1.dsk`, `jwssytem.dsk`); a JWSDOS directory entry's `Side`/start-end-
+      sector fields match the values already independently confirmed in this doc's findings log
+      for those fixtures; a non-JWSDOS or garbage image returns `Unknown` (not an exception, not
+      a false-positive `Jwsdos`). → commit.
+    - **Applies to:** `src/P2000.Machine/Devices/Fdc/DskImage.cs`, `P2000.UI` milestone 15
+      (consumes this), `docs/P2000T-disk-formats.md` §6a/§7 item 8.
+
+22a. **PDOS FCB directory reader** (NEW, owner decision 2026-07-28, fully unblocked — reference
+    doc §3a same RESOLVED block; `docs/P2000T-disk-formats.md` §6a for the full byte-level FCB
+    spec and §7 item 8 for the disambiguation decision this milestone implements). Depends on
+    milestone 22's `DiskDirectoryFormat` dispatch (implements the `PdosWorking`/`PdosSystem`
+    branches that milestone 22 stubbed to `Unknown`).
+    - **Disambiguation algorithm (fills in milestone 22's stub) — RESOLVED, owner, 2026-07-28:**
+      read track 1, offset 0. If it is NOT `0xF3`, and positions 2–9/10–12/16/17–32 (name,
+      extension, sector count, allocation map) look like a plausible FCB (printable ASCII/space
+      name, sector count in a sane range, allocation-map entries never referencing records
+      `00`–`03`), treat this as `PdosWorking` and parse the full directory (below). If it IS
+      `0xF3`, run the SAME validation on the rest of the entry anyway — if it still looks like a
+      plausible FCB, this is `PdosWorking` (the `0xF3` is that file's own flag value, not the
+      system-disk marker); only report `PdosSystem` if the validation fails. This is the one
+      genuine ambiguity in the format — the whole point of validating before trusting byte 0.
+    - **Directory parse:** walk all 128 fixed 32-byte slots on track 1 (4096 bytes ÷ 32 B/FCB,
+      confirmed full-track fit, no separate end-of-list terminator needed — an unused slot is
+      presumed all-zero, per `docs/P2000T-disk-formats.md` §6a). For each non-empty slot: decode
+      name (positions 2–9, space-trimmed), extension (positions 10–12), sector count (position
+      16 × 256 bytes for a "size" figure matching the existing JWSDOS column's convention), and
+      the allocation map (positions 17–32, stopping at the first `0x00` record-number entry).
+      **Position 1 is a continuation-sequence index, not a per-file flag in the general case**
+      (`0x00` = primary FCB; `0x01`/`0x02`/… = additional FCBs for the same filename+extension
+      when one FCB's 16-record map isn't enough) — **except** when validation determines a
+      specific `0xF3` value is the system-disk-adjacent flag case above; group/fold continuation
+      FCBs sharing a name+extension into one logical file entry (combine their allocation maps
+      for the purposes of the track/sector-range and total-sector-count figures the UI needs) —
+      your call whether that folding happens here or in the UI layer, whichever is simpler
+      against the real types.
+    - **Expose, per logical file entry:** name, extension, size (sector count × 256), and either
+      the raw allocation-map record numbers or the pre-derived start/end-track + sector-count
+      trio (UI milestone 15a's resolved display formula: start track = first record ÷ 4, end
+      track = last record ÷ 4, sector count = record-count × 4 — needs no physical-interleave
+      exposure, this is plain arithmetic on record numbers).
+    - **Tests:** a real or constructed PDOS working-disk fixture (the owner-supplied `volorg.dsk`
+      is the known real example, `VOLORG`/`VOLINFO`, if available as a test fixture — confirm
+      with the owner/existing test assets before fabricating a synthetic one) parses both real
+      entries correctly (name, extension, size, track/sector range) including the confirmed
+      `VOLORG` = `0xF3`-flagged-but-still-a-valid-entry case, which is exactly this milestone's
+      disambiguation logic exercised for real; a genuine PDOS system disk (the existing
+      `0xF3`-signed "Disk BASIC 24K" fixture, if present — machine milestone `getdos`/§6 testing
+      already has one) returns `PdosSystem`, not a false-positive directory; a synthetic
+      multi-FCB (continuation) fixture, if one is worth constructing, folds correctly into one
+      logical entry with a combined sector count.
+    - **Applies to:** `src/P2000.Machine/Devices/Fdc/DskImage.cs`, UI milestone 15a (consumes
+      this), `docs/P2000T-disk-formats.md` §6a/§7 item 8.
+
+22b. **Raw sector-1 read for the system-disk/unknown fallback dump view** (NEW, owner decision
+    2026-07-28, fully unblocked). Triggered whenever milestone 22's dispatch returns
+    `PdosSystem` or `Unknown`.
+    - Likely needs no new API at all if an equivalent to `DskImage.ReadSector` already exists for
+      other purposes (the FDC's own read/write path reads sectors constantly) — confirm and
+      reuse rather than adding a redundant method. If nothing suitable is exposed publicly today,
+      add a minimal `DskImage.ReadRawSector(track, side, sector) → byte[256]` (or equivalent)
+      that the UI can call for exactly this dump view — read-only, no FDC/command-sequence
+      semantics needed, just raw bytes off the mounted image.
+    - **Tests:** reading sector 1 off a known-content fixture returns the expected 256 bytes
+      byte-for-byte; reading past a short/padded mount returns the same `0x00` fill-byte
+      convention already established for out-of-range reads elsewhere (milestone 20d).
+    - **Applies to:** `src/P2000.Machine/Devices/Fdc/DskImage.cs`, UI milestone 15b (consumes
+      this).
+
+---
+
 ## 14. Deferred (build the seams now, implement later)
 
 Do NOT implement these in this build, but keep the interfaces ready (they're specced in the
@@ -1464,6 +1555,39 @@ marked synced. Do NOT edit the reference doc from this project.
 - **Applies to:** reference doc §… / <file/port>
 - **Synced:** yes (2026-07-05, into P2000T-reference.md + device guides)
 -->
+
+### 2026-07-28 — Milestone 22 IMPLEMENTED: `DiskDirectoryFormat` detection dispatch (JWSDOS-only part)
+- **Trigger:** owner decision (reference doc §3a "RESOLVED — the Disk Drives window's directory
+  browse table gets format auto-detection..."), first of a three-part split — this milestone
+  covers only the fully-unblocked JWSDOS-detection piece; PDOS/PDOS-system detection is milestone
+  22a, stubbed here.
+- **Added:** `DiskDirectoryFormat` enum (`Jwsdos`/`PdosWorking`/`PdosSystem`/`Unknown`) and
+  `DskImage.DetectDirectoryFormat()`. JWSDOS detection reuses `ReadDirectory()`'s own "non-empty
+  slot" rule, then additionally requires every non-empty slot's filename+extension+filetype bytes
+  (offsets 0-19) to be plausible printable ASCII/space — matching this codebase's existing self-
+  consistency-checking spirit (`Mount`'s label-length validation). An all-empty directory (every
+  slot zero-padded, e.g. `jws-sytem.dsk`'s real empty track 2) still returns `Jwsdos`, not
+  `Unknown` — there's nothing there to contradict a valid, just-empty JWSDOS directory. PDOS/PDOS-
+  system branches are stubbed to `Unknown` with a `// TODO: milestone 22a` pointer, per the
+  milestone's explicit "don't implement PDOS detection yet" instruction.
+- **Found, not assumed going in:** the `DiskDirectoryEntry.Head`/`StartSector`/`EndSector` fields
+  the milestone spec asked to "extend the entry with" were **already exposed** — milestone 19's
+  original `ReadDirectory()` implementation already parsed and surfaced all three. Nothing to add
+  there; the UI (ms.15) reads `Head`/`StartSector`/`EndSector` directly, no field rename.
+- **Real-fixture confirmation used for tests:** `volorg.dsk` (a real PDOS working disk, owner-
+  supplied) has no JWSDOS label AND arbitrary binary (non-printable-ASCII) bytes at JWSDOS's
+  directory offset (`0x1800`) — an ideal real "must not false-positive as Jwsdos" case, used
+  directly rather than fabricating synthetic garbage for that specific test. Also confirmed
+  (independent of this milestone, useful for UI ms.15's Track/Sector column): `Spel1.dsk`'s
+  `AUTORUN` entry's confirmed `StartSector`/`EndSector` (622/632) maps via the 16-sectors/track
+  linear formula to track 39 sector 14 through track 40 sector 8.
+- **Applies to:** `src/P2000.Machine/Devices/Fdc/DskImage.cs` (`DiskDirectoryFormat`,
+  `DetectDirectoryFormat`, `IsPlausibleJwsdosDirectory`, `EnumerateDirectorySlots`),
+  `tests/P2000.Machine.Tests/Devices/Fdc/DskImageTests.cs`,
+  `tests/P2000.Machine.Tests/Devices/Fdc/RealFixtureTests.cs`, `P2000.UI` milestone 15 (consumes
+  this), `docs/P2000T-disk-formats.md` §1/§4/§6a/§7 item 8.
+- **Synced:** no — reference doc §3a's RESOLVED block already describes the target end-state;
+  nothing here contradicts or extends it.
 
 ### 2026-07-27 — Housekeeping: `docs/JWSDOS-format.md` renamed to `docs/P2000T-disk-formats.md`
 - **Trigger:** owner decision (`docs/P2000T-disk-formats.md` §8 provenance entry) — the doc grew a

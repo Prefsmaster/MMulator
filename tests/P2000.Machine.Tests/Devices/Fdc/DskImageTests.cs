@@ -561,6 +561,55 @@ public class DskImageTests
         for (var i = 100; i < 256; i++) Assert.Equal(0x00, sector[i]);
     }
 
+    // ---- DetectDirectoryFormat (project CLAUDE.md §13 milestone 22; reference doc §3a) --------
+
+    [Fact]
+    public void DetectDirectoryFormat_PlausibleAsciiEntries_ReturnsJwsdos()
+    {
+        var image = BuildSyntheticImage(tracks: 40, sides: 2);
+        WriteDirectoryEntry(image, 0, "TRALIEENSPEL", "BAS", 'B', 12345, 0x6547, 0, 1, 48);
+
+        var disk = new DskImage(image);
+
+        Assert.Equal(DiskDirectoryFormat.Jwsdos, disk.DetectDirectoryFormat());
+    }
+
+    [Fact]
+    public void DetectDirectoryFormat_AllEmptyDirectory_StillReturnsJwsdos()
+    {
+        // jws-sytem.dsk's real track 2 is legitimately all-zero (§2) — an empty directory is a
+        // valid, just-empty JWSDOS directory, not "unknown."
+        var image = BuildSyntheticImage(tracks: 40, sides: 2); // no entries written
+        var disk = new DskImage(image);
+
+        Assert.Equal(DiskDirectoryFormat.Jwsdos, disk.DetectDirectoryFormat());
+    }
+
+    [Fact]
+    public void DetectDirectoryFormat_NonPrintableBytesInDirectoryRegion_ReturnsUnknown_NotFalsePositiveJwsdos()
+    {
+        // A non-JWSDOS image (PDOS, garbage) has arbitrary binary data at the JWSDOS directory
+        // offset — "bytes are present" alone must not be mistaken for a plausible filename.
+        var image = BuildSyntheticImage(tracks: 40, sides: 2);
+        for (var i = 0; i < 20; i++) image[0x1800 + i] = 0x01; // non-empty, non-printable
+
+        var disk = new DskImage(image);
+
+        Assert.Equal(DiskDirectoryFormat.Unknown, disk.DetectDirectoryFormat());
+    }
+
+    [Fact]
+    public void DetectDirectoryFormat_OneImplausibleEntryAmongPlausibleOnes_ReturnsUnknown()
+    {
+        var image = BuildSyntheticImage(tracks: 40, sides: 2);
+        WriteDirectoryEntry(image, 0, "TRALIEENSPEL", "BAS", 'B', 12345, 0x6547, 0, 1, 48);
+        for (var i = 0; i < 20; i++) image[0x1800 + 32 + i] = 0x01; // slot 1: garbage, non-printable
+
+        var disk = new DskImage(image);
+
+        Assert.Equal(DiskDirectoryFormat.Unknown, disk.DetectDirectoryFormat());
+    }
+
     [Fact]
     public void ReadDirectory_OnUnpaddedShortImage_ReturnsEmpty_NotException()
     {

@@ -357,30 +357,10 @@ public sealed class DskImage
     public IReadOnlyList<DiskDirectoryEntry> ReadDirectory()
     {
         var entries = new List<DiskDirectoryEntry>();
-        var regionBuffer = new byte[DirectorySize]; // defaults to 0x00 — an empty directory
-        if (DirectoryOffset < _data.Length)
+        foreach (var (_, entry) in EnumerateDirectorySlots())
         {
-            var available = Math.Min(DirectorySize, _data.Length - DirectoryOffset);
-            _data.AsSpan(DirectoryOffset, available).CopyTo(regionBuffer);
-        }
-        ReadOnlySpan<byte> region = regionBuffer;
-        var count = DirectorySize / DirectoryEntrySize;
-
-        for (var i = 0; i < count; i++)
-        {
-            var entry = region.Slice(i * DirectoryEntrySize, DirectoryEntrySize);
-
-            // An empty slot is zero-padded (never-written) or space-padded (erased filename).
-            var filenameBytes = entry[..16];
-            var isEmpty = true;
-            foreach (var b in filenameBytes)
-            {
-                if (b != 0x00 && b != 0x20) { isEmpty = false; break; }
-            }
-            if (isEmpty) continue;
-
             var filename = System.Text.Encoding.ASCII.GetString(entry[..16]).TrimEnd();
-            var extension = System.Text.Encoding.ASCII.GetString(entry.Slice(16, 3)).TrimEnd();
+            var extension = System.Text.Encoding.ASCII.GetString(entry[16..19]).TrimEnd();
             var fileType = entry[19];
             var fileLength = (ushort)(entry[20] | (entry[21] << 8));
             var transferAddress = (ushort)(entry[22] | (entry[23] << 8));
@@ -393,6 +373,77 @@ public sealed class DskImage
         }
 
         return entries;
+    }
+
+    /// <summary>Walks side 1's directory region (same offsets/empty-slot rule as
+    /// <see cref="ReadDirectory"/>) and yields only the non-empty 32-byte slots, each still
+    /// backed by the same underlying buffer copy — shared by <see cref="ReadDirectory"/> and
+    /// <see cref="DetectDirectoryFormat"/> so the two never drift on what counts as "empty."</summary>
+    private IEnumerable<(int Index, byte[] Entry)> EnumerateDirectorySlots()
+    {
+        var regionBuffer = new byte[DirectorySize]; // defaults to 0x00 — an empty directory
+        if (DirectoryOffset < _data.Length)
+        {
+            var available = Math.Min(DirectorySize, _data.Length - DirectoryOffset);
+            _data.AsSpan(DirectoryOffset, available).CopyTo(regionBuffer);
+        }
+        var count = DirectorySize / DirectoryEntrySize;
+
+        for (var i = 0; i < count; i++)
+        {
+            var entry = new byte[DirectoryEntrySize];
+            Array.Copy(regionBuffer, i * DirectoryEntrySize, entry, 0, DirectoryEntrySize);
+
+            // An empty slot is zero-padded (never-written) or space-padded (erased filename).
+            var isEmpty = true;
+            for (var b = 0; b < 16; b++)
+            {
+                if (entry[b] != 0x00 && entry[b] != 0x20) { isEmpty = false; break; }
+            }
+            if (isEmpty) continue;
+
+            yield return (i, entry);
+        }
+    }
+
+    /// <summary>Auto-detects which directory format this image's side-1 directory region holds
+    /// (project CLAUDE.md §13 milestone 22; reference doc §3a "RESOLVED — the Disk Drives
+    /// window's directory browse table gets format auto-detection..."). Tries JWSDOS first
+    /// (this method's own logic below); PDOS/PDOS-system/unknown are NOT yet implemented — they
+    /// depend on milestone 22a's disambiguation decision, so they all fall through to
+    /// <see cref="DiskDirectoryFormat.Unknown"/> for now.
+    ///
+    /// <b>JWSDOS check:</b> reuses the same "non-empty slot" rule as <see cref="ReadDirectory"/>,
+    /// then additionally requires every non-empty slot's filename+extension+filetype bytes
+    /// (offsets 0-19) to be plausible printable ASCII/space — matching this codebase's existing
+    /// self-consistency-checking spirit (e.g. <see cref="Mount"/>'s label-length validation): a
+    /// non-JWSDOS image (PDOS, garbage) has arbitrary binary data at this offset, which "bytes
+    /// are present" alone would wrongly accept. An all-empty directory (every slot zero-padded,
+    /// e.g. <c>jws-sytem.dsk</c>'s real empty track 2) still counts as a valid, just-empty JWSDOS
+    /// directory — there is nothing here to contradict that.</summary>
+    public DiskDirectoryFormat DetectDirectoryFormat()
+    {
+        if (IsPlausibleJwsdosDirectory()) return DiskDirectoryFormat.Jwsdos;
+
+        // TODO: milestone 22a — PDOS working-disk FCB directory detection (track 1) and the
+        // 0xF3-flagged-entry-vs-system-disk disambiguation (docs/P2000T-disk-formats.md §7 item 8).
+        // TODO: milestone 22a — PDOS-system-disk marker detection (same disambiguation).
+        return DiskDirectoryFormat.Unknown;
+    }
+
+    private bool IsPlausibleJwsdosDirectory()
+    {
+        foreach (var (_, entry) in EnumerateDirectorySlots())
+        {
+            // Filename (0-15) + extension (16-18) + filetype (19) — the fields real JWSDOS
+            // filenames/extensions occupy — must all be printable ASCII or space.
+            for (var i = 0; i < 20; i++)
+            {
+                var b = entry[i];
+                if (b < 0x20 || b > 0x7E) return false;
+            }
+        }
+        return true; // every slot empty, or every non-empty slot looked plausible
     }
 }
 
@@ -411,6 +462,32 @@ public readonly record struct DiskDirectoryEntry(
     ushort EndSector)
 {
     public string FullName => Extension.Length > 0 ? $"{Filename}.{Extension}" : Filename;
+}
+
+/// <summary>Which directory format a <see cref="DskImage"/>'s side-1 directory region holds
+/// (project CLAUDE.md §13 milestone 22; reference doc §3a "RESOLVED — the Disk Drives window's
+/// directory browse table gets format auto-detection..."), as returned by
+/// <see cref="DskImage.DetectDirectoryFormat"/>. Only <see cref="Jwsdos"/> has real detection
+/// logic so far — <see cref="PdosWorking"/>/<see cref="PdosSystem"/> are milestone 22a's still-
+/// open disambiguation (docs/P2000T-disk-formats.md §7 item 8), stubbed to fall through to
+/// <see cref="Unknown"/> until then.</summary>
+public enum DiskDirectoryFormat
+{
+    /// <summary>A JWSDOS directory (docs/P2000T-disk-formats.md §4) — real logic, milestone 22.</summary>
+    Jwsdos,
+
+    /// <summary>A PDOS working disk's FCB directory (track 1) — NOT YET DETECTED (milestone 22a
+    /// stub only; this value is never actually returned until then).</summary>
+    PdosWorking,
+
+    /// <summary>A PDOS system disk (no file directory, track 1 offset 0 = <c>0xF3</c>) — NOT YET
+    /// DETECTED (milestone 22a stub only; this value is never actually returned until then).</summary>
+    PdosSystem,
+
+    /// <summary>Neither JWSDOS nor (once milestone 22a lands) a validated PDOS directory/system
+    /// marker matched — the catch-all case, also what every non-JWSDOS image reports today since
+    /// PDOS detection isn't implemented yet.</summary>
+    Unknown,
 }
 
 /// <summary>Which host container format a <see cref="DskImage"/> was mounted from or last saved

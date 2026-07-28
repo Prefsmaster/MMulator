@@ -77,8 +77,17 @@ public sealed partial class DiskDriveVm : ObservableObject
 
     [ObservableProperty] private IReadOnlyList<string> _programs = [];
 
-    public static string DirectoryHeader { get; } =
-        $"{"Filename",-16} {"Ty",-2} {"Size",8}";
+    /// <summary>Column header for <see cref="Programs"/> — varies with the mounted disk's
+    /// detected directory format (project CLAUDE.md §14 milestone 15; machine ms.22's
+    /// <c>DetectDirectoryFormat</c>): a JWSDOS mount gets two extra columns (Side, Track/Sector),
+    /// every other format (including no disk mounted) keeps milestone 14's original three-column
+    /// header unchanged. Instance state, not the milestone-14 static constant it replaces — the
+    /// header must be able to change per-mount.</summary>
+    [ObservableProperty] private string _directoryHeader = LegacyDirectoryHeader;
+
+    private static readonly string LegacyDirectoryHeader = $"{"Filename",-16} {"Ty",-2} {"Size",8}";
+    private static readonly string JwsdosDirectoryHeader =
+        $"{"Filename",-16} {"Ty",-2} {"Size",8}  {"Side",-6}  {"Track/Sector"}";
 
     /// <summary>Raised when a save error should be surfaced as a dialog.</summary>
     public event Action<string>? ShowMessageRequested;
@@ -142,7 +151,7 @@ public sealed partial class DiskDriveVm : ObservableObject
             HasImage = true;
             ImageLabel = disk.MountedPath is { } path ? Path.GetFileNameWithoutExtension(path) : "(mounted)";
             IsWriteProtected = disk.WriteProtected;
-            Programs = FormatDirectory(disk);
+            RefreshDirectoryTable(disk);
         }
 
         var mismatch = runner.Machine.Fdc?.GetMismatch(driveIndex);
@@ -284,7 +293,7 @@ public sealed partial class DiskDriveVm : ObservableObject
         HasImage = true;
         IsWriteProtected = disk.WriteProtected;
         ImageLabel = filename;
-        Programs = FormatDirectory(disk);
+        RefreshDirectoryTable(disk);
         NotifyCommands();
 
         if (mismatch.Kind != DiskGeometryMismatchKind.None)
@@ -309,7 +318,7 @@ public sealed partial class DiskDriveVm : ObservableObject
         HasImage = false;
         ImageLabel = "No disk";
         IsWriteProtected = false;
-        Programs = [];
+        ClearDirectoryTable();
         NotifyCommands();
     }
 
@@ -343,7 +352,7 @@ public sealed partial class DiskDriveVm : ObservableObject
         fdc.MountDisk(DriveIndex, disk, mismatch);
 
         IsWriteProtected = disk.WriteProtected;
-        Programs = FormatDirectory(disk);
+        RefreshDirectoryTable(disk);
 
         if (mismatch.Kind != DiskGeometryMismatchKind.None)
             GeometryMismatchDetected?.Invoke(mismatch);
@@ -400,7 +409,7 @@ public sealed partial class DiskDriveVm : ObservableObject
         HasImage = true;
         IsWriteProtected = false;
         ImageLabel = "(blank disk)";
-        Programs = [];
+        RefreshDirectoryTable(disk); // no directory yet — an unformatted blank disk
         NotifyCommands();
     }
 
@@ -565,22 +574,85 @@ public sealed partial class DiskDriveVm : ObservableObject
         ToggleWriteProtectCommand.NotifyCanExecuteChanged();
     }
 
-    // ── Directory formatting ─────────────────────────────────────────────────────────────────
+    // ── Directory formatting (project CLAUDE.md §14 milestone 15) ──────────────────────────────
 
-    private static IReadOnlyList<string> FormatDirectory(DskImage disk)
+    /// <summary>Resets <see cref="Programs"/>/<see cref="DirectoryHeader"/> to the empty,
+    /// no-disk-mounted state — shared by eject/cancel-mount, the one place that used to just set
+    /// <c>Programs = []</c> directly.</summary>
+    private void ClearDirectoryTable()
+    {
+        Programs = [];
+        DirectoryHeader = LegacyDirectoryHeader;
+    }
+
+    /// <summary>Dispatches on <see cref="DskImage.DetectDirectoryFormat"/> (machine milestone 22)
+    /// and (re)builds both <see cref="Programs"/> and <see cref="DirectoryHeader"/> for the
+    /// mounted <paramref name="disk"/>. For <see cref="DiskDirectoryFormat.Jwsdos"/>, renders
+    /// milestone 14's original three columns plus two new ones (Side, Track/Sector). Every other
+    /// format — <see cref="DiskDirectoryFormat.PdosWorking"/>/<see cref="DiskDirectoryFormat.PdosSystem"/>/
+    /// <see cref="DiskDirectoryFormat.Unknown"/>, all currently stubbed to <c>Unknown</c> at the
+    /// machine layer — keeps milestone 14's ORIGINAL rendering unchanged (this milestone doesn't
+    /// build any PDOS-specific or fallback-view UI; that's milestones 15a/15b). The format-
+    /// detection logic itself lives entirely in <c>DskImage</c> — nothing here re-derives it.</summary>
+    private void RefreshDirectoryTable(DskImage disk)
     {
         // Side 2 directory location is unconfirmed (docs/P2000T-disk-formats.md §7 item 2) —
         // ReadDirectory() itself only ever reads side 1's confirmed active region regardless
         // of the mounted image's Sides; nothing extra needed here to enforce that.
         var entries = disk.ReadDirectory();
+        var format = disk.DetectDirectoryFormat();
+
+        if (format != DiskDirectoryFormat.Jwsdos)
+        {
+            var legacyRows = new string[entries.Count];
+            for (var i = 0; i < entries.Count; i++)
+            {
+                var e = entries[i];
+                var type = char.IsControl((char)e.FileType) ? ' ' : (char)e.FileType;
+                legacyRows[i] = $"{e.FullName,-16} {type,-2} {e.FileLength,8}";
+            }
+            Programs = legacyRows;
+            DirectoryHeader = LegacyDirectoryHeader;
+            return;
+        }
+
         var rows = new string[entries.Count];
         for (var i = 0; i < entries.Count; i++)
         {
             var e = entries[i];
             var type = char.IsControl((char)e.FileType) ? ' ' : (char)e.FileType;
-            rows[i] = $"{e.FullName,-16} {type,-2} {e.FileLength,8}";
+            // Side reflects the file's CURRENT physical side (reassignable by disk_defragment
+            // during ordinary DOS use, docs/P2000T-disk-formats.md §7 items 2-3) — NOT "which
+            // directory held the entry." Side 1 = DE_head 0, Side 2 = DE_head 1 (dir_side1_prep/
+            // dir_side2_prep, same doc §2).
+            var side = e.Head == 0 ? "Side 1" : "Side 2";
+            var trackSector = FormatTrackSectorRange(e.StartSector, e.EndSector);
+            rows[i] = $"{e.FullName,-16} {type,-2} {e.FileLength,8}  {side,-6}  {trackSector}";
         }
-        return rows;
+        Programs = rows;
+        DirectoryHeader = JwsdosDirectoryHeader;
+    }
+
+    /// <summary>Formats a JWSDOS entry's <c>DE_start_sector</c>/<c>DE_end_sector</c> (logical
+    /// sector numbers spanning the whole side) as a compact track/sector range, via the confirmed
+    /// 16-sectors/track linear formula (docs/P2000T-disk-formats.md §1/§4): e.g. "T39 S14-T40 S8"
+    /// when a file spans a track boundary, or "T2 S9-16" when it stays within one track.</summary>
+    private static string FormatTrackSectorRange(ushort startSector, ushort endSector)
+    {
+        var (startTrack, startInTrack) = ToTrackSector(startSector);
+        var (endTrack, endInTrack) = ToTrackSector(endSector);
+        return startTrack == endTrack
+            ? $"T{startTrack} S{startInTrack}-{endInTrack}"
+            : $"T{startTrack} S{startInTrack}-T{endTrack} S{endInTrack}";
+    }
+
+    /// <summary>Converts a 1-based logical sector number (spanning the whole side) into a
+    /// (1-based track, 1-based sector-within-track) pair — 16 sectors/track, confirmed
+    /// (docs/P2000T-disk-formats.md §1; e.g. logical sector 25 = track 2, sector 9).</summary>
+    private static (int Track, int SectorInTrack) ToTrackSector(int logicalSector)
+    {
+        var zeroBased = logicalSector - 1;
+        return (zeroBased / DskImage.SectorsPerTrack + 1, zeroBased % DskImage.SectorsPerTrack + 1);
     }
 
     private static Avalonia.Controls.TopLevel? GetTopLevel()

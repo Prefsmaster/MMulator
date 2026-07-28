@@ -118,6 +118,60 @@ public class RealFixtureTests
         }
     }
 
+    // ---- Directory-format auto-detection (project CLAUDE.md §13 milestone 22) -------------------
+
+    [Fact]
+    public void Spel1Dsk_DetectDirectoryFormat_ReturnsJwsdos()
+    {
+        var disk = new DskImage(DiskPath("Spel1.dsk"));
+        Assert.Equal(DiskDirectoryFormat.Jwsdos, disk.DetectDirectoryFormat());
+    }
+
+    [Fact]
+    public void JwsSytemDsk_DetectDirectoryFormat_ReturnsJwsdos()
+    {
+        // Real, legitimately-empty directory (see the test just below) — still a valid JWSDOS
+        // detection, not "unknown."
+        var disk = new DskImage(DiskPath("jws-sytem.dsk"));
+        Assert.Equal(DiskDirectoryFormat.Jwsdos, disk.DetectDirectoryFormat());
+    }
+
+    [Fact]
+    public void VolorgDsk_DetectDirectoryFormat_ReturnsUnknown_NotFalsePositiveJwsdos()
+    {
+        // A real PDOS working-disk fixture: no JWSDOS label, and the bytes sitting at JWSDOS's
+        // directory offset (0x1800) are arbitrary binary data, not plausible filenames. Milestone
+        // 22a (not yet implemented) is what will eventually recognize this as PdosWorking; for
+        // now it must fall through to Unknown rather than a false-positive Jwsdos.
+        var disk = new DskImage(DiskPath("volorg.dsk"));
+        Assert.Equal(DiskDirectoryFormat.Unknown, disk.DetectDirectoryFormat());
+    }
+
+    // ---- Side / start-end sector fields (project CLAUDE.md §13 milestone 22) ---------------------
+
+    [Fact]
+    public void Spel1Dsk_Directory_AllEntries_HaveConfirmedSideValue()
+    {
+        // docs/P2000T-disk-formats.md §4: every one of Spel1.dsk's real active-directory entries
+        // reads DE_head=1 (side 2) — a confirmed real per-disk value, not the 0 originally
+        // (mis)reported in an earlier pass of that doc.
+        var disk = new DskImage(DiskPath("Spel1.dsk"));
+        var entries = disk.ReadDirectory();
+
+        Assert.Equal(18, entries.Count);
+        Assert.All(entries, e => Assert.Equal(1, e.Head));
+    }
+
+    [Fact]
+    public void Spel1Dsk_Directory_AutorunEntry_HasConfirmedStartEndSector()
+    {
+        var disk = new DskImage(DiskPath("Spel1.dsk"));
+        var autorun = disk.ReadDirectory().Single(e => e.Filename == "AUTORUN");
+
+        Assert.Equal(622, autorun.StartSector);
+        Assert.Equal(632, autorun.EndSector);
+    }
+
     // ---- Empty-track fixture ----------------------------------------------------------------
 
     [Fact]

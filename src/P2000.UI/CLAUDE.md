@@ -1262,6 +1262,86 @@ builds did. Do not advance while the current milestone is red. Record spec corre
 
 ---
 
+15. **Disk Drives window — directory-format auto-detection + JWSDOS side/track-sector columns**
+    (NEW, owner decision 2026-07-28, reference doc §3a "RESOLVED — the Disk Drives window's
+    directory browse table gets format auto-detection..." block — read that in full before
+    starting, and `docs/P2000T-disk-formats.md` §6a for the underlying JWSDOS/PDOS byte facts).
+    **First of a three-part split (this is the only unblocked part — 15a/15b wait on two owner
+    decisions still open as of this milestone).** Depends on the machine layer's new format-
+    detection dispatch (machine milestone 22 — read that spec before starting the UI side).
+    - **Replace the milestone-14 "Directory browse table" bullet's JWSDOS-only assumption** with
+      a dispatch on whatever `DskImage`'s new format-detection API (machine milestone 22) reports.
+      For a JWSDOS-formatted disk, render the table exactly as milestone 14 already does
+      (filename, extension, type, blocks used, size) **plus two new columns:**
+      - **Side** — 0 or 1, sourced from the directory entry's `DE_head` field (already parsed by
+        the existing M19 reader, just not surfaced in the UI). Label it plainly (e.g. "Side 1" /
+        "Side 2", matching whatever convention the rest of this window already uses for side
+        numbering) — do **not** imply this is "which directory held the entry"; it's the file's
+        current physical side, reassignable by `disk_defragment` during ordinary DOS use
+        (`docs/P2000T-disk-formats.md` §7 items 2–3). Side 2 stays subject to the existing
+        milestone-14 limitation (its own directory's on-disk location is still unconfirmed) —
+        this column only concerns where each individual FILE's data sits, not where side 2's
+        directory itself is read from.
+      - **Track/sector** — derived from the entry's start/end sector via the confirmed
+        16-sectors/track linear formula (`docs/P2000T-disk-formats.md` §1/§4); show as a compact
+        range (e.g. "T3 S5–S12" or your own concise equivalent — exact display string is your
+        call, just make it unambiguous and consistent with how the status row already labels
+        track/sector elsewhere in this same window).
+    - **Format-detection dispatch itself lives at the machine layer (M22)** — this milestone only
+      consumes whatever result it returns and picks a rendering path; do not duplicate byte-
+      pattern-matching logic in the ViewModel.
+    - **Tests:** `DiskDriveVm` directory-table tests extended (not replacing milestone 14's
+      existing `Spel1.dsk`/`jwssytem.dsk` fixture coverage) — Side and Track/Sector columns
+      populate correctly against a real JWSDOS fixture with entries on both sides (if the
+      existing fixtures don't cover side 2, flag this rather than fabricating a side-2 fixture);
+      a defragmented-then-resaved fixture (if one exists) shows the POST-defragment side, not the
+      original — regression guard for the "side is current, not original" framing above.
+      → commit.
+
+15a. **PDOS FCB directory reader** (NEW, owner decision 2026-07-28, fully unblocked — reference
+    doc §3a same RESOLVED block; `docs/P2000T-disk-formats.md` §6a/§7 item 8). Depends on machine
+    milestone 22a (parse + disambiguation logic lives there; this milestone just renders it).
+    - When `DetectDirectoryFormat()` (machine milestone 22) returns `PdosWorking`, render the
+      same directory browse table shell as JWSDOS (milestone 15) but with PDOS's own fields:
+      **filename, extension, size** (sector count × 256 bytes, same "size" convention as the
+      JWSDOS column), and **track/sector** — a compact range like "T4–T6" (or your own concise
+      equivalent, matching the JWSDOS column's style) computed from the machine layer's exposed
+      record numbers as **starting track = first record ÷ 4, ending track = last record ÷ 4,
+      sector count = record-count × 4** — plain arithmetic, no physical-interleave data needed
+      (that stays a machine-layer/IMD concern, milestone 21, and never needs to reach this
+      column). **No Side column for PDOS** — PDOS has no double-sided concept (the geometry
+      ceiling in `docs/P2000T-disk-formats.md` §6a rules it out entirely), don't show an empty
+      or misleading column just for table-shape consistency with the JWSDOS view.
+    - Continuation FCBs (same filename+extension, incrementing position-1 index) should already
+      arrive pre-folded into one logical entry from the machine layer (milestone 22a) — this
+      view should never show the same filename twice as if it were two separate files.
+    - **Tests:** `DiskDriveVm` directory-table tests for a `PdosWorking`-detected mount — the
+      `VOLORG`/`VOLINFO` fixture (if available, see machine milestone 22a's test note) renders
+      both entries with correct name/extension/size/track-range; no Side column appears for a
+      PDOS-detected mount; a mount with a continuation-FCB file (if a fixture exists or is worth
+      constructing) shows one row, not two, with the combined sector count.
+
+15b. **PDOS-system / unknown fallback view — hex/ascii dump of sector 1** (NEW, owner decision
+    2026-07-28, fully unblocked). Depends on machine milestone 22b for the raw sector-1 read.
+    - When `DetectDirectoryFormat()` returns `PdosSystem`: replace the directory table with a
+      short explanatory message ("PDOS system disk — no file directory" or similar plain
+      wording) plus an optional hex/ascii dump of sector 1 (standard two-pane hex+ASCII layout,
+      256 bytes — match whatever hex-dump convention this codebase already uses elsewhere, e.g.
+      the debugger's memory view, §10, rather than inventing a new one).
+    - When it returns `Unknown` (neither JWSDOS, PDOS, nor the system-disk marker matched): show
+      the same hex/ascii dump of sector 1, plus the text "unknown disk contents/structure" — this
+      is the default, catch-all case per the owner's original request, not an error state.
+    - Both cases replace the file-list table entirely for that drive's tab — don't show an empty
+      table alongside the message, which would look like a bug rather than an intentional
+      fallback.
+    - **Tests:** `DiskDriveVm` — a `PdosSystem`-detected mount (the existing `0xF3`-signed "Disk
+      BASIC 24K" fixture) shows the system-disk message + correct sector-1 bytes, not a table; a
+      genuinely unrecognizable image (garbage bytes, or a short/blank mount) shows the "unknown"
+      message + sector-1 dump (all zeros/fill-byte for a blank image), not an exception or an
+      empty table.
+
+---
+
 ## 15. Deferred (build the seams now, implement later)
 
 - **External IDE / cross-dev interface** — transport + protocol **TBD** (owner decision).
@@ -1317,6 +1397,45 @@ project.
 - **Applies to:** reference doc §3a / <file>
 - **Synced:** yes (YYYY-MM-DD)
 -->
+
+### 2026-07-28 — Milestone 15 IMPLEMENTED: directory-format dispatch + JWSDOS Side/Track-Sector columns
+- **Trigger:** owner decision (reference doc §3a "RESOLVED — the Disk Drives window's directory
+  browse table gets format auto-detection..."), first of a three-part split — this milestone
+  covers only the fully-unblocked JWSDOS-rendering piece; PDOS/fallback views are milestones
+  15a/15b, deliberately not built here.
+- **Found:** `DirectoryHeader` (§14 milestone 14) was a `static` property — fine while every
+  mount rendered the same fixed 3-column header, but this milestone needs the header to vary per
+  mounted disk's detected format (JWSDOS gets 2 extra columns; everything else keeps milestone
+  14's original header). Converted to an instance `[ObservableProperty]`, defaulting to the
+  original 3-column text; the one existing test that accessed it via static
+  (`DiskDriveVm.DirectoryHeader`) was rewritten against a live VM instance.
+- **Added:** `DiskDriveVm.RefreshDirectoryTable(DskImage)` dispatches on
+  `DskImage.DetectDirectoryFormat()` (machine ms.22). For `Jwsdos`, appends **Side** ("Side 1"/
+  "Side 2", from the entry's `Head` field — 0/1 maps to Side 1/Side 2, matching
+  `dir_side1_prep`/`dir_side2_prep`'s own `DE_head=0`/`1` convention, docs/P2000T-disk-formats.md
+  §2) and **Track/Sector** (a compact range, e.g. `T39 S14-T40 S8`, via
+  `FormatTrackSectorRange`/`ToTrackSector` implementing the confirmed 16-sectors/track linear
+  formula) to milestone 14's original 3 columns. For every other detected format (currently always
+  `Unknown`, since PDOS detection isn't implemented yet), renders EXACTLY milestone 14's original
+  3-column table, unchanged — no PDOS-specific or fallback-view logic added, per this milestone's
+  own scope limit. Called from every mount path (constructor sync, `MountBytes`,
+  `ReconfigureAndRemount`, `NewBlankDiskAsync`) so the header/rows always reflect the currently
+  mounted disk; `ClearDirectoryTable()` resets both to the empty/no-disk state on eject/cancel.
+- **Real-fixture confirmation used for tests:** `Spel1.dsk`'s real active-directory entries are ALL
+  `Head=1` ("Side 2") — no real fixture mixes side-1 and side-2 entries in one directory, so the
+  Side-1-vs-Side-2 label distinction itself is exercised with a small synthetic image instead (per
+  the milestone's own "flag rather than fabricate" instruction — flagging here: no known fixture
+  has genuinely mixed sides, and no defragmented-then-resaved fixture is available either).
+  `Spel1.dsk`'s `AUTORUN` entry (confirmed start/end sector 622/632, machine ms.22's own findings
+  entry) renders as `T39 S14-T40 S8`. `volorg.dsk` (real PDOS working disk, no JWSDOS label,
+  garbage bytes at the JWSDOS directory offset) confirms the non-Jwsdos path keeps the legacy
+  header/table shape unchanged.
+- **Applies to:** `src/P2000.UI/ViewModels/DiskDriveVm.cs` (`DirectoryHeader`,
+  `RefreshDirectoryTable`, `ClearDirectoryTable`, `FormatTrackSectorRange`, `ToTrackSector`),
+  `tests/P2000.UI.Tests/ViewModels/DiskDriveVmTests.cs`, machine ms.22 (`DetectDirectoryFormat`,
+  consumed here), `docs/P2000T-disk-formats.md` §1/§4/§7 items 2-3.
+- **Synced:** no — reference doc §3a's RESOLVED block already describes the target end-state;
+  nothing here contradicts or extends it.
 
 ### 2026-07-28 — FIXED: Disk Drives window showed "No disk" for a drive mounted via a `.cfg`'s `FloppyDrives[i].ImagePath`
 - **Trigger:** owner-reported bug — a `.cfg`-authored Basic24k boot floppy in drive 1, geometry

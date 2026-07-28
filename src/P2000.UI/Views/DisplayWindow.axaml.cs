@@ -388,6 +388,13 @@ public partial class DisplayWindow : Window
 
     private void OnPreviewKeyDown(object? sender, KeyEventArgs e)
     {
+        // Yield to the menu bar while it's navigating (project CLAUDE.md milestone 14i): several
+        // P2000 matrix keys — arrows, M/C/V/W/D/K/F, Enter — double as menu mnemonics/navigation
+        // keys. This tunnel handler runs before Avalonia's own AccessKeyHandler/Menu bubble
+        // handlers ever see the event, so marking it Handled here would swallow it from them.
+        // MainMenu.IsOpen tracks exactly the state those handlers themselves gate on.
+        if (MainMenu.IsOpen) return;
+
         // Only claim the event for recognized P2000 keys — F5/F11/F6/F8/F12 etc. must still
         // reach the window's own KeyBindings unhandled. e.PhysicalKey is passed through so the
         // translator can recover a real numpad press even when Windows (Shift + NumLock on)
@@ -398,6 +405,8 @@ public partial class DisplayWindow : Window
 
     private void OnPreviewKeyUp(object? sender, KeyEventArgs e)
     {
+        if (MainMenu.IsOpen) return;
+
         if (_vm is not null && _vm.KeyTranslator.KeyUp(e.Key, e.PhysicalKey))
             e.Handled = true;
     }

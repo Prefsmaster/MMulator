@@ -1318,6 +1318,58 @@ project.
 - **Synced:** yes (YYYY-MM-DD)
 -->
 
+### 2026-07-28 — Milestone 14i IMPLEMENTED: menu keyboard navigation fix
+- **Root cause, confirmed (not just the "likely" cause flagged in the spec) by reading Avalonia
+  11.1.0's own source (`AccessKeyHandler.cs`, `DefaultMenuInteractionHandler.cs`,
+  `MenuBase.cs`/`Menu.cs`):** `DisplayWindow`'s host-key capture (`OnPreviewKeyDown`) is a
+  **Tunnel**-routed handler on the Window itself — the root of the visual tree — so it always
+  runs before the event reaches any other control. Avalonia's own menu-mnemonic dispatch
+  (`AccessKeyHandler.OnKeyDown`, which matches a pressed letter against registered access keys
+  and raises `AccessKeyPressedEvent`) and its arrow-key navigation (`Menu.KeyDown`, wired to
+  `DefaultMenuInteractionHandler.KeyDown`) are BOTH registered with plain **Bubble** routing and
+  no `handledEventsToo` — i.e. they only run if the event reaches them still unhandled. Since
+  every P2000-matrix key the menu needs (`M`/`C`/`V`/`W`/`D`/`K`/`F`, all four arrow keys, Enter)
+  is already in `KeyMap`, the old unconditional tunnel handler marked `e.Handled = true` for all
+  of them before Avalonia's own handlers ever ran — Alt itself isn't mapped, so the underlines
+  (which come from a separate Tunnel-only code path, `AccessKeyHandler.OnPreviewKeyDown`) were
+  never affected, exactly matching the reported "underlines work, nothing after that does" repro.
+- **Fix:** `DisplayWindow.OnPreviewKeyDown`/`OnPreviewKeyUp` now check `MainMenu.IsOpen` first
+  and return immediately (without touching `KeyTranslator` at all) when it's `true` — the
+  "querying the menu's own open/navigating state" option the spec listed. Confirmed
+  `MenuBase.IsOpen` tracks exactly the state `AccessKeyHandler.OnKeyDown` itself gates on
+  (`Menu.Open()`, called synchronously from `AccessKeyHandler.OnPreviewKeyUp` on Alt-release,
+  sets `IsOpen = true` immediately — no async gap where a stale `false` could leak through).
+  Didn't additionally gate on `KeyModifiers.Alt` (the Alt-held-down chord entry point, e.g.
+  holding Alt and pressing `W` without releasing Alt first) — not part of the reported repro or
+  its tests, and the P2000 has no host Alt key of its own to conflict with it, so left
+  unimplemented rather than added speculatively.
+- **Found (test-infrastructure, scope-limited):** tried making `tests/P2000.UI.Tests/TestApp.cs`
+  install `FluentTheme` application-wide (like the real `App.axaml`) so real Avalonia menu
+  navigation — `MoveSelection`, `MenuItem.IsSubMenuOpen` — could be asserted on directly in tests.
+  Confirmed it works for that purpose in isolation, but running the FULL suite with it active
+  made unrelated, previously-stable tests intermittently fail (real font/layout passes now
+  running for every window-touching test, not just this file's) — an unacceptable blast radius
+  for a targeted bug fix. Reverted; per-`Window`-instance `Styles` was tried as a scoped
+  alternative and does NOT reach the same control-theme resolution FluentTheme needs (confirmed:
+  `AccessKeyHandler.Register` is only ever called from the `AccessText` control-template part,
+  which never materializes without it) — so real downstream menu-navigation assertions
+  (`SelectedIndex`, `IsSubMenuOpen`) aren't attempted at all here; the tests instead assert
+  directly on the mechanism the fix controls (see below), which is enough to prove the actual
+  regression.
+- **Tests:** new `tests/P2000.UI.Tests/Views/DisplayWindowKeyboardNavigationTests.cs`, using
+  `Avalonia.Headless`'s real `KeyPress`/`KeyRelease` simulation (exercises the actual
+  Tunnel-then-Bubble routed pipeline through `DisplayWindow`'s real handlers, not a direct call)
+  and `Menu.Open()`/`Close()` (the same public API `AccessKeyHandler` itself calls) to drive
+  `IsOpen` — (a) menu closed: a P2000 key still reaches `KeyTranslator.MatrixEvent`; (b) menu
+  open: an arrow key (also a P2000 matrix key) does NOT reach `KeyTranslator`; (c) menu open: the
+  `Windows` mnemonic letter (`W`, also a P2000 matrix key) likewise does NOT reach `KeyTranslator`;
+  (d) closing the menu restores routing — a P2000 key reaches `KeyTranslator` again. Verified (b)
+  and (c) actually catch the regression: temporarily reverting the fix, both failed with the
+  swallowed matrix event visible in the assertion output, confirming they're not vacuous.
+- **Applies to:** reference doc §3a "FLAGGED — the Display window's global keyboard capture
+  appears to swallow keys the menu bar itself needs" note; `P2000.UI/Views/DisplayWindow.axaml.cs`.
+- **Synced:** no
+
 ### 2026-07-27 — Milestone 14h IMPLEMENTED: menu bar consolidation
 - **Done:** `DisplayWindow.axaml`'s menu bar collapsed from 7 top-level items to 4
   (`Machine | Cassette | View | Windows`). `Config`/`Debug`/`Input`/`Disk` (each a single-item

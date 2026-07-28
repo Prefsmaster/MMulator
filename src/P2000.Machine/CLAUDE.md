@@ -1510,7 +1510,8 @@ marked synced. Do NOT edit the reference doc from this project.
   itself public (keeps the format-detail-parsing type internal; only the yes/no sniff is exposed).
 - **Applies to:** `src/P2000.Machine/Devices/Fdc/DskImage.cs`; tests in
   `tests/P2000.Machine.Tests/Devices/Fdc/DskImageTests.cs`.
-- **Synced:** no (pending human sync into `docs/P2000T-reference.md` §3a).
+- **Synced:** yes (2026-07-27, into `docs/P2000T-reference.md` §3a — new "IMPLEMENTED (machine
+  milestone 20e, 2026-07-27)" paragraph).
 
 ### 2026-07-27 — Milestone 21 IMPLEMENTED: IMD (ImageDisk) reader/writer
 - **Trigger:** owner decision to adopt IMD as the emulator's native/preferred disk container

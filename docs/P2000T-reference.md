@@ -120,6 +120,67 @@ docked toolbar under a standard menu bar.
   cassette/disk **activity LED** (critical — it's how the user sees an authentic-mode
   `.cas` load progressing), and current **model (T / M)**.
 
+**RESOLVED (owner, 2026-07-27) — the top-level menu bar consolidates from 7 items to 4:
+`Machine | Cassette | View | Windows`.** Triggered by the owner's own real-usage observation:
+today's bar (`Machine, Config, Debug, Input, Cassette, Disk, View`) has grown four top-level
+menus — Config, Debug, Input, Disk — that each exist purely to gate exactly one child command.
+That's pure overhead: an extra click to reach a single item, with no payoff a submenu wouldn't
+give just as well.
+- **New `Windows` menu holds the four single-item gates, renamed and reordered nowhere else:**
+  `Machine Configuration…`, `Debugger…`, `Keyboard…`, `Floppy Drives…` — same left-to-right
+  order as the top-level menus they came from, same target window each, zero functional change
+  to any of the four commands themselves.
+- **`Disk` → `Floppy Drives`, everywhere the label appears (menu item, window title if it says
+  "Disk"):** two independent reasons, not just one. It resolves a mnemonic collision with
+  `Debugger` (both start with D, and they're about to become submenu siblings); and it's more
+  accurate now that milestone 14d means there can genuinely be up to four floppy drives, not a
+  vague single "Disk."
+- **Ellipsis standardized across all four:** `Floppy Drives…` gains the `…` the other three
+  already had (today's bare "Disk" item was the inconsistent one) — the ellipsis is the
+  conventional signal "this opens another window," and now that's uniformly true across the
+  group.
+- **`Cassette` explicitly stays its OWN top-level menu, not folded in** — checked first, not
+  assumed: it already has 3 real menu items (not a single window-gate), so it doesn't have the
+  problem this change solves; collapsing it would trade a direct action for an extra submenu hop
+  for no reason. `View` is unaffected (an existing, already-established menu for display options,
+  unrelated to this change).
+- **Final order (`Machine | Cassette | View | Windows`) is deliberate, not arbitrary:** real
+  P2000T/M-hardware-facing concepts first (`Machine`, `Cassette`), emulator/host conveniences
+  last (`View`, `Windows`) — mirrors the common convention of domain menus before meta/utility
+  ones.
+- **Mnemonics checked, not just hoped-for:** top-level `M`/`C`/`V`/`W` are all unique; within
+  `Windows`, the rename fixes what would otherwise have been a `D`/`D` collision between
+  `Debugger` and the old `Disk` label — `M`/`D`/`K`/`F` are all unique too.
+- **Explicitly out of scope — raised and deliberately deferred, not silently dropped:** turning
+  `Cassette`'s Mount/Eject into toolbar buttons was discussed and set aside for a later,
+  independent proposal. **Correction:** the toolbar described just above this block (Run/Pause,
+  Reset warm/cold, Screenshot, Speed/turbo) does in fact already exist in the current build — an
+  earlier pass through this decision mistakenly assumed otherwise. That makes the toolbar-buttons
+  idea cheaper than first thought (an existing surface to add to, not one to build from scratch),
+  but the deferral itself stands on its own merits regardless: it's a distinct UI surface from the
+  menu bar, and folding it into this milestone would still mix two independently-decidable changes
+  into one commit for no real gain.
+- See UI milestone 14h for the concrete build item.
+
+**FLAGGED (owner, 2026-07-27) — the Display window's global keyboard capture appears to swallow
+keys the menu bar itself needs, breaking keyboard-driven menu navigation.** Mnemonics work as far
+as showing the underlines (pressing Alt correctly triggers them — no gap there), but every
+keystroke after that is going to the emulated keyboard matrix instead of the native menu, so
+arrow-key/letter navigation through an open menu does nothing. This is almost certainly the
+Display window's own host-key-capture handler (feeds the keyboard matrix's host face, §5c/§5d)
+consuming every keystroke unconditionally rather than yielding when the menu itself is the
+legitimate keyboard target — the same general shape as any app that captures raw input globally
+without checking who should actually receive it. Affects every top-level menu (not just the new
+`Windows` one) since the capture almost certainly lives at the Display window level, and this is
+the only window with a menu bar. **Design principle, stated for the first time here since it was
+never previously in tension with anything:** host keystrokes should feed the emulated matrix only
+when no other native UI element (the menu, in this case) is the legitimate current keyboard
+target — the capture needs to check/yield, not consume unconditionally. Exact mechanism (checking
+current focus, only handling otherwise-unhandled key events, querying the menu's own open/
+navigating state) is an implementation judgment call, not specified here. See UI milestone 14i for
+the concrete build item — a separate commit from 14h, since this is an unrelated pre-existing bug
+in adjacent territory, not part of the menu-bar consolidation itself.
+
 ### Keyboard shortcuts (borrow familiar conventions)
 - **F5** run / pause
 - **F11** reset (warm) · **Shift+F11** reset (cold, clears RAM — mirrors the real
@@ -396,12 +457,197 @@ Therefore:
   machine definition this snapshot uses"), never the reverse (a config has no running contents
   to invent).
 
-**Two file types for the user:**
+**CONFIRMED (owner, 2026-07-26) — `.cfg` already delivers "plug everything in and flip the
+switch," for disk + SLOT1, at least at the machine layer.** Prompted by the owner's own real-P2000T
+comparison: with real hardware you plug in the extension card, connect drives, seat a cartridge,
+put a boot floppy in a drive, and power on — you land in BASIC directly from a **preconfigured
+starting topology**, not a restored running session. That is exactly what `MachineConfig`/`.cfg`
+is *for* (topology, "what machine is this?", answers the same question a fully-wired real machine
+answers) — it is NOT what `.state` is for (a snapshot of a specific running moment). Checking
+`P2000.Machine` CLAUDE.md's own findings log (2026-07-23, milestones 20/20a) confirms this already
+works, not just in principle:
+- **`MachineConfig.Slot1CartridgePath`** (SLOT1 ROM cartridge, e.g. a BASIC image) and
+  **`MachineConfig.FloppyDrives[i].ImagePath`** (per-drive mounted disk, added by milestone 20)
+  are BOTH already real config fields, and **`Machine`'s constructor already mounts every
+  configured drive's `ImagePath` (and SLOT1's cartridge) at construction time** — confirmed
+  built and tested (`P2000.Machine` CLAUDE.md §17, 2026-07-23 finding). So a `.cfg` that sets
+  Board=floppy+RAM, `Slot1CartridgePath` = a DOS-requesting BASIC cartridge, and
+  `FloppyDrives[0].ImagePath` = a boot floppy, then **applied via the existing reset-to-apply
+  path, already reproduces "power on with everything plugged in"** — including the full M19
+  `getdos` boot-gate sequence (memsize==3 + SLOT1-present + cartridge-requests-DOS), all the way
+  to a disk-BASIC prompt, with NO new machine-layer mechanism needed. This is the concrete
+  end-to-end validation the owner is planning once a real `Basic24k.bin`/`Basic24kboot.dsk` pair
+  is in hand — worth treating as a proper RUN-style integration test once sourced (machine §12
+  validation gates only cover the boot-gate synthetically today, per M19's own test list; a real
+  cartridge+floppy pairing would be the first end-to-end confirmation).
+- **The runtime-swap capability (§3a locked decisions, M20) is NOT in tension with this** — it's
+  complementary. `FloppyDrives[i].ImagePath` seeds what's mounted when the machine is BUILT from
+  that config; live insert/eject/swap (already spec'd) is how it changes WHILE running, without a
+  reset. A saved `.cfg` describing "my desk" and the ability to hot-swap once running are two
+  different, compatible facts about the same drive.
+- **Two genuine open gaps, flagged for Claude Code rather than assumed either way — GAP 1 NOW
+  CONFIRMED (2026-07-26, `P2000.UI` CLAUDE.md investigation entry, read-only pass, nothing built
+  yet):**
+  1. **CONFIRMED: the Config window cannot set `Slot1CartridgePath`/a drive's `ImagePath`/
+     `CassettePath` as part of what gets saved, for disk or cassette — and cannot capture what's
+     currently live-mounted either, for either device.** `ConfigWindowVm.FloppyDriveRowVm.ToConfig()`
+     hardcodes `ImagePath = null` by deliberate design (its own comment: "initial media is mounted
+     live from the Disk Drives window, not here"); there is no `CassettePath` property/command
+     anywhere in the VM at all. `SaveCfgAsync`/`BuildConfig()` only ever serializes the VM's own
+     bound properties, which are populated from `LoadFromCurrentConfig()`/`LoadCfgAsync()` — never
+     from whatever `DiskDriveVm`/`CassetteDeckVm` currently have live-mounted. **One instructive
+     non-exception:** `Slot1CartridgePath` IS a bound field and DOES save correctly — but only
+     because SLOT1 has no live-swap capability at all (reset-to-apply only, locked decision), so
+     "live" and "configured" can never diverge for it the way they can for disk/cassette; its
+     presence doesn't mean the VM treats it specially compared to the two devices with no field at
+     all. **So this genuinely is UI-only work, not a machine-layer gap** — both `MachineConfig`
+     fields already work correctly (below); the Config window just has no way to populate them.
+     Fix shape (new fields + browse/clear commands mirroring `Slot1CartridgePath`'s existing
+     pattern, plus whether a "capture what's currently mounted" convenience action belongs on the
+     Config window or the deck/drive windows) is scoped but **not yet decided or built** — next
+     natural continuation of this thread once picked up again.
+  2. **RESOLVED (owner, 2026-07-26) — cassette gets the same treatment, not left asymmetric.**
+     `MachineConfig` currently has NO cassette-path field at all (confirmed absent alongside
+     `Slot1CartridgePath`/`FloppyDrives` in the config DTO, `P2000.Machine` CLAUDE.md §17
+     2026-07-23) — cassette mount is pure runtime state today, no way to say "boot with this
+     tape already in the deck" via `.cfg`. The owner's own real-hardware framing is the reason to
+     fix this, not just close the gap for symmetry's sake: **a real P2000 with no valid cartridge
+     found in SLOT1 falls through to a cassette-boot wait** (already documented above — "the bare
+     machine... exercises the SLOT1 open-bus check... then cassette status polling (CIP)") — so
+     "what's plugged in and loaded at power-on" legitimately includes the tape, exactly as much as
+     the cartridge or the floppy. **Decision: add `MachineConfig.CassettePath` (nullable),
+     mounted at construction exactly like `FloppyDrives[i].ImagePath`** — `Machine`'s constructor
+     loads it via the same `LoadCasImage`/mount path the runtime host-API already uses (no new
+     tape-loading logic, just an additional caller). `null` (the default) means bare/no-cassette,
+     unchanged — this is purely additive, doesn't touch the "bare by default" locked decision
+     (that governs what an EMPTY config produces, not what a deliberately-authored one may
+     contain, same as `Slot1CartridgePath` already doesn't touch it). The runtime mount/eject/
+     swap capability (§3a, already locked) is untouched on top of this, exactly as already true
+     for disk. See machine milestone 20b for the concrete build item, and `P2000.UI` CLAUDE.md §7
+     for the matching Config-window flag.
+
+     **IMPLEMENTED (2026-07-26, machine milestone 20b) — built exactly as decided.**
+     `MachineConfig.CassettePath` mounts via `Mdcr.InsertTape` in `Machine`'s constructor, mirrors
+     `Slot1CartridgePath`/`FloppyDriveConfig.ImagePath` exactly, additive/nullable in the `.cfg`
+     DTO with no version bump (same precedent as the `RamSeed` fix). **One adjacent gap found and
+     fixed in the same pass, worth flagging as a class of bug to watch for:** `MachineConfig` has
+     no `with` expression, so `P2000.UI`'s `EmulationRunner.Reconfigure` manually copies each
+     field when it needs to inject a fresh `RamSeed` — a new config field is invisible to that
+     copy until someone remembers to add it there too. `CassettePath` was added to that list in
+     this pass; worth a glance whenever a future field is added to `MachineConfig`, since nothing
+     enforces the two staying in sync.
+
+**RESOLVED (owner, 2026-07-26) — startup configuration: the app remembers your last setup
+automatically; pinning a specific one is available too.** Prompted by a real, reported gap: today
+there is NO persistence between launches at all — every launch is bare, unconditionally, because
+nothing ever decides otherwise. That's stricter than the bare-by-default decision actually
+intended (§3a locked decisions frame it as "first launch," `P2000.UI` CLAUDE.md's own wording),
+but nothing was built to distinguish "first ever launch" from "the fifth time you've opened this
+today." The owner's own framing for WHY both halves are right: **you acquire a bare machine and
+buy additional hardware as you go along — that's what bare-by-default should model for a truly
+fresh install** — but **you can also leave a tape or disk in a drive between power-offs**, on real
+hardware, and the emulator should model that too, for everyday use.
+- **Auto-remember, no setup required (the default behavior, not an opt-in toggle):** the app
+  writes an ordinary `.cfg` file — no new format — to a fixed path in the app's own preferences
+  directory (e.g. `last-session.cfg` under the platform-appropriate app-data folder, NOT the
+  user's own documents/save folder), capturing the CURRENT live configuration, **including
+  whichever media is actually mounted right now** (see below — this is the part that needed a
+  real fix, not just a new file). Written on a clean app quit (and/or opportunistically on
+  reconfigure/mount changes — a robustness detail for whoever builds this, not a design fork).
+  Loaded automatically at the next startup if present; **missing, corrupt, or unreadable → fails
+  soft to the honest bare baseline**, never a startup error. A fresh install has nothing to load,
+  so it boots bare exactly as today — this only changes behavior for someone who has actually used
+  the app before, which is the case bare-by-default was never meant to govern.
+- **Pinning, for the "no, I mean THIS specific setup, permanently" instinct:** an explicit action
+  (Config window, "Always start with this configuration") lets the user designate a specific,
+  separately-saved, named `.cfg` file as the startup default instead of the auto-updating
+  last-session snapshot — decoupled from ordinary day-to-day tinkering, so experimenting with a
+  different topology for a one-off test doesn't silently become your new default. Unpin to go
+  back to auto-remembering. **The action is always available, not conditionally greyed out** —
+  clicking it checks whether a saved file already matches the live configuration; if nothing's
+  been saved yet, or what's on disk has drifted from the live machine (e.g. you loaded a `.cfg`,
+  tweaked something, and applied), it prompts to save first and only pins once that save lands.
+  If the live machine already matches a previously saved file exactly, it pins directly with no
+  extra prompt. This matters in practice, not just as UX polish: it's what stops "pin" from ever
+  silently locking in a config that was never actually persisted, or a stale one that no longer
+  reflects what's running. (See the "final implementation" note below — this replaced a simpler
+  first pass that gated the button on session state instead of on an actual staleness check.)
+- **Explicit "start bare" stays available as the escape hatch** (a "New (bare) machine" action,
+  not a settings toggle) for deliberately re-exercising the honest baseline — the actual reason
+  bare-by-default exists (the ROM's presence-probe fallbacks) doesn't disappear, it's just no
+  longer the ONLY thing every ordinary relaunch does.
+- **The real fix this exposed, now required rather than deferred:** "capturing the current live
+  configuration" must reflect what's ACTUALLY mounted (per-drive disk images, the cassette), not
+  just the Config window's own bound fields — which the 2026-07-26 investigation above confirmed
+  go stale the moment media is mounted live rather than authored by hand. This needs a genuine
+  new capability — deriving an up-to-date `MachineConfig` FROM the running machine's live device
+  state, a third derivation direction alongside the two already established (config → machine,
+  machine+devices → state capture). **One such deriver, reused by BOTH this feature AND the
+  still-unfixed `.cfg`-save gap** (`P2000.UI` CLAUDE.md §7's confirmed investigation, above) —
+  build it once, close both, rather than two separate mechanisms that could drift apart. See
+  machine milestone 20c and UI milestone 14c for the concrete build items.
+
+  **IMPLEMENTED (machine milestone 20c, 2026-07-26) — `Machine.CaptureCurrentConfig()` built
+  exactly as decided**, with one real prerequisite gap found and closed along the way: neither
+  `DskImage` nor `MdcrDevice` tracked their own mounted path at all — that bookkeeping only
+  existed at the `P2000.UI` ViewModel layer (`DiskDriveVm`/`CassetteDeckVm`'s private
+  `_backingFile`), which `P2000.Machine` can't depend on (dependency direction: UI → Machine,
+  never the reverse). Fixed by adding `DskImage.MountedPath`/`MdcrDevice.MountedPath` (public,
+  settable, `null` for bytes-only/blank/embedded-state construction) as a genuine prerequisite,
+  then building the deriver on top: non-swappable fields echo from `Config`, `FloppyDrives[i]
+  .ImagePath`/`CassettePath` read from the live devices' own `MountedPath`. Round-trip and
+  live-vs-stale tests all green (`P2000.Machine.Tests` 501/501). No adjustment needed to this
+  paragraph's description of the machine-layer piece — it was built exactly as specified.
+
+  **IMPLEMENTED, then CORRECTED (`P2000.UI` milestone 14c, 2026-07-26/27) — the design above is
+  right, but the first build of it had a gap that made the feature not actually work for the
+  scenario it exists for, found through the owner's own real end-to-end test (a `Basic24k.bin`
+  cartridge + boot floppy, live-mounted through the actual Disk Drives window rather than a
+  hand-edited `.cfg`).** The initial pass built everything as specified — the fourth file type
+  (`AppPreferences.json`: `StartupCfgPath`, `StartupCfgIsPinned`), auto-remember on clean quit,
+  fail-soft startup load, the Pin/Unpin actions, and the `SaveCfgAsync` fix so an explicit
+  "Save `.cfg`" also calls `CaptureCurrentConfig()` instead of the Config window's own stale
+  bound fields. But **`Machine.CaptureCurrentConfig()` can only report a device's `MountedPath` if
+  something actually set it — and the real, everyday mount path (the file-open dialog / drag-drop
+  onto the Disk Drives or Cassette Deck window, i.e. `DiskDriveVm.MountBytes`/
+  `CassetteDeckVm.MountBytes`) never did.** Milestone 20c's `MountedPath` plumbing only got wired
+  automatically through the *construction-time* paths (loading a `.cfg` at startup, machine
+  milestone 20b) — a live UI mount reads the file's bytes itself and calls `MountBytes(bytes,
+  filename, backingFile)`, and the real path sitting in `backingFile.Path.LocalPath` simply never
+  got forwarded. Net effect before the fix: mounting media through the UI the normal way (exactly
+  what the owner did, and exactly the "leave a tape/disk in the drive" story this whole feature
+  was built to model) left `MountedPath` `null`, so neither the auto-remembered `last-session.cfg`
+  nor an explicit "Save `.cfg`" ever captured it — a relaunch came back bare/BASIC-empty regardless
+  of what was actually mounted at quit time. **Fixed:** `DiskDriveVm.MountBytes`/`SaveAsAsync` and
+  `CassetteDeckVm.MountBytes`/`SaveAsAsync` now set `MountedPath` from the real backing-file path
+  at the same call site that already has it in scope; eject/new-blank needed no fix (already
+  cleared `MountedPath` at the machine layer). Two smaller, independent bugs surfaced in the same
+  usage pass and are folded into the Pinning bullet's revised wording above rather than repeated
+  here: the Pin button's enablement not refreshing on property change (CommunityToolkit needs an
+  explicit `NotifyCanExecuteChanged()` call), which was then redesigned rather than just patched
+  (see above); and a `ConfigWindowVm` gap where `Apply` silently re-rolled `RamSeed`/`BankCount` to
+  fresh values on every apply (neither had a bound field), which made an unedited Load → Apply →
+  Pin cycle look "stale" against its own just-saved file — fixed by carrying both through as plain
+  fields captured at Load time. All fixes verified with new/updated `StartupConfigurationTests`
+  (`P2000.UI.Tests` 174/174 green, up from 163 before this milestone). **Nothing here reopens the
+  design decision above — the shape (auto-remember, pin, fail-soft, "New (bare) machine" escape
+  hatch) is exactly as resolved; what changed is a real implementation gap in how "currently
+  mounted" gets discovered, plus UX robustness around pinning, both now closed.**
+
+**Two file types for the user, PLUS a third for UI-layer session state, PLUS a fourth for app-level
+preferences (RESOLVED 2026-07-26 — see above and below):**
 - **`.cfg` / JSON — "machine definitions":** named topologies ("bare T/38", "T/102 + disk",
   "M with two floppies"). Tiny, editable, shareable. The config window loads/saves these.
-- **`.state` — "snapshots":** frozen running machine = config header + device blob. The
-  save-state feature loads/saves these; restoring rebuilds from the embedded config then
-  restores contents.
+- **`.state` — "snapshots":** frozen running machine = config header + device blob
+  (**now including mounted media content — see the resolved "self-contained state" question
+  below**). The save-state feature loads/saves these; restoring rebuilds from the embedded
+  config then restores contents. This file alone is a complete, shareable machine snapshot.
+- **`.uistate` — "session UI layout" (NEW, 2026-07-26, `P2000.UI`-owned, optional):** window
+  positions, which satellite windows are open, each memory-watch window's Base/Length/follow
+  register, etc. Sits alongside a `.state` file with the same base filename
+  (`mygame.state` + `mygame.uistate`); loaded best-effort — missing or version-mismatched simply
+  means default window layout, never a failed `.state` load. See the resolved question below for
+  why this is a sidecar rather than embedded.
 
 **Layering:** config serialization lives at the machine-assembly level (one `MachineConfig`
 → whole topology); state serialization is distributed across devices (each serializes its own
@@ -434,60 +680,109 @@ block, bumped at build time (`CurrentVersion`/`MinVersion = 3`); v2 files are no
 the discipline working as designed — every device-block change bumps at build time, never
 retroactively.
 
-**OPEN DESIGN QUESTION (owner, 2026-07-23), deliberately not decided yet — whether/how UI-layer
-session state gets persisted at all, and everything downstream of that.** The owner is considering
-whether a saved session should also capture UI state — which windows are open, a memory-watch
-window's configured range, etc. — alongside the machine's own `.state`. Nothing here is decided:
-not whether this happens, not whether it lives inside `.state` itself (a new "UI blob" section,
-machine-agnostic and owned by `P2000.UI`), in a separate sidecar file next to `.state`, or
-somewhere else entirely. **This directly blocks two small, otherwise-ready decisions from
-being made independently:** per-drive disk write-protect persistence (machine milestone 20) and
-the cassette/disk `IsDirty` dirty-flag persistence (machine milestone 20a) were each flagged as
-"pick session-only vs. some persistence mechanism" — but picking a mechanism for either one right
-now would mean guessing at an answer to this bigger, still-open question. The owner's reasoning:
-**cassette write-protect is already part of `.state`** (`MdcrDevice`'s `Protected` field,
-`docs/MDCR-implementation.md` §7) — a `.state` load is supposed to bring the machine back exactly
-as it was, so treating disk write-protect and `IsDirty` any differently would be an inconsistency,
-not a simplification. Whatever container ends up holding "everything needed to resume exactly
-where the user left off" is where these two belong — genuinely undecided until that container is
-decided, not because no one has thought about it. **Do not pick a mechanism for either item before
-this is resolved** — revisit both the moment the UI-state question is settled.
+**`.state` progressed to v7 across several intervening milestones not individually itemized in
+this narrative** (the FDC, milestone 19, and multi-drive floppy config, milestone 20, each bumped
+it per their own device-block changes — see `P2000.Machine` CLAUDE.md §17 for the exact per-bump
+detail if needed) **— then to v8 (2026-07-26, self-contained state, below).**
 
-**A second, related sub-question under the same umbrella (owner, 2026-07-23): should mounted
-media CONTENT itself travel inside `.state`, making a save fully self-contained and shareable
-("send a state to a friend" without also sending the `.cas`/`.dsk` files separately)?** This is
-distinct from the UI-state question above but sits in the same "what does a saved session actually
-contain" design space, and it **reopens an already-made decision, not a fresh one:**
-- **Cassette — currently does NOT embed content.** The milestone-9 finding (`P2000.Machine`
-  CLAUDE.md §17, 2026-07-05) decided `.state` saves tape `Position`+`Side` only, matching the
-  ROM-not-saved precedent (§3a above) — the mounted `.cas` must be remounted after `LoadState`.
-  `docs/MDCR-implementation.md` §7 still carried the ORIGINAL open framing of this question
-  (never updated after the decision was made) — corrected there this pass, and reopened per this
-  note.
-- **Disk — undecided either way.** Machine milestone 20's per-drive `.state` shape
-  ("mounted-image-ref") hasn't picked between "a path, remount required" and "the actual bytes" —
-  genuinely open, not defaulting silently to either.
-- **If this gets built, the natural shape differs by device, and the pieces already mostly
-  exist or are already planned:** disk images are already compact raw sector dumps (140k–560k
-  per drive, up to ~2.24 MB for 4 double-sided drives) — cheap to embed directly. The cassette's
-  in-memory representation is a ~1 MB/side raw phase-bit array, NOT cheap to embed directly, but
-  `docs/MDCR-implementation.md` §8 already calls for a bitstream→`.cas` serializer (currently
-  MISSING — needed anyway for the UI's "Save as .cas" feature) whose compact output (tens of KB,
-  not ~1 MB) is what should get embedded instead of the raw array — one serializer, two
-  consumers, not a redundant second one built just for `.state`.
-- **Compression (owner's parenthetical "(the compressed?) state") is an open, low-risk detail,
-  not a blocking one** — raw disk sector dumps and `.cas`-format bytes both compress well
-  (large runs of unformatted/blank space, repetitive framing), so gzip/deflate over the embedded
-  blob(s) is a reasonable default if/when this is built, but the algorithm choice doesn't gate
-  the bigger embed-or-not decision above.
-- **A nice side effect if this is adopted:** it would resolve the write-protect/`IsDirty`
-  persistence deferrals two paragraphs up almost for free — once a drive's/cassette's actual
-  content lives inside the same state blob, persisting a couple of extra booleans alongside it
-  is a trivial addition, not a separate mechanism to design. Worth deciding the embed-or-not
-  question with that in mind.
-- **Not yet decided — flagging, not picking.** Revisit whenever `.state`'s device-block shape for
-  cassette/disk is next touched (a version bump either way, per the "every device-block change
-  bumps at build time" discipline already in place).
+**RESOLVED (owner, 2026-07-26) — UI-layer session state: a separate `.uistate` sidecar file,
+NOT embedded in `.state`.** Opened 2026-07-23 as a genuinely undecided question (whether a saved
+session should capture UI state — which windows are open, a memory-watch window's configured
+range, etc. — and if so, where). Decided now:
+- **Sidecar, not an embedded blob.** `.state`'s format and its version-bump discipline
+  (bumped only for device-block changes, §3a IMPLEMENTED-format history above) stay entirely
+  `P2000.Machine`-owned and untouched by UI-only schema churn — window layouts and debugger
+  conveniences will evolve far more often than device state does, and coupling the two would mean
+  bumping (and rejecting old) `.state` files for reasons that have nothing to do with the machine.
+  A `.state` file on its own is already a complete, meaningful snapshot (§3a IMPLEMENTED format);
+  a `.uistate` sidecar adds nothing the machine needs to function.
+- **Best-effort, not required.** Missing or version-mismatched `.uistate` → open with default
+  window layout, not a failed `.state` load. This also means sharing a `.state` with someone who
+  doesn't want your window layout imposed on them "just works" — they get a clean machine
+  snapshot with nothing UI-specific riding along, whereas an embedded blob would force every
+  consumer to carry it whether they wanted it or not.
+- **Format:** `.uistate` is a `P2000.UI`-owned JSON sidecar (own version field, own
+  reject/migrate discipline, independent of `.state`'s), named to match its `.state` (
+  `mygame.state` + `mygame.uistate`). Contents: which satellite windows are open, each memory
+  watch window's Base/Length/follow-register, the VRAM window's glyph/hex toggle, etc. — whatever
+  `P2000.UI` needs to reproduce "the desk the user left" is fair game; the machine layer neither
+  knows nor cares about its contents. **Machine-side impact: NONE** — `Machine.SaveState`/
+  `LoadState` are unaffected; this is a `P2000.UI`-only file, written/read alongside (never
+  inside) a `.state` save/load action. See `P2000.UI` CLAUDE.md §14 for the new milestone this
+  unblocks.
+- **This directly unblocks the two bullets that were waiting on it** (machine milestones 20/20a)
+  — see the resolution immediately below; both turn out to be resolvable independent of this
+  question too (they're `.state` device-block fields, not UI state), but this closes the loop the
+  owner had tied them to.
+
+**IMPLEMENTED (2026-07-26, `P2000.UI` milestone 14b) — `.uistate` built exactly as resolved
+above.** `UiStateFile` (own JSON shape, own version starting at 1, `TryLoad` returns `null` on
+missing/version-mismatched/corrupt rather than throwing) hangs off the existing Save/Load State
+actions via `DisplayWindowVm`'s new `StateSaved`/`StateLoaded` events — zero `P2000.Machine`
+changes, confirming the "machine-side impact: NONE" call above. Captures the main window, the
+four simple satellite windows (deck/disk/config/keyboard — open/position/size), and the
+debugger's own nested layout (VRAM window + every open memory-watch window's Base/Length/Follow).
+A missing/unreadable sidecar is a silent no-op on load, not an error, per the best-effort design
+above. One pre-existing test-infrastructure limitation carried over, not new here: this project's
+headless Avalonia test setup can't render a shown `Window`, so `Position` actually taking visual
+effect isn't exercised by the test suite (same limitation already noted elsewhere for
+`MemoryWatchVmTests`) — the round-trip of the DATA is tested, the on-screen effect isn't.
+
+**RESOLVED (owner, 2026-07-26) — mounted media CONTENT travels inside `.state`; saves are
+self-contained/shareable.** Opened 2026-07-23 as a related sub-question, reopening the
+milestone-9 cassette decision (`.state` saves `Position`+`Side` only, remount required) and the
+never-decided disk equivalent. Decided now, for BOTH devices, resolving the asymmetry:
+- **Disk:** embed the raw sector bytes directly in the per-drive `.state` block. Already compact
+  (140 KB–560 KB per drive, up to ~2.24 MB for 4 double-sided drives per machine milestone 20) —
+  no new serialization work needed, it's the same bytes `DskImage` already holds in memory.
+- **Cassette:** embed the compact `.cas`-format bytes — NOT the raw ~1 MB/side phase-bit array.
+  This requires building the bitstream→`.cas` serializer `docs/MDCR-implementation.md` §8
+  already calls for (currently MISSING, needed anyway for the UI's "Save as `.cas`" feature) —
+  one serializer, two consumers (the UI save-as action and `.state`'s own embedding), not a
+  redundant second one built just for this. **`.state` restore for cassette becomes:**
+  deserialize the embedded `.cas`-format bytes → `LoadCasImage` them into a fresh `MiniTape` →
+  restore `Position`/`Side` on top, symmetric with how `LoadState` already rebuilds the machine
+  from the embedded `MachineConfig`.
+- **The mounted file PATH is now a hint, not a dependency.** Once loaded, embedded bytes are
+  authoritative; the original path (if any) travels along as metadata only ("this state's tape
+  was originally `ghosthunt.cas`") — restoring never re-reads the host file, and a state built
+  from an unbacked/blank tape or a freshly-created blank disk embeds fine with no path at all.
+- **Compression:** gzip/deflate the embedded blob(s) — both raw sector dumps and `.cas`-format
+  bytes compress well (large runs of unformatted/blank space, repetitive framing). Not a blocking
+  detail; apply it as the default when this is built.
+- **Version bump:** both device blocks' shape changes (cassette: `Position`+`Side` →
+  `Position`+`Side`+embedded-`.cas`-bytes+path-hint; disk: `.state`-format-for-M20 gains embedded
+  bytes alongside per-drive motor/head/cylinder/write-protect) — bump `.state`'s version at build
+  time per the existing discipline (never retroactively), same as every prior device-block change.
+- **Side effect (as anticipated when this was flagged 2026-07-23): resolves write-protect/
+  `IsDirty` persistence almost for free.** See machine milestones 20/20a for the concrete
+  unblocking — both are now plain boolean fields in the same per-device `.state` block the
+  content itself lives in, exactly mirroring how cassette's `Protected` field already worked
+  before this decision (`docs/MDCR-implementation.md` §7).
+
+**IMPLEMENTED (2026-07-26, `P2000.Machine` milestones 20/20a) — built exactly as resolved above;
+`.state` bumped v7→v8 (rejects v7).** Per-drive `.state` blocks now embed, when a disk is
+mounted, `Tracks`/`Sides`/`WriteProtected`/`IsDirty` plus the full raw sector bytes, gzip-
+compressed via a new shared `StateBlobCompression` helper. The cassette block embeds `IsDirty`
+plus the current side's compact `.cas`-format bytes (via the already-existing `MiniTape.Save()`
+serializer — no new serializer needed, confirming §8's "build once, reuse both" already held).
+**Two real implementation findings worth keeping on record, both closing genuine edge cases the
+design text above didn't spell out:**
+- **A blank/unformatted disk has no on-disk label, so restoring it can't go through the normal
+  auto-detect-geometry constructor** (auto-detect would read the (absent) label bytes as zero and
+  compute an invalid track count). Restore instead uses a new `DskImage.FromEmbeddedState(bytes,
+  tracks, sides)` that takes the geometry from the `.state` block directly rather than
+  re-detecting it — the embedded state already knows what it is, no need to re-derive it.
+- **"Embedded bytes are authoritative" extends to the ABSENCE of media, not just its presence:**
+  `MdcrDevice.LoadState`'s no-tape case previously left whatever the freshly-rebuilt machine's
+  config-seeded mount (e.g. a `.cfg`'s new `CassettePath`, below) had already put in the deck. A
+  `.state` saved with no cassette mounted now explicitly clears it on restore, even if the
+  embedded config would otherwise have seeded one — matching this section's own "embedded state,
+  not embedded config, wins" rule for the case that's easy to overlook (nothing there, rather than
+  something there).
+- **Cassette embeds the CURRENT side only**, matching the existing "one `.cas` file is one
+  physical side" convention the UI's "Save as `.cas`" feature already has (`docs/
+  MDCR-implementation.md` §6) — not a new limitation, an existing one carried through consistently.
 
 ### File extensions (DECIDED)
 - **Monitor ROM / cartridges: standard `.bin` / `.rom` — NO custom extensions.** These are raw
@@ -507,14 +802,207 @@ contain" design space, and it **reopens an already-made decision, not a fresh on
   updated). JWSDOS 5.0 itself supports 35/40/80-track, SS/DS as a per-disk format-time
   choice, with a **self-describing on-disk geometry label** the emulator's `.dsk` loader can
   read directly at fixed offsets — keeping this file convention header-free (full offsets +
-  fields: `docs/JWSDOS-format.md` §3). **Note:** real JWSDOS itself does NOT read this label
-  back to auto-configure its own runtime geometry state (`docs/JWSDOS-format.md` §1) — an
+  fields: `docs/P2000T-disk-formats.md` §3). **Note:** real JWSDOS itself does NOT read this label
+  back to auto-configure its own runtime geometry state (`docs/P2000T-disk-formats.md` §1) — an
   emulator auto-detecting geometry from the label anyway is a deliberate UX improvement
   beyond replicating real JWSDOS behavior, not "just matching the hardware." Directory
-  format + allocation model: `docs/JWSDOS-format.md` (mirrors how `docs/MDCR-implementation.md`
+  format + allocation model: `docs/P2000T-disk-formats.md` (mirrors how `docs/MDCR-implementation.md`
   holds cassette detail rather than duplicating it here). (JWSDOS = a third-party,
   user-group-developed P2000 disk OS; the official Philips disk-BASIC product also existed,
-  §5b/§5d — different DOS, different on-disk conventions.)
+  §5b/§5d — different DOS, different on-disk conventions.) **Status update, 2026-07-27: this
+  is now the LEGACY import/export convention, not the emulator's preferred format going
+  forward — see the RESOLVED block immediately below.**
+
+**RESOLVED (owner, 2026-07-27) — adopt IMD (ImageDisk) as the emulator's native/preferred disk
+container; plain `.dsk` stays supported as a legacy import/export format, never silently
+upgraded.** Raw `.dsk` has no room for self-described geometry (the genuine ambiguity ms.20d
+above has to work around), no room for recording real per-sector physical order, and no way to
+carry write-protect — a real container format closes all three, PROVIDED it's one other tools
+already understand rather than a bespoke invention (the owner's explicit requirement, to keep
+images usable outside this project and eventually writeable back to real physical media).
+- **Researched (2026-07-27) rather than assumed, given how fast tool support changes:** IMD is
+  sector-based (not flux/bitstream) and stores, per track, an explicit sector-order map — the
+  physical position each logical sector occupies under the head, i.e. real interleave, with
+  nothing copy-protection-shaped beyond that (matching the owner's explicit YAGNI on
+  copy-protection modeling — no P2000 software is known to have used it, and if that ever
+  surfaces later it's a separate problem for then, not now). It's natively supported by MAME's
+  own floppy core, and both Greaseweazle and FluxEngine can read AND write IMD to genuine
+  physical floppy media — satisfying the owner's actual goal (usable in other emulators,
+  writeable to a real disk), not just novelty. **HFE was considered and ruled out:** it stores
+  the raw track bit-cell stream, not sectors — built primarily as an SD-card substitute for a
+  physical drive (the HxC hardware emulator), not a real-media writeback format, and carries no
+  explicit interleave field of its own (any ordering is only implicit in the bitstream) — more
+  implementation cost for a worse fit. TD0 (Teledisk) is still nominally supported by the same
+  tools but has a messier legacy spec with no advantage over IMD. Sources: [IMD spec
+  (PDF)](https://oldcomputers-ddns.org/public/pub/manuals/imd.pdf), [MAME's
+  imd_dsk.cpp](https://github.com/mamedev/mame/blob/master/src/lib/formats/imd_dsk.cpp),
+  [Greaseweazle's Supported Image
+  Types](https://github.com/keirf/greaseweazle/wiki/Supported-Image-Types), [FluxEngine's
+  using.md](https://github.com/davidgiven/fluxengine/blob/master/doc/using.md), [HxC's own HFE
+  format spec](https://hxc2001.com/floppy_drive_emulator/HFE-file-format.html).
+- **Write-protect stays OUT of the image format entirely, on the owner's own real-hardware
+  framing:** "IRL it is a sticker on a 5.25" floppy or an open/closed slider on a 3.5" one" —
+  it's a property of how the media is being HANDLED, not data recorded on it. This isn't a
+  compromise forced by IMD's spec lacking a protect bit; it's the accurate model. Write-protect
+  stays exactly where it already lives (this project's own config/`.state` layer, resolved
+  machine milestones 20/20a) for every disk format, IMD included.
+- **Legacy `.dsk` support is unchanged and not wasted work** — mounting one still goes through
+  the geometry-resolution flow just built (machine milestone 20d, UI milestone 14e): label
+  validation, config-Capacity/Sides fallback, and the mismatch dialog for anything that still
+  doesn't add up. That flow is exactly what makes an ambiguous legacy file usable at all before
+  it can become a real, self-describing IMD file.
+- **Conversion is always explicit, never silent, per the owner's own requirement:** plain
+  "Save" on a `.dsk`-backed image keeps saving as `.dsk`, in place, completely unchanged from
+  today. Only **"Save As"** can move to IMD, and it always prompts for a name and destination
+  like any other Save As — there is no in-place, silent format upgrade of a file the user didn't
+  explicitly choose to convert.
+- **IMD, once written, is fully self-describing** — geometry and sector order live in the file
+  itself, so mounting an `.imd` needs NONE of ms.20d's guessing machinery (label validation,
+  config fallback, candidate-mismatch dialog) — same shape as `.state`'s own "embedded state is
+  authoritative, never re-detected" precedent (`DskImage.FromEmbeddedState`, above).
+- **Format detection is content-based** (IMD's own text header, e.g. `"IMD "` + version/date
+  stamp), not extension-based — a renamed file still loads correctly; anything without that
+  header falls through to the existing raw-`.dsk` path unchanged.
+- **Symmetric export:** an already-IMD-backed image's Save As also offers **"Save as plain
+  `.dsk`"** — for handing an image to another tool that only wants a bare sector dump. This is
+  explicitly LOSSY (any recorded sector order collapses to plain logical order) — the Save
+  dialog should say so rather than silently dropping it.
+- **Scope for now — this is a container/format decision, not a timing-model change:** building
+  IMD read/write means storing and round-tripping the per-sector order map faithfully; it does
+  NOT yet mean the FDC's own timing model consumes that order for rotational-latency accuracy —
+  that's a real, separate, deferred future step (flagged, not scoped here). A newly-created
+  image (a blank disk, or a `.dsk` converted via Save As) writes a plain sequential order map,
+  since nothing in this project generates genuine interleave yet — the field exists and
+  round-trips correctly, it's just not populated with anything non-trivial until a future
+  milestone actually models real formatting-time interleave.
+- **No new companion doc planned for this** — IMD is an external, already comprehensively
+  documented standard (unlike JWSDOS, which needed reverse-engineering); implementation should
+  follow the published spec (linked above) directly rather than this project duplicating it.
+- See machine milestone 21 and UI milestone 14f for the concrete build items.
+
+**IMPLEMENTED (machine milestone 21, 2026-07-27) — built as designed, with one description
+correction (better than originally scoped) and one honest caveat.**
+- **Correction to the "plain sequential order map" scoping above:** that described the NEW-data
+  case correctly (a `.dsk` conversion or a blank disk has no real interleave to preserve, so it
+  gets a trivial sequential map) — but it undersold what actually got built. Reading an existing
+  IMD file now captures its real per-sector order map, and writing that SAME image back out
+  reuses it verbatim — so an already-IMD-backed image round-trips its genuine interleave
+  faithfully, not just trivially. Only the conversion/blank-disk path falls back to sequential,
+  exactly as scoped. Worth stating precisely since it's a real capability beyond the original
+  minimum bar, not just an implementation detail.
+- **Spec source note, for provenance:** the published IMD spec PDF cited above was unreachable
+  at build time (a fetch failure, not a content problem) — built instead directly from MAME's
+  own `imd_dsk.cpp` parser, one of the other sources already cited above. Worth knowing if
+  anything here ever needs re-checking against the primary spec directly.
+- **One honest gap, flagged rather than silently accepted:** IMD's optional per-track
+  cylinder-map/head-map bits are parsed correctly (so such a file still loads) but not preserved
+  on re-save — re-saving a file that used them would not be byte-identical. No known P2000 image
+  is expected to need this; noted here in case it ever matters.
+- **One new carve-out worth naming explicitly:** mounting an IMD file whose own declared sector
+  size doesn't resolve to this project's fixed 256 bytes/sector is a genuine rejection (an
+  exception), not a fail-soft mismatch. This is NOT in tension with ms.20d's "never blocks a
+  mount" rule — that rule is about geometry AMBIGUITY in an otherwise-plausible raw sector dump;
+  this is about a file whose own self-described structure isn't shaped like a P2000 disk at all,
+  a different kind of problem with a different, honest answer.
+
+**IMPLEMENTED (UI milestone 14f, 2026-07-27) — built exactly as designed.** One addition the
+milestone text didn't spell out but was needed for the feature to actually be usable: the Disk
+Drives window's mount file-dialog filter and drag-drop handlers only accepted `.dsk`/`.img`
+before this — extended to also accept `.imd`, since content-based format detection happening
+inside `DskImage.Mount` doesn't help if the file picker/drop target won't offer or accept the
+file in the first place.
+
+**RESOLVED (owner, 2026-07-27) — the Config window's own disk-image picking gets the same
+geometry-mismatch protection as the Disk Drives window, via one shared mechanism rather than a
+second parallel implementation.** Triggered by the owner noticing the Config window's per-row
+`ImagePath` field (ms.14c) has zero validation against the row's own Capacity/Sides — unlike a
+live mount (ms.20d/14e), which has had this since two rounds ago. Two ways to close this were
+considered — duplicate the check in the Config window, or find one true shared path — and the
+owner's own framing of a second point resolved it cleanly: **mounting media has always been a
+runtime swap, not topology** (drive presence/capacity/sidedness are topology, reset-to-apply;
+what's mounted in an already-present drive is not, §5d machine milestone 20's original
+framing) — the Config window's field-based `ImagePath` model just never honored that
+distinction. The fix leans into it rather than working around it:
+- **Live case — genuinely ONE code path, not two kept in sync:** when the Config window's
+  machine is running AND the row's drive index already exists in the live topology, browsing a
+  new image for that row calls straight through to the EXACT SAME live-mount action the Disk
+  Drives window uses (same `DskImage.Mount`, same `GeometryMismatchDetected` event, same
+  dialog) — no separate mismatch-detection code for this case at all. The row's displayed
+  `ImagePath` afterward reflects whatever's actually live-mounted, read back the same way
+  `SaveCfgAsync`'s `CaptureCurrentConfig()` call already does, rather than tracking a
+  separately-authored pending value. **Capacity/Sides fields are unchanged** — still genuine
+  topology, still require Apply, exactly as already locked; only `ImagePath` picking gets this
+  live-delegation treatment, since only that half was ever mis-modeled as needing Apply.
+- **Offline case — a real gap remains here, so it keeps a lightweight, non-blocking preview
+  check:** no machine running, or the row's drive doesn't exist in the live topology yet (e.g.
+  composing a brand-new `.cfg` from scratch — the actual reason `ImagePath` was added to this
+  window in ms.14c). Nothing to live-mount into, so this stays a preview: the SAME detection
+  logic `DskImage.Mount` already uses, reused as a standalone function (no `DskImage`
+  construction needed just to preview), checked against the row's currently-set Capacity/Sides.
+  A mismatch shows an analogous dialog — candidate: offer to update the row's own Capacity/Sides
+  to match, keep current settings anyway, or pick a different file; no-candidate: state the
+  byte counts plainly, offer to use anyway or pick a different file. **No pad option here, per
+  the owner's explicit decision** — the Config window only ever references a path, it never
+  touches file bytes, so "pad" would mean writing a new file from what's meant to be a
+  lightweight picker; real remediation stays where it already lives, the Disk Drives window,
+  once the image is actually mounted for real.
+- **Bidirectional, per the owner's own explicit requirement ("otherwise it isn't a closed
+  loop"):** changing a row's Capacity/Sides AFTER a path is already set re-runs the same preview
+  check against the new values — a stale, no-longer-accurate mismatch state (or a newly
+  introduced one) never just sits there unchecked.
+- **Closing the loop further — proactive surfacing generalizes beyond just this feature.** The
+  existing construction-time mechanism (`Upd765.GetMismatch`, ms.14e) only gets raised once
+  `DiskDriveWindowVm` subscribes — i.e. only if/when the user happens to open that window. Too
+  passive: a mismatch from an offline-authored `.cfg` (this decision's offline case, above), or
+  from the startup-config auto-load (ms.14/20c) applying at launch, or from an ordinary Apply,
+  should surface the moment it actually happens, not whenever a specific window next happens to
+  be opened. **Whatever code path owns "a reconfigure — or the startup load — just landed
+  successfully" should walk every drive's `Upd765.GetMismatch()` immediately afterward and raise
+  the same dialog machinery a live mount already uses.** This is a generalization of ms.14e's own
+  construction-time surfacing — moving WHEN it fires from "next window subscribe" to
+  "immediately after the mount that caused it," not a new mechanism.
+- See machine milestone 20e and UI milestone 14g for the concrete build items.
+
+**IMPLEMENTED (machine milestone 20e, 2026-07-27) — built as designed, a clean pure refactor.**
+`DetectMismatch`'s label/config/candidate decision split cleanly out of `Mount` with no behavior
+change, exactly as scoped. One naming/visibility note worth keeping: `ImdFormat` (the parser
+`DetectMismatch`'s IMD carve-out defers to) is `internal`, so a small public passthrough,
+`DskImage.IsImdFile(byte[]) → bool`, was added for UI-side callers that need to skip IMD files in
+an offline preview — the format-detail-parsing type itself stays internal, only the yes/no sniff
+is exposed.
+
+**IMPLEMENTED (UI milestone 14g, 2026-07-27) — built exactly as designed, both halves.** Live
+delegation reuses `DiskDriveWindowVm`'s own existing instance (via `DisplayWindowVm.DiskVm`, not
+a second one) — genuinely one code path. Offline preview and the bidirectional recheck both work
+as scoped. Proactive surfacing needed two distinct mechanisms, not one, because the Apply case and
+the startup case land at genuinely different points in the object lifecycle: Apply reuses ms.14e's
+existing per-drive construction-time signal (just forced to rebuild synchronously instead of
+waiting for the next frame tick), while startup needed a new method,
+`DiskDriveWindowVm.RaiseAnyPendingMismatches()`, since `DiskDriveWindowVm` is constructed before
+`DisplayWindow`'s code-behind has subscribed to anything — a mismatch signaled at that point would
+otherwise fire into a dead event and be lost for good. The two mechanisms are deliberately never
+both invoked for the same event, avoiding a double-fired dialog.
+
+**CORRECTED (2026-07-27) — real usage found the startup half of the above caused a permanent
+crash loop, now fixed.** A mismatched drive whose config gets auto-saved as the startup `.cfg`
+(the owner chose "Continue mounting as-is," which never clears the mismatch — by design, ms.14e)
+crashed the app on every subsequent launch: `RaiseAnyPendingMismatches()` was called from
+`DisplayWindow.OnDataContextChanged`, which Avalonia fires synchronously as part of the
+`new DisplayWindow { DataContext = vm }` object initializer — before the window has ever been
+shown — and `ShowDialog` throws if its owner isn't visible yet. Fixed by moving that call to a new
+`OnOpened` override (fires only once the window is actually shown), matching the pattern
+`ConfigWindow` already uses for its own `OnOpened`-gated refresh; the event *subscription* stays in
+`OnDataContextChanged`, so "subscribe then raise" ordering is preserved — only WHEN the raise-half
+runs moved. Caught by a new real (not just VM-level) regression test that constructs an actual
+`DisplayWindow` against a mismatched startup config.
+
+**TRACKED, not fixed, owner's own explicit call (2026-07-27):** the mismatch dialog doesn't pause
+emulation while it's up — harmless today since the user can't interact with the emulator until
+they answer it, but the ROM may already have attempted (and failed) its boot read against the
+bad disk before any recovery choice is made, and none of the recovery actions enqueue a reset
+afterward. Two fixes were offered (pause while the dialog is open; pause + auto-reset after a
+remediating choice) and the owner deliberately chose neither for now — recorded here only so it
+isn't lost, not because it's scheduled.
 
 ---
 
@@ -1419,7 +1907,7 @@ FDC off, RAM bank restored to 0).
 marker.** Third-party disk operating systems (e.g. JWSDOS, a user-group-developed DOS) do
 not carry it and are not expected to — real JWSDOS disk images have a different byte
 (confirmed to be JWSDOS's own first opcode, not a bad dump) at that offset and boot
-successfully regardless. See `docs/JWSDOS-format.md` §6/§7 for the full driver-side detail
+successfully regardless. See `docs/P2000T-disk-formats.md` §6/§7 for the full driver-side detail
 and the (still open) question of what downstream code actually does with the resulting
 `sysdisk_status` value.
 
@@ -2099,7 +2587,7 @@ written OUT value — the control latch's live value during a transfer (`0x0D`, 
 has bit0 set permanently, which would make the poll never wait. Most likely a separate
 physical status line multiplexed onto the same port address, a common pattern on
 Z80-peripheral-era I/O — noting the mechanism as inferred, not asserting more than the
-disassembly shows. See `docs/JWSDOS-format.md` §6 for the full driver sequence this bit
+disassembly shows. See `docs/P2000T-disk-formats.md` §6 for the full driver sequence this bit
 is used in.
 
 **FDC = µPD765, semi-DMA, software-polled (CONFIRMED):** status/data via A0 (`0x8C` status = MSR,
@@ -2257,6 +2745,40 @@ now independently reconfirmed by this second, completely separate real program: 
 own `check_write_protect` sends the identical `02 04 <drive>` shape and tests the identical ST3
 bit 6.
 
+**RESOLVED (owner, 2026-07-27) — the Config window's drive-count axis now follows this exact
+real convention, closing the "worth matching if..." flag just above.** Triggered by the owner's
+own first real end-to-end test with a sourced `Basic24k.bin` cartridge + boot floppy: configuring
+one drive and mounting the boot floppy at internal index 0 (today's `ConfigWindowVm` default for
+"1 drive") silently fails to boot — exactly the trap the "ROM hardcodes unit-select to drive 1,
+never drive 0" finding below already predicted, just now hit in practice rather than only known
+from disassembly. Rather than just documenting the trap, close it: **the drive-count axis
+assigns internal `DriveIndex` values in the sequence 1, 2, 3, 0 as count goes 1→4, not 0, 1, 2,
+3** — "configure 1 drive" lands on index 1 (the one every real boot path actually addresses),
+"configure 2" adds index 2, "configure 3" adds index 3, and only "configure 4" reaches index 0 —
+mirroring the real machine's own on-screen numbering (drive 1/2/3/4 ↔ internal index 1/2/3/0)
+exactly, not just internally. **User-facing labels stay "Drive 1"/"Drive 2"/"Drive 3"/"Drive 4"
+in that display order** — only the internal `MachineConfig.FloppyDrives[i]` slot each one writes
+to changes; nothing about this is visible to the user beyond "my one configured drive now just
+boots." This was also the owner's own explicit ask, independent of the boot-floppy trap: adding
+N drives should default to a numbering that reads as 1, 2, 3… not 0, 1, 2 — this happens to be
+the same fix. **Knock-on effect on loading an existing `.cfg` back into a drive count** (the
+milestone-14 "collapse a loaded config's drive list… highest enabled index + 1 = count" logic,
+`P2000.UI` CLAUDE.md §14 findings): needs to collapse by POSITION in the fixed sequence
+`[1, 2, 3, 0]` instead of by raw index magnitude now — index 1 alone → count 1; 1+2 → count 2;
+1+2+3 → count 3; anything reaching index 0 → count 4. A hand-edited `.cfg` with a genuinely
+irregular pattern (e.g. only index 0 set, nothing else) remains the same accepted lossy-collapse
+limitation already documented for milestone 14, just restated against the new sequence. See UI
+milestone 14d for the concrete build item.
+
+**IMPLEMENTED (UI milestone 14d, 2026-07-27) — built exactly as designed, no corrections needed.**
+`ConfigWindowVm.ResizeFloppyDriveRows` assigns `DriveIndex` from the fixed `[1, 2, 3, 0]` sequence
+by row position, and `LoadFloppyDrivesFrom`'s collapse logic walks the same sequence rather than
+using raw index magnitude — both exactly as scoped. Confirmed, as expected, that the machine layer
+needed zero changes. The only real work beyond the spec itself was updating a handful of
+pre-existing tests whose fixtures assumed the old 0-based convention (index 0/1 → 1/2) — not a
+design deviation, just fixture upkeep. All 6 of the milestone's own test cases pass; full
+`P2000.UI.Tests`: 198/198 green.
+
 **Two confirmed µPD765 usage facts from real-ROM boot-test diagnosis (2026-07-22), both
 worth knowing beyond just "the FDC has 4 drives" (drive count corrected 2026-07-23, above):**
 - **The ROM driver hardcodes unit-select to drive 1, never drive 0.** `Disk.asm`'s
@@ -2340,7 +2862,7 @@ independent of the timing policy.
 From **MAME PR #7577 FDC slot device** (chip, ports, DMA/INT wiring), the project's **own
 monitor-ROM disassembly** (presence probe + driver command sequence), the owner's own
 **JWSDOS 5.0 binary disassembly**, and **real JWSDOS/`Disk BASIC` disk images** (test corpus)
-— see `docs/JWSDOS-format.md` for everything DOS/disk-format-specific:
+— see `docs/P2000T-disk-formats.md` for everything DOS/disk-format-specific:
 1. **Exact FDC chip** — µPD765 per MAME; corroborated (not independently schematic-confirmed)
    by the real command bytes above structurally matching the standard µPD765 parameter-block
    shapes. (A hobbyist building a *custom* P2000T controller once referenced the WD179x
@@ -2352,14 +2874,133 @@ monitor-ROM disassembly** (presence probe + driver command sequence), the owner'
 4. ~~**FDC INT line wiring** to the Z80~~ — **RESOLVED**: through CTC ch0, IM2-vectored (§5d
    CTC channel roles above), not a direct maskable INT or NMI line.
 5. ~~**Disk geometry / image format**~~ — **RESOLVED for sector size/count; geometry itself
-   moved to `docs/JWSDOS-format.md`.** Sector size/count CONFIRMED from `getdos`: 16
+   moved to `docs/P2000T-disk-formats.md`.** Sector size/count CONFIRMED from `getdos`: 16
    sectors/track, 256 B/sector (4 KB/track). The earlier "single-sided 35-track" figure was
    a placeholder that did not survive contact with real disk images — JWSDOS 5.0 supports
    **multiple geometries** (35/40/80-track, SS/DS) as a per-disk format-time choice, with a
    self-describing on-disk label (byte-exact confirmed against a real 320 KB image: 40-track,
    double-sided). Full detail — directory format, allocation model, the geometry label's
-   exact offsets — lives in `docs/JWSDOS-format.md`, not duplicated here. See also §3a for
+   exact offsets — lives in `docs/P2000T-disk-formats.md`, not duplicated here. See also §3a for
    the resulting `.dsk` file-convention note.
+
+   **RESOLVED (owner, 2026-07-27) — the label-based auto-detect above is JWSDOS-specific and
+   was silently over-trusted; geometry detection + a real mismatch UX now replaces it.**
+   Triggered by real testing: the Basic24k boot floppy is **PDOS**, not JWSDOS — it has no
+   on-disk label at all, so reading `0x0FEF`/`0x0FFF` from it just reads whatever sector bytes
+   happen to sit there. Worse, **a raw `.dsk` sector dump carries no container metadata
+   whatsoever, so geometry can be genuinely ambiguous from the file alone** — a 40-track
+   double-sided image and an 80-track single-sided image are BOTH exactly 327,680 bytes; no
+   amount of content inspection resolves that, the information simply isn't in the file. The
+   owner's own mounted test file (32,768 bytes, 8 tracks' worth) surfaced the sharper problem:
+   it mounted with zero feedback despite being far short of any real disk's size, because
+   nothing ever checked file length against the geometry being assumed.
+   - **New mount-time algorithm, replacing "label wins, config is only the blank-media seed"
+     (machine milestone 20's original framing — see machine milestone 20d for the build item):**
+     1. **Try the label, but only trust it if it's self-consistent.** Read the two label bytes
+        (file permitting); compute the byte length that declared geometry implies; **only use
+        it if that length equals the file's actual length exactly.** This is what makes the
+        label safe to read blind on a non-JWSDOS file — genuinely random sector bytes forming a
+        combination that ALSO happens to byte-length-match the file is vanishingly unlikely, so
+        this single check is enough to reject a PDOS (or corrupt) file without knowing anything
+        about which DOS made it. A validated label mounts exactly as today, silently, no dialog
+        — this is still the common, fast path for genuine JWSDOS disks.
+     2. **Otherwise, the drive's configured Capacity/Sides is the geometry** — promoted from
+        "blank-media seed" to **the real fallback for every non-JWSDOS-labeled image**, which in
+        practice is most images (PDOS, other DOSes, data-only disks). If that geometry's implied
+        byte length matches the file exactly, mount silently — no dialog needed just because the
+        label didn't validate.
+     3. **Otherwise (the configured geometry's implied length disagrees with the file), check
+        whether the file's exact length matches any OTHER of the 6 canonical
+        Capacity×Sides combinations** (35/40/80-track × SS/DS). If it matches one (or, for the
+        327,680-byte collision, both), **surface a dialog naming the match(es)** — "this file's
+        size matches 80-track/single-sided; the drive is configured for 40-track/double-sided" —
+        with the owner's own requested resolution: **let the user decide, don't guess for
+        them** — reconfigure the drive to the matching geometry and remount, or continue
+        mounting with the current configuration anyway, or cancel. If two candidates both
+        match (the 40DS/80SS collision), list both as reconfigure options.
+     4. **Otherwise (the file's length matches no canonical geometry at all — genuinely short/
+        odd-sized, the owner's actual test case) surface a different dialog:** state the actual
+        vs. expected byte counts plainly (e.g. "32,768 bytes mounted; the drive expects
+        327,680 bytes for 40-track/double-sided — about 10% of the expected data is present").
+        Offer **extend to full size** (pads the IN-MEMORY image up to the configured geometry's
+        full length, filling the new space with the SAME neutral fill byte real FORMAT A TRACK
+        already writes into unformatted sectors — `0x00`, confirmed via the `jwsformat.asm`
+        disassembly above, reused here rather than inventing a second "erased" convention;
+        **honest framing in the dialog: this fills blank space, it does not recover missing
+        data**) — or **continue mounting as-is** — or **cancel**. Padding only ever touches the
+        in-memory image, exactly like every other disk mutation (buffered-write model, machine
+        milestone 20) — nothing reaches the host file until an explicit Save/Save-as.
+     5. **If the file is LONGER than the geometry actually in use** (config-matched or
+        candidate-matched), this falls out of the same comparison for free: no pad option (there's
+        nothing to fill), just an informational note that the trailing bytes beyond the addressed
+        geometry are unused — never a blocking condition.
+   - **Nothing here ever blocks a mount outright** — every path above ends in "mounted," matching
+     the emulator's existing fail-soft posture elsewhere (`.cfg`/`.uistate`/`.state` version
+     mismatches all degrade gracefully rather than refusing to proceed); the dialogs exist to
+     inform and offer a better path, not to gate access to a file the user chose to mount.
+   - **Out-of-range reads need a defined behavior for the first time** (previously undocumented
+     for disk, unlike the cartridge's confirmed "open-bus reads `0xFF` past a short image," §5c):
+     a sector address beyond the image's actual byte length (an unpadded short mount, continued
+     anyway) reads as the same `0x00` fill byte, never an exception — mirrors the cartridge
+     precedent's shape (a defined fill value, not a crash) using disk's own already-confirmed
+     fill byte rather than borrowing the cartridge's `0xFF` (a different device, different
+     convention).
+   - **`docs/P2000T-disk-formats.md` companion note ADDED (2026-07-27)** — its §3 now carries a
+     "RESOLVED (owner + CC, 2026-07-27)" block explaining the label is a JWSDOS convention, not
+     a P2000 disk-image convention, and cross-referencing this resolution and machine milestone
+     20d for the validation rule. Nothing in that doc's own byte-offset table needed correcting
+     — the label itself, on a genuine JWSDOS disk, was always documented correctly; the addition
+     is purely about not assuming every `.dsk` file is a JWSDOS disk just because it CAN be read
+     at those offsets.
+   - See machine milestone 20d and UI milestone 14e for the concrete build items.
+
+   **IMPLEMENTED (machine milestone 20d, 2026-07-27) — built exactly as designed, no
+   corrections needed.** `DskImage.Mount(bytes, configuredTracks, configuredSides)` is a NEW
+   static factory sitting alongside the existing constructors (which keep their original
+   unconditional-label-trusting behavior unchanged, since dozens of existing tests/fixtures
+   construct images directly through them and have no need for the mismatch dance) — the two
+   real mount call sites (`Machine`'s constructor for a `.cfg`'s `ImagePath`, and the UI's live
+   mount) route through `Mount` instead. Returns a new `DiskGeometryMismatch` result
+   (`Kind`: `None`/`Candidate`/`NoCandidate`; `ActualLength`/`ExpectedLength`; `Candidates`; a
+   computed `CanPad` that's only true for a genuinely-short `NoCandidate` mismatch, since a
+   file that's merely longer than expected has nothing to pad). `DskImage.ExtendTo(targetLength)`
+   pads with `0x00` in memory, matching the design exactly. **Two out-of-range behaviors this
+   design left slightly open are now concretely decided:** a sector read straddling the
+   boundary between real data and padding returns real bytes for the in-range prefix and `0x00`
+   fill for the rest; an out-of-range **write** is silently dropped (there's nowhere to put the
+   bytes without implicitly growing the image, which only an explicit `ExtendTo` does) — the
+   same treatment already given to a write-protected drive, reused rather than inventing a third
+   behavior. `Upd765` carries the mismatch per-drive (a new 3-arg `MountDisk` overload,
+   `GetMismatch(drive)`, cleared on eject) so a construction-time (`.cfg`-authored) mismatch
+   survives past machine assembly for the UI to discover the first time a window observes the
+   drive. **Two real bugs found and fixed along the way, both direct consequences of short
+   mounts becoming a normal path for the first time:** `DskImage.ReadDirectory()` previously
+   assumed its backing data was always ≥ 0x2000 bytes (true for every real disk, no longer true
+   once short mounts stopped being rejected) — fixed to read from a zero-filled buffer the same
+   way `ReadSector` does, so a short image's directory browses as empty rather than throwing;
+   and `Machine.CaptureCurrentConfig()`'s `Capacity`/`Sides` fields were still echoing the
+   original construction-time config even after a live "reconfigure and remount" changed a
+   drive's real geometry — the same staleness class already fixed for `ImagePath` in milestone
+   20c, now extended to cover geometry too. Full `P2000.Machine.Tests`: 520/520 green (was 496
+   before this and the preceding round).
+
+   **IMPLEMENTED (UI milestone 14e, 2026-07-27) — built exactly as designed, no corrections
+   needed.** `DiskDriveVm.MountBytes` now routes through `DskImage.Mount` and never rejects a
+   file outright (the old "not a valid disk image" exception path is gone — a too-short file
+   mounts using the drive's configured geometry and reports a mismatch instead, exactly per the
+   "never blocks" rule). One recovery method per dialog button: `ReconfigureAndRemount` re-mounts
+   the same bytes under a new geometry and updates the drive's Capacity/Sides going forward;
+   `ContinueWithCurrentMount` is a deliberate no-op that leaves the mismatch on record (rather
+   than clearing it) so a persistent status indicator could still reflect it later;
+   `ExtendMountedDiskToFullSize` calls `ExtendTo` then clears the mismatch; `CancelMount` ejects
+   the just-mounted image, skipping the unsaved-changes gate since there's nothing to lose from a
+   mount made moments earlier. A construction-time mismatch (from a `.cfg`'s own `ImagePath`) is
+   captured into a `PendingMismatch` property and only raised once `DiskDriveWindowVm` has
+   actually subscribed to the drive's events — mirrors the existing relay pattern already used
+   for `ShowMessageRequested`/`ConfirmDiscardRequested`. Both dialog shapes (candidate and
+   no-candidate) were built as plain-code `Window`s in `DiskDriveWindow.axaml.cs`, matching this
+   file's existing error/discard-dialog style. Full `P2000.UI.Tests`: 182/182 green (was 170
+   before this and the preceding round).
 
 ---
 

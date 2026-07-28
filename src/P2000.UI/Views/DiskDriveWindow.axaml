@@ -4,7 +4,7 @@
         xmlns:local="using:P2000.UI.Views"
         x:DataType="vm:DiskDriveWindowVm"
         x:Class="P2000.UI.Views.DiskDriveWindow"
-        Title="Disk Drives"
+        Title="Floppy Drives"
         Width="520" Height="480"
         MinWidth="440" MinHeight="340"
         CanResize="True"

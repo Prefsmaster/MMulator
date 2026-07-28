@@ -23,7 +23,10 @@
     <DockPanel DragDrop.AllowDrop="True">
 
         <!-- ── Menu bar ──────────────────────────────────────────────────────── -->
-        <Menu DockPanel.Dock="Top">
+        <!-- Consolidated 2026-07-27 (project CLAUDE.md milestone 14h): Config/Debug/Input/Disk
+             each used to be a top-level menu gating exactly one child command — collapsed into
+             the single Windows menu below. Cassette (3 real items) and View are unchanged. -->
+        <Menu DockPanel.Dock="Top" x:Name="MainMenu">
             <MenuItem Header="_Machine">
                 <MenuItem Header="Run / _Pause"     HotKey="F5"        Command="{Binding ToggleRunPauseCommand}" />
                 <Separator />
@@ -42,18 +45,6 @@
                 <Separator />
                 <MenuItem Header="Screens_hot"      HotKey="F12"       Command="{Binding ScreenshotCommand}" />
             </MenuItem>
-            <MenuItem Header="_Config">
-                <MenuItem Header="_Machine configuration…" Command="{Binding OpenConfigCommand}"
-                          ToolTip.Tip="Change RAM, SLOT1, monitor ROM — applies on cold reset" />
-            </MenuItem>
-            <MenuItem Header="_Debug">
-                <MenuItem Header="_Debugger…" Command="{Binding OpenDebuggerCommand}"
-                          ToolTip.Tip="Open debugger: register file, VRAM/pan window, memory watches" />
-            </MenuItem>
-            <MenuItem Header="_Input">
-                <MenuItem Header="_Keyboard window…" Command="{Binding OpenKeyboardCommand}"
-                          ToolTip.Tip="Soft keyboard — click-to-press, P2000-Authentic / Standard-Host mode toggle" />
-            </MenuItem>
             <MenuItem Header="_Cassette">
                 <MenuItem Header="_Open Deck window" Command="{Binding OpenCassetteDeckCommand}" />
                 <Separator />
@@ -61,10 +52,6 @@
                           ToolTip.Tip="Insert a .cas cassette image (also drag-drop onto display)" />
                 <MenuItem Header="_Eject"            Command="{Binding CassetteVm.EjectCommand}"
                           ToolTip.Tip="Remove the current cassette" />
-            </MenuItem>
-            <MenuItem Header="_Disk">
-                <MenuItem Header="_Open Disk Drives window" Command="{Binding OpenDiskDrivesCommand}"
-                          ToolTip.Tip="Mount/eject/create/save .dsk images per drive — needs a Floppy+RAM board configured" />
             </MenuItem>
             <MenuItem Header="_View">
                 <!-- Display mode — bullet icon on the active item acts as radio indicator -->
@@ -158,6 +145,16 @@
                         <TextBlock Text="✓" IsVisible="{Binding AudioMute}" />
                     </MenuItem.Icon>
                 </MenuItem>
+            </MenuItem>
+            <MenuItem Header="_Windows">
+                <MenuItem Header="_Machine configuration…" Command="{Binding OpenConfigCommand}"
+                          ToolTip.Tip="Change RAM, SLOT1, monitor ROM — applies on cold reset" />
+                <MenuItem Header="_Debugger…" Command="{Binding OpenDebuggerCommand}"
+                          ToolTip.Tip="Open debugger: register file, VRAM/pan window, memory watches" />
+                <MenuItem Header="_Keyboard…" Command="{Binding OpenKeyboardCommand}"
+                          ToolTip.Tip="Soft keyboard — click-to-press, P2000-Authentic / Standard-Host mode toggle" />
+                <MenuItem Header="_Floppy Drives…" Command="{Binding OpenDiskDrivesCommand}"
+                          ToolTip.Tip="Mount/eject/create/save .dsk images per drive — needs a Floppy+RAM board configured" />
             </MenuItem>
         </Menu>
 

@@ -78,7 +78,7 @@
             <StackPanel IsVisible="{Binding ShowFloppyDrives}" Spacing="4">
                 <TextBlock Classes="section" Text="Floppy Drives" />
                 <TextBlock Classes="hint"
-                           Text="Drive count/geometry is topology (reset-to-apply). Capacity/Sides only seed newly-created blank media — a mounted image's own label always wins. Images themselves are mounted live from the Disk Drives window." />
+                           Text="Drive count/geometry is topology (reset-to-apply). Capacity/Sides only seed newly-created blank media — a mounted image's own label always wins. Images themselves are mounted live from the Floppy Drives window." />
                 <DockPanel>
                     <TextBlock Classes="label" Text="Drive count" />
                     <ComboBox ItemsSource="{Binding FloppyDriveCounts}"

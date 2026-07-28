@@ -1195,6 +1195,71 @@ builds did. Do not advance while the current milestone is red. Record spec corre
       (e) the startup-config auto-load path surfaces the same way for a `.cfg` saved with an
       unresolved mismatch, immediately at launch. → commit.
 
+14h. **Menu bar consolidation — `Machine | Cassette | View | Windows`** (NEW, owner decision
+    2026-07-27, reference doc's "RESOLVED — the top-level menu bar consolidates from 7 items to
+    4" block, in the "Control surface: menu + toolbar + status bar" section — read it in full for
+    the reasoning behind what stays split out (Cassette) vs. what folds in). Pure UI reorganization,
+    zero functional change to any relocated command.
+    - **Collapse `Config`, `Debug`, `Input`, `Disk` — each a single-item top-level menu today —
+      into one new top-level `Windows` menu**, holding, in this order: `Machine Configuration…`,
+      `Debugger…`, `Keyboard…`, `Floppy Drives…`. Each item calls the exact same command/opens the
+      exact same window it does today under its current top-level menu — this milestone only
+      changes which menu contains the click, not what the click does.
+    - **Rename `Disk` → `Floppy Drives` everywhere the label appears** (the `Windows` menu item,
+      and the window's own title/header if it currently reads "Disk"). Resolves a mnemonic
+      collision with `Debugger` (both start with D) and is more accurate post-milestone-14d (up
+      to 4 floppy drives, not a vague single "Disk").
+    - **Add the missing ellipsis to `Floppy Drives…`** — the other three already have one; this
+      makes all four consistent (ellipsis = "opens another window").
+    - **`Cassette` menu is UNCHANGED — do not touch its 3 existing items or fold it into
+      `Windows`.** It was explicitly checked and confirmed to already have multiple real items,
+      unlike the four being consolidated.
+    - **`View` menu is UNCHANGED.**
+    - **Final top-level order: `Machine | Cassette | View | Windows`**, replacing today's
+      `Machine, Config, Debug, Input, Cassette, Disk, View`.
+    - **Mnemonics:** verify (don't assume) no collision at the top level (`M`/`C`/`V`/`W`) or
+      within the new `Windows` submenu (`M`/`D`/`K`/`F`, post-rename).
+    - **Not in scope:** any toolbar work (raised and explicitly deferred in the reference-doc
+      block — the existing toolbar, Run/Pause/Reset/Screenshot/Speed, is a separate UI surface
+      from this milestone's menu-bar change; Cassette mount/eject moving there, if it happens at
+      all, is a separate future proposal, not this one).
+    - **Tests:** (a) the top-level menu bar has exactly 4 items in the specified order; (b) each
+      of the 4 `Windows` submenu items opens the correct window/command, identical behavior to
+      today's now-removed top-level menus (regression guard — this is a pure move, nothing should
+      change about what any of the four commands does); (c) `Cassette`'s existing 3 items and
+      their behavior are unchanged (regression guard); (d) no mnemonic collision at either menu
+      level. → commit.
+
+14i. **Fix: menu bar doesn't respond to keyboard navigation — global key capture is swallowing
+    it** (NEW, owner-found bug, reference doc's "FLAGGED — the Display window's global keyboard
+    capture appears to swallow keys the menu bar itself needs" note, same section as 14h — read
+    it in full). **Separate commit from 14h** — unrelated pre-existing bug in adjacent territory,
+    not part of the menu-bar consolidation.
+    - **Repro:** press Alt on the Display window — mnemonic underlines correctly appear on every
+      top-level menu (nothing wrong there). Press any further key (arrow, a mnemonic letter) —
+      nothing happens; the menu doesn't navigate or activate. Affects every top-level menu, not
+      just the ones touched by 14h, since whatever's consuming the keystrokes almost certainly
+      lives at the Display window level (the only window with a menu bar).
+    - **Likely root cause, for whoever investigates — confirm before fixing, don't assume this is
+      exactly right:** the Display window's host-key-capture handler (feeds the emulated keyboard
+      matrix's host face) is very likely consuming every keystroke unconditionally — e.g. via a
+      tunneling/`PreviewKeyDown`-style handler that marks events handled, or an equivalent
+      mechanism — before Avalonia's native `Menu` keyboard-navigation logic ever sees them.
+    - **Fix direction:** the capture needs to yield when the menu (or any other native UI element
+      that legitimately wants raw keyboard input) is the current keyboard target — check current
+      focus, or the menu's own open/navigating state, or only act on otherwise-unhandled events —
+      rather than consuming unconditionally. Exact mechanism is your judgment call; the design
+      principle (stated in the reference doc note) is what must hold, not a specific API.
+    - **Don't regress normal typing-to-the-emulator behavior** — this must remain scoped to
+      "yield while the menu wants the keystroke," not "stop capturing keys in general." The
+      keyboard matrix's host face (reference doc §5c/§5d) still needs every keystroke when no
+      menu is active.
+    - **Tests:** (a) with the menu closed, ordinary key presses still reach the emulated keyboard
+      matrix exactly as today (regression guard — the actual fix must not weaken normal input);
+      (b) with a menu open (post-Alt), arrow-key navigation moves the menu selection; (c) pressing
+      a mnemonic letter while a menu is open activates the matching item; (d) closing the menu
+      (Escape, or completing a selection) restores normal keyboard-to-emulator routing. → commit.
+
 ---
 
 ## 15. Deferred (build the seams now, implement later)
@@ -1252,6 +1317,72 @@ project.
 - **Applies to:** reference doc §3a / <file>
 - **Synced:** yes (YYYY-MM-DD)
 -->
+
+### 2026-07-27 — Milestone 14h IMPLEMENTED: menu bar consolidation
+- **Done:** `DisplayWindow.axaml`'s menu bar collapsed from 7 top-level items to 4
+  (`Machine | Cassette | View | Windows`). `Config`/`Debug`/`Input`/`Disk` (each a single-item
+  gate) removed as top-level menus; their four items moved as-is into a new `Windows` menu, same
+  left-to-right order, same `Command` bindings (`OpenConfigCommand`/`OpenDebuggerCommand`/
+  `OpenKeyboardCommand`/`OpenDiskDrivesCommand`) — zero functional change. `Disk` renamed to
+  `Floppy Drives` (menu item text + `DiskDriveWindow.axaml`'s window `Title`, which read "Disk
+  Drives" — not literally bare "Disk" as the spec's parenthetical assumed, but the same root
+  label, so renamed for the same accuracy/mnemonic reasons) and gained the missing `…`. Also
+  updated `ConfigWindow.axaml`'s floppy-drives hint text, the one other user-facing string that
+  named the old window title, for consistency. `Cassette` (3 items) and `View` left untouched, as
+  specified — checked, not assumed.
+- **Found:** the Menu control had no `x:Name`; added `x:Name="MainMenu"` so tests (and the
+  milestone 14i fix, same window) can reference it directly instead of walking the visual tree by
+  header text.
+- **Tests:** new `tests/P2000.UI.Tests/Views/MenuBarTests.cs` — top-level order/count; the
+  `Windows` submenu's 4 items in order with `Assert.Same` against the VM's actual command
+  instances (proves the relocated commands are identical objects to before, not just
+  identically-behaving copies); `Cassette`'s 3 items unchanged; mnemonic-uniqueness at both menu
+  levels (`M`/`C`/`V`/`W` top-level, `M`/`D`/`K`/`F` within `Windows`).
+- **Applies to:** reference doc §3a "RESOLVED — the top-level menu bar consolidates from 7 items
+  to 4" block; `P2000.UI` §5/§6/§14 (menu bar description references, updated in this file where
+  the old menu names appeared).
+- **Synced:** no
+
+### 2026-07-27 — Milestone 14d IMPLEMENTED: drive-count axis assigns real-hardware indices
+- **Trigger:** owner's own first real end-to-end test with a sourced `Basic24k.bin` cartridge +
+  boot floppy (reference doc §5d "RESOLVED — the Config window's drive-count axis now follows
+  this exact real convention"). Configuring "1 drive" and mounting the boot floppy at the OLD
+  0-based default (internal index 0) silently failed to boot — the ROM's disk driver hardcodes
+  unit-select to drive 1 and never addresses unit 0 (already known from `Disk.asm`/`JWSFormat.bin`
+  disassembly, reference doc §5d — this is the first time it was hit in practice, not just
+  predicted).
+- **Done:** `ConfigWindowVm.ResizeFloppyDriveRows` now assigns `DriveIndex` from a fixed
+  `DriveIndexSequence = [1, 2, 3, 0]` by row POSITION, not `FloppyDriveRows.Count` directly — "1
+  drive" → `[1]`, "2 drives" → `[1, 2]`, "3 drives" → `[1, 2, 3]`, "4 drives" → `[1, 2, 3, 0]`.
+  Display labels ("Drive 1"–"Drive 4", left-to-right) are unchanged — only which
+  `MachineConfig.FloppyDrives[i]` slot each row targets changed. `LoadFloppyDrivesFrom`'s collapse-
+  to-a-count logic changed the same way: instead of `byIndex.Keys.Max() + 1`, it now walks
+  `DriveIndexSequence` in order and takes one past the highest POSITION with an enabled drive —
+  this is the exact same "highest enabled X + 1" shape as before, just POSITION-in-sequence
+  instead of raw index magnitude, so the existing gap/hand-edited-`.cfg` lossy-collapse behavior
+  (milestone 14) is preserved, just restated against the new sequence.
+- **Found:** the machine layer genuinely needed zero changes — confirmed
+  `Machine`/`MachineConfig`/`Upd765` already treat `FloppyDrives` as an arbitrary-index collection
+  (machine milestone 20) before touching anything, per the process reminder to stop and flag if
+  this turned out to need more than `ConfigWindowVm`'s own row/collapse logic. It didn't.
+- **Existing tests updated (pre-existing fixtures assumed the OLD 0-based convention, now
+  unrealistic):** `LoadFromCurrentConfig_ReflectsAnAlreadyFloppyRamMachine` (fixture indices 0,1 →
+  1,2 — index 0 alone would have wrongly collapsed to count 4 under the new sequence, which isn't
+  what that test was testing); `PickImageForRow_LiveDrive_DelegatesToSameMountPath_...` (fixture
+  index 0 → 1, matching what "1 drive" now actually produces); `Apply_ConfigWithUnresolvedMismatch_...`
+  (assertion updated from `DriveIndex == 0` to `== 1`). The renamed
+  `FloppyDriveCount_ResizesRowsWithSequentialIndices` became the milestone's own tests (a)-(c) below.
+- **Tests:** all 6 of the milestone's own listed cases — (a) "1 drive" → `[1]`; (b) "2 drives" →
+  `[1, 2]`; (c) "4 drives" → `[1, 2, 3, 0]`; (d) round-trip at each count 1-4 through a real
+  `Apply` + a freshly-opened `ConfigWindowVm` against the same live machine; (e) a `.cfg` with only
+  index 1 enabled collapses to count 1; (f) a `.cfg` with only index 0 enabled (irregular,
+  hand-edited) collapses to count 4 with drives 2/3 empty, no crash. Full `P2000.UI.Tests`:
+  198/198 green (was 192).
+- **Applies to:** `src/P2000.UI/ViewModels/ConfigWindowVm.cs` (`DriveIndexSequence`,
+  `ResizeFloppyDriveRows`, `LoadFloppyDrivesFrom`, `FloppyDriveRowVm`'s doc comment),
+  `tests/P2000.UI.Tests/ViewModels/ConfigWindowVmTests.cs`.
+- **Synced:** yes (2026-07-27, into `docs/P2000T-reference.md` §5d — new "IMPLEMENTED (UI
+  milestone 14d, 2026-07-27)" paragraph).
 
 ### 2026-07-27 — TRACKED, NOT YET FIXED: geometry-mismatch dialog doesn't pause emulation
 - **Trigger:** owner observation while verifying the crash-loop fix just below — the machine
@@ -1325,49 +1456,10 @@ project.
 - **Applies to:** `src/P2000.UI/Views/DisplayWindow.axaml.cs` (`OnDataContextChanged`, new
   `OnOpened`), `tests/P2000.UI.Tests/TestApp.cs` (`UseHeadlessDrawing`),
   `tests/P2000.UI.Tests/Views/DisplayWindowTests.cs` (new).
-- **Synced:** no (pending human sync into `docs/P2000T-reference.md` if this warrants a reference-
-  doc note — flagging for the human to decide, since this is a pure bugfix over an already-designed
-  feature, not a new design decision).
-
-### 2026-07-27 — Milestone 14d IMPLEMENTED: drive-count axis assigns real-hardware indices
-- **Trigger:** owner's own first real end-to-end test with a sourced `Basic24k.bin` cartridge +
-  boot floppy (reference doc §5d "RESOLVED — the Config window's drive-count axis now follows
-  this exact real convention"). Configuring "1 drive" and mounting the boot floppy at the OLD
-  0-based default (internal index 0) silently failed to boot — the ROM's disk driver hardcodes
-  unit-select to drive 1 and never addresses unit 0 (already known from `Disk.asm`/`JWSFormat.bin`
-  disassembly, reference doc §5d — this is the first time it was hit in practice, not just
-  predicted).
-- **Done:** `ConfigWindowVm.ResizeFloppyDriveRows` now assigns `DriveIndex` from a fixed
-  `DriveIndexSequence = [1, 2, 3, 0]` by row POSITION, not `FloppyDriveRows.Count` directly — "1
-  drive" → `[1]`, "2 drives" → `[1, 2]`, "3 drives" → `[1, 2, 3]`, "4 drives" → `[1, 2, 3, 0]`.
-  Display labels ("Drive 1"–"Drive 4", left-to-right) are unchanged — only which
-  `MachineConfig.FloppyDrives[i]` slot each row targets changed. `LoadFloppyDrivesFrom`'s collapse-
-  to-a-count logic changed the same way: instead of `byIndex.Keys.Max() + 1`, it now walks
-  `DriveIndexSequence` in order and takes one past the highest POSITION with an enabled drive —
-  this is the exact same "highest enabled X + 1" shape as before, just POSITION-in-sequence
-  instead of raw index magnitude, so the existing gap/hand-edited-`.cfg` lossy-collapse behavior
-  (milestone 14) is preserved, just restated against the new sequence.
-- **Found:** the machine layer genuinely needed zero changes — confirmed
-  `Machine`/`MachineConfig`/`Upd765` already treat `FloppyDrives` as an arbitrary-index collection
-  (machine milestone 20) before touching anything, per the process reminder to stop and flag if
-  this turned out to need more than `ConfigWindowVm`'s own row/collapse logic. It didn't.
-- **Existing tests updated (pre-existing fixtures assumed the OLD 0-based convention, now
-  unrealistic):** `LoadFromCurrentConfig_ReflectsAnAlreadyFloppyRamMachine` (fixture indices 0,1 →
-  1,2 — index 0 alone would have wrongly collapsed to count 4 under the new sequence, which isn't
-  what that test was testing); `PickImageForRow_LiveDrive_DelegatesToSameMountPath_...` (fixture
-  index 0 → 1, matching what "1 drive" now actually produces); `Apply_ConfigWithUnresolvedMismatch_...`
-  (assertion updated from `DriveIndex == 0` to `== 1`). The renamed
-  `FloppyDriveCount_ResizesRowsWithSequentialIndices` became the milestone's own tests (a)-(c) below.
-- **Tests:** all 6 of the milestone's own listed cases — (a) "1 drive" → `[1]`; (b) "2 drives" →
-  `[1, 2]`; (c) "4 drives" → `[1, 2, 3, 0]`; (d) round-trip at each count 1-4 through a real
-  `Apply` + a freshly-opened `ConfigWindowVm` against the same live machine; (e) a `.cfg` with only
-  index 1 enabled collapses to count 1; (f) a `.cfg` with only index 0 enabled (irregular,
-  hand-edited) collapses to count 4 with drives 2/3 empty, no crash. Full `P2000.UI.Tests`:
-  198/198 green (was 192).
-- **Applies to:** `src/P2000.UI/ViewModels/ConfigWindowVm.cs` (`DriveIndexSequence`,
-  `ResizeFloppyDriveRows`, `LoadFloppyDrivesFrom`, `FloppyDriveRowVm`'s doc comment),
-  `tests/P2000.UI.Tests/ViewModels/ConfigWindowVmTests.cs`.
-- **Synced:** no (pending human sync into `docs/P2000T-reference.md` §5d).
+- **Synced:** yes (2026-07-27, into `docs/P2000T-reference.md` §3a — new "CORRECTED (2026-07-27)"
+  paragraph appended to milestone 14g's own IMPLEMENTED write-up; the tracked-not-fixed item above
+  got its own short "TRACKED, not fixed" paragraph in the same place, not a separate section, since
+  neither is a new design decision).
 
 ### 2026-07-27 — Housekeeping: `docs/JWSDOS-format.md` renamed to `docs/P2000T-disk-formats.md`
 - **Trigger:** owner decision, mechanical follow-through of the rename recorded in

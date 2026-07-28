@@ -1318,6 +1318,46 @@ project.
 - **Synced:** yes (YYYY-MM-DD)
 -->
 
+### 2026-07-28 — FIXED: Disk Drives window showed "No disk" for a drive mounted via a `.cfg`'s `FloppyDrives[i].ImagePath`
+- **Trigger:** owner-reported bug — a `.cfg`-authored Basic24k boot floppy in drive 1, geometry
+  mismatch resolved via "Extend to full size" at startup, boots into BASIC correctly, but opening
+  the Floppy Drives window shows drive 1 as unmounted ("No disk") even though the tab header's
+  dirty asterisk (`Drive 1 *`) proves the machine-layer disk really is mounted and dirty.
+- **Root cause:** `Machine.cs`'s constructor mounts `FloppyDrives[i].ImagePath` directly onto
+  `Upd765` (`Board.Fdc.MountDisk(...)`) — it never goes through `DiskDriveVm.MountBytes`, which is
+  the ONLY place that used to set `HasImage`/`ImageLabel`/`IsWriteProtected`/`Programs`.
+  `DiskDriveVm`'s constructor never read the machine's already-mounted disk at all, so those
+  fields stayed at their defaults ("No disk"/false/empty) for the lifetime of the VM — completely
+  independent of whichever choice the user later made in the geometry-mismatch dialog
+  (`ExtendMountedDiskToFullSize` only mutates the machine-layer `DskImage`, never the VM's display
+  fields either). `RefreshFromMachine()`'s `IsDirty` read, by contrast, polls the live machine
+  every frame and was never affected — explaining the asterisk-with-no-filename symptom exactly.
+- **Fix:** `DiskDriveVm`'s constructor now reads `runner.Machine.Fdc?.GetDisk(driveIndex)`
+  immediately after `RefreshFromMachine()` and, if a disk is already mounted, syncs `HasImage`,
+  `ImageLabel` (from `disk.MountedPath`'s filename, since `Machine.cs` already stamps that),
+  `IsWriteProtected`, and `Programs` — the same fields `MountBytes` sets for a live UI mount. This
+  runs BEFORE the pending-mismatch check, so the drive shows correctly regardless of what the user
+  later chooses in the mismatch dialog.
+- **Related fix, same root cause:** `SaveAsync` also relied on `_backingFile` (an `IStorageFile`),
+  which a config-authored mount never populates either — plain "Save" would have silently fallen
+  through to a Save-As prompt instead of writing in place. Added a `disk.MountedPath`-based
+  fallback (`WriteDiskToPathAsync`, writing via `File.WriteAllBytesAsync` instead of
+  `IStorageFile.OpenWriteAsync`) so Save works correctly for a config-mounted drive too.
+  `SuggestedFileNameStem()` (used by Save As's default filename) got the same fallback.
+- **Tests:** `tests/P2000.UI.Tests/ViewModels/DiskDriveVmTests.cs` (+3) — mount a disk directly on
+  `Upd765` (simulating `Machine.cs`'s construction-time mount, same technique as the existing
+  `PendingMismatch_FromConfigAuthoredMount_OnlyRaisedAfterSubscribing` test just above these) then
+  construct a fresh `DiskDriveVm`: (a) a normal (no-mismatch) config mount shows `HasImage`/
+  `ImageLabel`/`TabHeader` correctly; (b) the owner's exact repro — a mount with a genuine pending
+  mismatch ALSO shows correctly, proving the fix doesn't depend on how the mismatch gets resolved;
+  (c) `SaveCommand` on a config-mounted (never `IStorageFile`-backed) disk writes to
+  `disk.MountedPath` and clears `IsDirty`, with no `StorageProvider` involved. Verified all three
+  fail without the fix (reverted it, confirmed `Assert.True(vm.HasImage)`-shaped failures, then
+  restored it) before considering this done.
+- **Applies to:** `src/P2000.UI/ViewModels/DiskDriveVm.cs` (constructor, `SaveAsync`,
+  `SuggestedFileNameStem`, new `WriteDiskToPathAsync`).
+- **Synced:** no
+
 ### 2026-07-28 — Milestone 14i IMPLEMENTED: menu keyboard navigation fix
 - **Root cause, confirmed (not just the "likely" cause flagged in the spec) by reading Avalonia
   11.1.0's own source (`AccessKeyHandler.cs`, `DefaultMenuInteractionHandler.cs`,

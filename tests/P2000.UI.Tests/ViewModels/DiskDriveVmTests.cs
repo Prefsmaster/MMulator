@@ -683,6 +683,100 @@ public class DiskDriveVmTests
         runner.Dispose();
     }
 
+    // ---- Constructor sync from an already-mounted disk (owner-reported bug, 2026-07-28) ----
+    // MachineConfig.FloppyDrives[i].ImagePath is mounted directly onto Upd765 at Machine
+    // construction (Machine.cs), bypassing DiskDriveVm.MountBytes entirely. These simulate that
+    // exact sequence (fdc.MountDisk BEFORE the VM exists — the constructor never went through
+    // MountBytes at all), matching PendingMismatch_FromConfigAuthoredMount_OnlyRaisedAfterSubscribing's
+    // pattern just above but asserting on the display fields that were the actual bug.
+
+    [AvaloniaFact]
+    public async Task Constructor_SyncsFromAlreadyMountedDisk_NoMismatch()
+    {
+        var runner = await NewFloppyRunnerAsync();
+        var fdc = runner.Machine.Fdc!;
+        var bytes = DskImage.CreateBlank(40, 1).GetBytes();
+        var (image, mismatch) = DskImage.Mount(bytes, configuredTracks: 40, configuredSides: 1);
+        image.MountedPath = "/tmp/basic24k.dsk"; // Machine.cs stamps this itself, not Mount()
+        fdc.MountDisk(0, image, mismatch);
+
+        var vm = new DiskDriveVm(runner, 0, 40, DiskSides.Single);
+
+        Assert.True(vm.HasImage);
+        Assert.Equal("basic24k", vm.ImageLabel);
+        Assert.Equal("0: basic24k", vm.TabHeader);
+        Assert.True(vm.SaveCommand.CanExecute(null));
+        Assert.True(vm.EjectCommand.CanExecute(null));
+
+        runner.Dispose();
+    }
+
+    [AvaloniaFact]
+    public async Task Constructor_SyncsFromAlreadyMountedDisk_EvenWithAPendingMismatch()
+    {
+        // The owner's exact repro: a short boot-floppy image mounted via MachineConfig at
+        // machine construction produces a mismatch, but the drive must already show as mounted
+        // BEFORE the user ever resolves the mismatch dialog (Extend/Continue/Cancel) — the old
+        // code left ImageLabel stuck at "No disk" the whole time regardless of that choice,
+        // since none of MountBytes/ExtendMountedDiskToFullSize/etc. ever ran for this drive.
+        var runner = await NewFloppyRunnerAsync();
+        var fdc = runner.Machine.Fdc!;
+        var (image, mismatch) = DskImage.Mount(new byte[32_768], configuredTracks: 40, configuredSides: 1);
+        image.MountedPath = "/tmp/short-boot-floppy.dsk";
+        fdc.MountDisk(0, image, mismatch);
+
+        var vm = new DiskDriveVm(runner, 0, 40, DiskSides.Single);
+
+        Assert.True(vm.HasImage);
+        Assert.Equal("short-boot-floppy", vm.ImageLabel);
+        Assert.NotNull(vm.PendingMismatch);
+
+        runner.Dispose();
+    }
+
+    [AvaloniaFact]
+    public async Task SaveCommand_OnAConfigMountedDisk_WritesToTheMountedPath_NoStorageProviderNeeded()
+    {
+        // Regression guard for the second half of the same bug: _backingFile stays null for a
+        // config-authored mount (it never went through an IStorageFile-based path), so plain
+        // Save must fall back to disk.MountedPath directly rather than silently degrading into
+        // an unwanted Save-As prompt.
+        var dir = Path.Combine(Path.GetTempPath(), $"ms-disksave-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(dir);
+        var path = Path.Combine(dir, "boot.dsk");
+        try
+        {
+            var blank = DskImage.CreateBlank(40, 1).GetBytes();
+            await File.WriteAllBytesAsync(path, blank);
+
+            var runner = await NewFloppyRunnerAsync();
+            var fdc = runner.Machine.Fdc!;
+            var (image, mismatch) = DskImage.Mount(blank, configuredTracks: 40, configuredSides: 1);
+            image.MountedPath = path;
+            fdc.MountDisk(0, image, mismatch);
+
+            var vm = new DiskDriveVm(runner, 0, 40, DiskSides.Single);
+            Assert.True(vm.HasImage);
+
+            fdc.GetDisk(0)!.WriteSector(0, 0, 1, Enumerable.Repeat((byte)0xAB, DskImage.BytesPerSector).ToArray());
+            await Task.Delay(60); // IsDirty only refreshes on the next FrameReady tick
+            Assert.True(vm.IsDirty);
+
+            await vm.SaveCommand.ExecuteAsync(null);
+            await Task.Delay(60); // IsDirty only refreshes on the next FrameReady tick
+
+            Assert.False(vm.IsDirty);
+            var onDisk = await File.ReadAllBytesAsync(path);
+            Assert.Equal(0xAB, onDisk[0]);
+
+            runner.Dispose();
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
     // ---- Save/Save-As format choice (project CLAUDE.md milestone 14f; machine ms.21) -------
     // Full Save/Save-As file I/O isn't headlessly testable (no real desktop TopLevel/
     // StorageProvider — same limitation noted at the top of this file). What IS reachable

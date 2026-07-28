@@ -129,6 +129,22 @@ public sealed partial class DiskDriveVm : ObservableObject
         runner.FrameReady += OnFrameReady;
         RefreshFromMachine();
 
+        // Sync image state from an already-mounted disk (owner-reported bug, 2026-07-28):
+        // MachineConfig.FloppyDrives[i].ImagePath is mounted directly onto Upd765 at Machine
+        // construction (Machine.cs), bypassing MountBytes entirely — without this, a drive that
+        // booted with an image already in it (the "plug everything in and flip the switch"
+        // startup case) showed as "No disk" in this window even though RefreshFromMachine's
+        // IsDirty read (a couple of lines up) already reflects the real mounted disk correctly,
+        // producing the reported symptom: an asterisk with no filename behind it.
+        var disk = runner.Machine.Fdc?.GetDisk(driveIndex);
+        if (disk is not null)
+        {
+            HasImage = true;
+            ImageLabel = disk.MountedPath is { } path ? Path.GetFileNameWithoutExtension(path) : "(mounted)";
+            IsWriteProtected = disk.WriteProtected;
+            Programs = FormatDirectory(disk);
+        }
+
         var mismatch = runner.Machine.Fdc?.GetMismatch(driveIndex);
         PendingMismatch = mismatch is { Kind: not DiskGeometryMismatchKind.None } ? mismatch : null;
     }
@@ -398,14 +414,27 @@ public sealed partial class DiskDriveVm : ObservableObject
     [RelayCommand(CanExecute = nameof(HasImage))]
     private async Task SaveAsync()
     {
-        if (_backingFile is null)
-        {
-            await SaveAsAsync();
-            return;
-        }
         var disk = _runner.Machine.Fdc?.GetDisk(DriveIndex);
         if (disk is null) return;
-        await WriteDiskToFileAsync(_backingFile, disk.Format);
+
+        if (_backingFile is not null)
+        {
+            await WriteDiskToFileAsync(_backingFile, disk.Format);
+            return;
+        }
+
+        // A disk mounted via MachineConfig.FloppyDrives[i].ImagePath at machine construction (or
+        // reconfigured/remounted since) never went through an IStorageFile-based mount, so
+        // _backingFile stays null even though it genuinely has a path on disk — write straight to
+        // that path instead of falling through to a needless Save-As prompt (owner-reported bug,
+        // 2026-07-28, same root cause as the constructor sync above).
+        if (disk.MountedPath is { } path)
+        {
+            await WriteDiskToPathAsync(path, disk.Format);
+            return;
+        }
+
+        await SaveAsAsync();
     }
 
     /// <summary>"Save As" — the ONLY path that can change format, and it always asks for a name
@@ -448,8 +477,12 @@ public sealed partial class DiskDriveVm : ObservableObject
         disk.Format = chosenFormat.Value;
     }
 
-    private string SuggestedFileNameStem() =>
-        _backingFile is not null ? Path.GetFileNameWithoutExtension(_backingFile.Name) : "disk";
+    private string SuggestedFileNameStem()
+    {
+        if (_backingFile is not null) return Path.GetFileNameWithoutExtension(_backingFile.Name);
+        var mountedPath = _runner.Machine.Fdc?.GetDisk(DriveIndex)?.MountedPath;
+        return mountedPath is { } path ? Path.GetFileNameWithoutExtension(path) : "disk";
+    }
 
     /// <summary>Writes the mounted image to <paramref name="file"/> in the given
     /// <paramref name="format"/> (<c>DskImage.GetBytes</c> for a raw `.dsk`, <c>GetImdBytes</c>
@@ -470,6 +503,34 @@ public sealed partial class DiskDriveVm : ObservableObject
             var bytes = format == DiskImageFormat.Imd ? disk.GetImdBytes() : disk.GetBytes();
             await using var stream = await file.OpenWriteAsync();
             await stream.WriteAsync(bytes);
+            disk.MarkClean();
+            return true;
+        }
+        catch (Exception ex)
+        {
+            ShowMessageRequested?.Invoke($"Save failed:\n{ex.Message}");
+            return false;
+        }
+    }
+
+    /// <summary>Same as <see cref="WriteDiskToFileAsync"/> but for a disk that has a
+    /// <see cref="DskImage.MountedPath"/> without ever having gone through an
+    /// <see cref="IStorageFile"/>-based mount (a `.cfg`-authored <c>FloppyDrives[i].ImagePath</c>
+    /// mounted directly at machine construction — <see cref="_backingFile"/> stays null in that
+    /// case). Writes straight to the raw path via <see cref="File"/> instead.</summary>
+    private async Task<bool> WriteDiskToPathAsync(string path, DiskImageFormat format)
+    {
+        var disk = _runner.Machine.Fdc?.GetDisk(DriveIndex);
+        if (disk is null)
+        {
+            ShowMessageRequested?.Invoke("No disk mounted — nothing to save.");
+            return false;
+        }
+
+        try
+        {
+            var bytes = format == DiskImageFormat.Imd ? disk.GetImdBytes() : disk.GetBytes();
+            await File.WriteAllBytesAsync(path, bytes);
             disk.MarkClean();
             return true;
         }

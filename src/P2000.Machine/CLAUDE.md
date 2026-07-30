@@ -1624,6 +1624,119 @@ marked synced. Do NOT edit the reference doc from this project.
 - **Synced:** yes (2026-07-05, into P2000T-reference.md + device guides)
 -->
 
+### 2026-07-30 — Bugfix investigation: disk-image geometry mapping vs. getdos's fixed-side-0 read — mapping and FDC dispatch BOTH confirmed correct; likely non-bug explanation for the observed symptom found instead
+- **Trigger:** a third JWSDOS-activation hypothesis, opened by the owner's own new empirical
+  test using the per-bank debugger (milestone 24): cold-start boot (JWSDOS disk in drive 1,
+  ordinary BASIC cartridge in slot 1) shows bank 1 selected twice during a genuine two-track
+  disk-boot read; `0xE000`-`0xEFFF` correctly holds JWSDOS's image, but `0xF000`-`0xFFFF` is
+  entirely zero. The owner's theory: `getdos`'s own command bytes request (cylinder, side 0)
+  for BOTH track reads — only the cylinder advances via a separate seek, the side never does —
+  and if this disk's actual system image spans both PHYSICAL SIDES of one cylinder (under a
+  "cylinder-major, side-minor" real-disk convention) rather than two side-0 cylinders,
+  `getdos` as literally written could never load it correctly. Two things needed checking
+  against the real C#: (1) does `DskImage`'s (cylinder,head,sector)→offset formula actually
+  match that stated real-disk convention; (2) does the FDC honor the command's side byte
+  literally.
+- **(1) Geometry mapping — checked directly, does NOT match the stated convention, and the
+  code's existing formula is independently confirmed correct instead.** `DskImage.SectorOffset`
+  (`Devices/Fdc/DskImage.cs:295-296`) is `head * Tracks * BytesPerTrack + cylinder *
+  BytesPerTrack + (sector-1) * BytesPerSector` — **side-major, cylinder-minor** (all of side
+  0's cylinders contiguous, then side 1's), not cylinder-major/side-minor. This is not a new
+  finding in isolation (the class's own doc comment and `docs/P2000T-disk-formats.md` §2 already
+  documented and cross-validated it against four real disk images back on 2026-07-22) — what's
+  new here is checking it specifically against the owner's freshly-stated alternative
+  convention, which turns out to conflict with it. **Verified independently, not by re-reading
+  the doc's claim:** directly searched the real `Spel1.dsk` fixture's raw bytes for known
+  directory filenames — `"Fraxxon"` (the stale directory cluster, confirmed `docs/P2000T-
+  disk-formats.md` content) is at raw file offset `0x1000` exactly, and `"Tralieen"`/`"BABA"`
+  (the active directory) at `0x1800` exactly. Under side-major (cylinder=1,head=0,sector=1/9)
+  these ARE `0x1000`/`0x1800`. Under the owner's cylinder-major convention, the same
+  (cylinder=1,head=0) location would instead be `0x2000`/`0x2800` — and those offsets hold none
+  of this data. **The owner's stated real-disk convention does not hold for this project's
+  actual `.dsk` fixtures; the existing side-major implementation is the one that's empirically
+  correct**, not a bug to fix. (Raw sector-dump tools for 8-bit disk formats commonly ARE
+  cylinder-major/side-minor — that's the more common convention in general — but it is
+  demonstrably not what these specific JWSDOS-era `.dsk` files use.)
+- **(2) FDC command handling — checked directly, honors the command literally, exactly as
+  designed.** `Upd765.DispatchDataCommand` (`Devices/Fdc/Upd765.cs:643-705`) reads `head` from
+  `_commandBuffer[3] & 0x01` — the command's own explicit H byte, read fresh on every dispatch,
+  never cached or derived from other state — while `cylinder` comes from `_cylinder[drive]`,
+  the chip's own internally-tracked physical head position (updated ONLY by
+  `DispatchSeek`/`DispatchRecalibrate` → `BeginSeek`, both of which take a `drive` and a
+  `targetCylinder` and nothing else — no head parameter exists anywhere in the seek path, so
+  seeking genuinely cannot have a side effect on head selection). This is independently correct
+  behavior, not merely "happens to match" — it mirrors real µPD765 hardware exactly (the C byte
+  is for ID-field verification against physical media, not addressing; the chip reads/writes
+  wherever the head physically is). Cross-checked against the real command bytes in
+  `docs/Monitor Documented Disassembly/Disk.asm`'s `disk_constants` table (now available in
+  full): the "Disk IO" template's drive/head byte (`0x01`, head-bit clear) and its explicit H
+  byte (`0x00`) are copied to RAM ONCE and never rewritten across the two-track loop — only
+  `disk_track_num` changes, driving the separate "Goto Track" search command (opcode+drive+
+  track only, confirmed no head field in the transmitted bytes either). So the literal
+  sequence really is (cylinder=0,head=0) then (cylinder=1,head=0), and the emulator delivers
+  exactly that.
+- **Combined conclusion: no bug in either the geometry mapping or the FDC dispatch — both
+  independently checked and both correct.** Per the prompt's own instruction, no fix landed;
+  none was needed.
+- **A materially simpler, non-bug explanation for the observed symptom, found while cross-
+  checking the geometry claim against real fixtures — not yet confirmed against the owner's
+  actual repro disk, but directly relevant:** this project already has two real fixtures most
+  plausibly matching "a JWSDOS boot disk" — `assets/Disks/jws-sytem.dsk` and `assets/Disks/
+  empty-jws.dsk` — and both were already independently confirmed (`docs/P2000T-disk-
+  formats.md`'s own 2026-07-13 provenance entry, re-verified directly here by reading the raw
+  bytes again) to have their entire raw `0x1000`-`0x1FFF` region (cylinder 1/"track 2", head 0
+  — exactly `getdos`'s second read target) **all zero**, while track 1 (`0x0000`-`0x0FFF`)
+  starts with the same confirmed JWSDOS boot code (`0x20` = `JR NZ`, matching the owner's own
+  "0xE000-0xEFFF correctly holds JWSDOS's image" observation). **If either of these is the disk
+  the owner actually mounted for the cold-start repro, "bank 1's 0xF000-0xFFFF ends up all
+  zero" is not a symptom of anything going wrong — it's `getdos` correctly and faithfully
+  reading this specific disk's genuinely blank second track.** This doesn't resolve the
+  underlying "why does the machine end up back at BASIC" question (all-zero RAM there is
+  itself just an unbroken `NOP` run to `PC` wraparound, a real and separate consequence,
+  already correctly identified in the reference doc entry as mechanically different from the
+  two previously-disproven hypotheses) — but it means the ROOT CAUSE, if this is indeed the
+  disk in play, is squarely "this disk's own content doesn't have what `getdos`'s fixed read
+  pattern expects," not an emulator defect anywhere in the read path. **Recommended next
+  step, cheap to check:** confirm which specific `.dsk` file was mounted for this exact repro
+  and whether its raw `0x1000`-`0x1FFF` is genuinely blank (matching these two fixtures) or
+  holds real data at a DIFFERENT offset than `getdos` reads.
+- **Secondary question (per the prompt's own "don't spend much time" scoping) — checked
+  quickly, no discrepancy found.** `Startup.asm`'s disk-boot gate (`docs/Monitor Documented
+  Disassembly/Startup.asm:574-595`) is unchanged from what reference doc §5d already
+  documents: `getdos` only runs when `memsize==3` AND a cartridge is present (header byte at
+  `0x1000`, bit 0 clear) AND that header's bit 1 ("needs DOS") is set. If `getdos` genuinely
+  ran for "an ordinary BASIC cartridge" in this repro, that specific cartridge's own header
+  byte must have bit 1 set — i.e. it's a DOS-requesting BASIC cartridge (e.g. a "Disk BASIC"
+  variant), not a cartridge lacking that flag entirely. No correction needed to the reference
+  doc's existing claim; just a note that "ordinary BASIC cartridge" in the new repro's own
+  description is doing double duty and is worth being precise about.
+- **Tests added (even though no bug was found, confirming this exact behavior needed
+  independent pinning against real ground truth, not just self-consistency):**
+  `DskImageTests.ReadSector_Cylinder1Head0Sector9_ReadsFromRawFileOffset0x1800_
+  NotCylinderMajorOffset0x2800` builds a raw byte array directly (bypassing `DskImage`'s own
+  write path) and confirms `ReadSector` reads from the side-major offset, not the
+  cylinder-major candidate. `RealFixtureTests.Spel1Dsk_ReadSectorCylinder1Head0Sector9_
+  MatchesRawFileBytesAtOffset0x1800` cross-checks the same identity against the real `Spel1.dsk`
+  file's own raw bytes (read independently via `File.ReadAllBytes`, not through `DskImage`).
+  `Upd765Tests.GetdosTwoTrackSequence_BothReadsUseHead0Literally_CylinderAdvancesViaSeekOnly`
+  replays `getdos`'s exact real command bytes (both the "Disk IO" read template and the "Goto
+  Track" search template) against three distinct markers at (cyl0,head0)/(cyl1,head0)/
+  (cyl1,head1), confirming both reads land on head 0 and the cylinder advances via SEEK alone —
+  with an explicit `NotEqual` against the head-1 marker so a regression that ever drifted
+  "current side" would be caught, not silently pass by coincidence. Full
+  `P2000.Machine.Tests`: 603/603 green (was 600).
+- **Applies to:** `src/P2000.Machine/Devices/Fdc/DskImage.cs` (`SectorOffset` — unchanged,
+  confirmed correct), `src/P2000.Machine/Devices/Fdc/Upd765.cs` (`DispatchDataCommand`,
+  `BeginSeek`/`DispatchSeek`/`DispatchRecalibrate` — unchanged, confirmed correct),
+  `tests/P2000.Machine.Tests/Devices/Fdc/DskImageTests.cs`,
+  `tests/P2000.Machine.Tests/Devices/Fdc/RealFixtureTests.cs`,
+  `tests/P2000.Machine.Tests/Devices/Fdc/Upd765Tests.cs`. Reference doc §5d's "Re-reading
+  `getdos` precisely" paragraph and `docs/P2000T-disk-formats.md` §7 item 9 — this closes both
+  of that entry's own "still need checking" items with a negative result on the bug hypothesis,
+  plus the jws-sytem.dsk/empty-jws.dsk all-zero-track-2 alternative explanation for the human to
+  weigh.
+- **Synced:** no
+
 ### 2026-07-30 — Bugfix investigation: does the bank-switch device over-listen on ports 0x94-0x97? NO — hypothesis disproven by direct source read; no fix landed
 - **Trigger:** the JWSDOS-activation bug's "Revised bit-level read" paragraph (reference doc
   §5d — see the entry immediately below for the fuller mechanism trace) flagged this project's
@@ -1701,7 +1814,11 @@ marked synced. Do NOT edit the reference doc from this project.
   `tests/P2000.Machine.Tests/MachineTests.cs`. Reference doc §5d's "Revised bit-level read"
   paragraph — this closes that paragraph's own "recommended next step" (have the actual C#
   read) with a negative result.
-- **Synced:** no
+- **Synced:** yes (2026-07-30, into `docs/P2000T-reference.md` §5d — new "PORT-ALIASING
+  HYPOTHESIS DISPROVEN" paragraph replacing the "Revised bit-level read" section's open
+  recommendation, plus a rewritten "Where this leaves the bug" closing paragraph; §5c's M2200
+  port-table cross-reference updated from "REOPENED, still-live" to disproven; also into
+  `docs/P2000T-disk-formats.md` §7 item 9, header + body updated to match).
 
 ### 2026-07-28 — Milestone 24 IMPLEMENTED: debugger per-bank access to bank-switched RAM
 - **Trigger:** owner decision, motivated by a debugger gap hit while investigating the (separate,
@@ -1765,7 +1882,10 @@ marked synced. Do NOT edit the reference doc from this project.
   `tests/P2000.Machine.Tests/Debug/MachineSnapshotTests.cs`,
   `tests/P2000.Machine.Tests/Debug/BreakpointStoreTests.cs`. UI milestone 17 (consumes all of the
   above), reference doc §3a's Debugger section, reference doc §5 (bank-switching facts).
-- **Synced:** no
+- **Synced:** yes (2026-07-30, into `docs/P2000T-reference.md` §3a — Debugger section's RESOLVED
+  paragraph rewritten to IMPLEMENTED with the concrete build details: `GetBankRaw`/`BankCount`,
+  `MachineSnapshot.BankCount`/`ActiveBank`, bank-qualified `BreakpointStore`, and the "no separate
+  RAMSW-card path needed" finding).
 
 ### 2026-07-28 — Milestone 23 IMPLEMENTED: blank-disk detection no longer defaults to `Jwsdos`
 - **Trigger:** owner decision, fast-follow onto milestone 22 (reference doc §3a same RESOLVED

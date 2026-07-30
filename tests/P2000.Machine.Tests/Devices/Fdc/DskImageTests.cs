@@ -73,6 +73,35 @@ public class DskImageTests
     }
 
     [Fact]
+    public void ReadSector_Cylinder1Head0Sector9_ReadsFromRawFileOffset0x1800_NotCylinderMajorOffset0x2800()
+    {
+        // Bug-investigation regression (CLAUDE.md §17, 2026-07-30 "geometry mapping / getdos
+        // fixed side-0 read" entry): pins the CHS->offset formula against an ABSOLUTE raw file
+        // offset, not a round-trip through DskImage's own read/write (which is convention-
+        // agnostic and can't distinguish side-major from cylinder-major on its own). Under the
+        // confirmed side-major/cylinder-minor formula, (cylinder=1, head=0, sector=9) lands at
+        // raw 0x1800 (docs/P2000T-disk-formats.md §2, dir_side1_prep's own confirmed target).
+        // Under the owner's alternative "cylinder-major, side-minor" hypothesis it would instead
+        // land at raw 0x2800 ((1*2+0)*4096 + 8*256). This test builds the raw bytes directly (no
+        // DskImage involved in the write) so it's a genuine external ground truth, not
+        // self-consistency.
+        var raw = new byte[40 * 2 * DskImage.BytesPerTrack];
+        raw[0x0FEF] = (byte)'D'; // DS label
+        raw[0x0FFF] = 41;        // 40 tracks + 1
+        var marker = new byte[256];
+        for (var i = 0; i < 256; i++) marker[i] = (byte)(i + 1);
+        marker.CopyTo(raw, 0x1800);
+
+        var disk = new DskImage(raw);
+
+        Assert.Equal(marker, disk.ReadSector(cylinder: 1, head: 0, sector: 9).ToArray());
+
+        // The cylinder-major candidate offset (0x2800) must be untouched (all-zero) — confirms
+        // this isn't a coincidental match that would hold under both conventions.
+        Assert.All(raw.AsSpan(0x2800, 256).ToArray(), b => Assert.Equal(0x00, b));
+    }
+
+    [Fact]
     public void ReadWriteSector_Head1_IsInTheSecondHalfOfTheImage()
     {
         var disk = DskImage.CreateBlank(tracks: 40, sides: 2);

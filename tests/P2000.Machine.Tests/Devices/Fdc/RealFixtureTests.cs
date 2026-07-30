@@ -46,6 +46,31 @@ public class RealFixtureTests
         Assert.Equal(2, disk.Sides);
     }
 
+    // ---- CHS->offset geometry mapping, pinned against real raw bytes (bug investigation,
+    // CLAUDE.md §17 2026-07-30) ------------------------------------------------------------------
+
+    [Fact]
+    public void Spel1Dsk_ReadSectorCylinder1Head0Sector9_MatchesRawFileBytesAtOffset0x1800()
+    {
+        // Independent ground truth: read the raw file bytes directly (no DskImage/SectorOffset
+        // involved) and confirm ReadSector's CHS addressing agrees. Also directly confirms the
+        // owner's alternative "cylinder-major, side-minor" convention does NOT hold for this real
+        // disk: under that convention (cylinder=1, head=0, sector=9) would land at raw offset
+        // 0x2800, not 0x1800, and the bytes there are demonstrably different (see the raw-string
+        // search finding in this entry's own findings-log write-up: "Tralieenspel"/"BABA" sit at
+        // 0x1800, not 0x2800).
+        var path = DiskPath("Spel1.dsk");
+        var raw = File.ReadAllBytes(path);
+        var expected = raw.AsSpan(0x1800, 256).ToArray();
+
+        var disk = new DskImage(path);
+        var actual = disk.ReadSector(cylinder: 1, head: 0, sector: 9).ToArray();
+
+        Assert.Equal(expected, actual);
+        // Sanity: this is genuinely the active side-1 directory's first sector, not blank filler.
+        Assert.Contains("Tralieenspel", System.Text.Encoding.ASCII.GetString(actual));
+    }
+
     // ---- Directory browse: exact real content, stale cluster excluded ---------------------------
 
     /// <summary>The confirmed 18 real filenames on <c>Spel1.dsk</c>'s active side-1 directory

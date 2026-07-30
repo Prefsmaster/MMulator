@@ -432,6 +432,83 @@ public class Upd765Tests
         Assert.Equal(1, status.Value.Sector); // R from the command block (sector 1, one sector requested)
     }
 
+    // ---- Bug-investigation regression: getdos's literal fixed-side-0 read pattern (CLAUDE.md
+    // §17, 2026-07-30) — confirms the FDC honors the command's own H byte literally (0 for both
+    // of getdos's two track reads) rather than deriving "current side" from some other state, and
+    // that the intervening SEEK ("Goto Track") command has no side effect on head selection. -----
+
+    [Fact]
+    public void GetdosTwoTrackSequence_BothReadsUseHead0Literally_CylinderAdvancesViaSeekOnly()
+    {
+        var image = BuildSyntheticImage(tracks: 40, sides: 2);
+        // Distinct markers at every candidate (cylinder, head) getdos's real command bytes could
+        // plausibly address, so a wrong one is unmistakable, not a coincidental match.
+        var cyl0Head0 = Enumerable.Repeat((byte)0x11, 256).ToArray();
+        var cyl1Head0 = Enumerable.Repeat((byte)0x22, 256).ToArray();
+        var cyl1Head1 = Enumerable.Repeat((byte)0x33, 256).ToArray(); // must NEVER be read
+        cyl0Head0.CopyTo(image, 0);
+        cyl1Head0.CopyTo(image, DskImage.BytesPerTrack);
+        cyl1Head1.CopyTo(image, 40 * DskImage.BytesPerTrack + DskImage.BytesPerTrack);
+        var disk = new DskImage(image);
+
+        var fdc = new Upd765 { Policy = TimingPolicy.Turbo };
+        fdc.MountDisk(1, disk); // getdos always addresses drive 1
+
+        // --- First read: getdos's real disk_constants "Disk IO" command bytes, verbatim
+        // (Disk.asm disk_constants: 0x42,0x01,0x01,0x00,0x01,0x01,0x10,0x0e,0x00 — drive/head
+        // byte's head bit is 0, and the explicit H byte (index 3, "side #") is also 0). Cylinder
+        // is whatever the FDC is physically homed to (0, fresh chip) — the command's own C byte
+        // (0x01) is never consulted for addressing (Upd765.DispatchDataCommand's own doc comment).
+        fdc.WriteData(0x42);
+        fdc.WriteData(0x01);
+        fdc.WriteData(0x01);
+        fdc.WriteData(0x00);
+        fdc.WriteData(0x01);
+        fdc.WriteData(0x01);
+        fdc.WriteData(0x10);
+        fdc.WriteData(0x0e);
+        fdc.WriteData(0x00);
+
+        // EOT=0x10 requests the full 16-sector track (4096 B), exactly as getdos does — must be
+        // drained in full before the chip leaves ExecutionPhase and accepts the next command.
+        var firstTrack = new byte[16 * 256];
+        for (var i = 0; i < firstTrack.Length; i++) firstTrack[i] = fdc.ReadData();
+        for (var i = 0; i < 7; i++) fdc.ReadData(); // drain the result phase
+
+        Assert.Equal(cyl0Head0, firstTrack[..256]); // sector 1's content is what getdos actually uses
+
+        // --- disk_gotrack's SEEK ("Goto Track" command 2, verbatim: 0x0F,0x01,0x01 — drive 1,
+        // target cylinder 1, 0-based) — carries no head field at all.
+        fdc.WriteData(0x0F);
+        fdc.WriteData(0x01);
+        fdc.WriteData(0x01);
+        for (var i = 0; i < 300; i++) fdc.Tick();
+
+        Assert.Equal(1, fdc.GetCylinder(1));
+
+        // --- Second read: getdos re-sends the IDENTICAL command bytes (disk_constants is copied
+        // once and only R is ever rewritten, redundantly, to the same value) — head is still 0.
+        fdc.WriteData(0x42);
+        fdc.WriteData(0x01);
+        fdc.WriteData(0x01);
+        fdc.WriteData(0x00);
+        fdc.WriteData(0x01);
+        fdc.WriteData(0x01);
+        fdc.WriteData(0x10);
+        fdc.WriteData(0x0e);
+        fdc.WriteData(0x00);
+
+        var secondTrack = new byte[16 * 256];
+        for (var i = 0; i < secondTrack.Length; i++) secondTrack[i] = fdc.ReadData();
+        var secondRead = secondTrack[..256];
+
+        // Must be cylinder 1/head 0's data — NOT cylinder 1/head 1's (0x33), which would be the
+        // result if the emulator ever drifted "current side" to 1 (e.g. from a stray bit-2 read
+        // of the drive/head byte, or some other internal head-tracking state).
+        Assert.Equal(cyl1Head0, secondRead);
+        Assert.NotEqual(cyl1Head1, secondRead);
+    }
+
     /// <summary>Project CLAUDE.md §17, 2026-07-23 (owner decision): current sector is the REAL
     /// live value during a multi-sector transfer — derived from R plus bytes moved through the
     /// semi-DMA loop so far, not pinned to the starting sector for the whole transfer.</summary>

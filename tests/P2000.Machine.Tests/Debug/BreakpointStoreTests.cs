@@ -465,6 +465,135 @@ public class BreakpointStoreTests
         Assert.False(machine.IsPaused);
     }
 
+    // ---- Bank-qualified breakpoints (project CLAUDE.md §13 milestone 24) --------
+
+    private static byte[] JumpToBankedAddress()
+    {
+        var rom = new byte[0x1000];
+        rom[0] = 0xC3; rom[1] = 0x00; rom[2] = 0xE0; // JP 0xE000
+        return rom;
+    }
+
+    private static byte[] WriteToBankedAddressLoop()
+    {
+        var rom = new byte[0x1000];
+        // LD A,0x42; LD (0xE000),A; JR -6 (loop back to LD A,0x42)
+        rom[0] = 0x3E; rom[1] = 0x42;
+        rom[2] = 0x32; rom[3] = 0x00; rom[4] = 0xE0;
+        rom[5] = 0x18; rom[6] = 0xF9;
+        return rom;
+    }
+
+    [Fact]
+    public void ExecBreakpoint_BankQualified_FiresOnlyWhenQualifiedBankIsActive()
+    {
+        var machineWrongBank = new Machine(new MachineConfig { RamVariant = RamVariant.T102 }); // 6 banks
+        machineWrongBank.Memory.LoadRom(JumpToBankedAddress());
+        machineWrongBank.Breakpoints.AddExec(0xE000, bank: 3);
+        machineWrongBank.Memory.SelectBank(0); // NOT the qualified bank
+
+        for (var i = 0; i < 500; i++) machineWrongBank.Tick();
+        Assert.False(machineWrongBank.IsPaused);
+
+        var machineRightBank = new Machine(new MachineConfig { RamVariant = RamVariant.T102 });
+        machineRightBank.Memory.LoadRom(JumpToBankedAddress());
+        machineRightBank.Breakpoints.AddExec(0xE000, bank: 3);
+        machineRightBank.Memory.SelectBank(3); // the qualified bank
+
+        TickUntilPausedOrBoundary(machineRightBank);
+        Assert.True(machineRightBank.IsPaused);
+    }
+
+    [Fact]
+    public void ExecBreakpoint_Unqualified_FiresRegardlessOfActiveBank()
+    {
+        foreach (var activeBank in new byte[] { 0, 3 })
+        {
+            var machine = new Machine(new MachineConfig { RamVariant = RamVariant.T102 });
+            machine.Memory.LoadRom(JumpToBankedAddress());
+            machine.Breakpoints.AddExec(0xE000); // no bank qualifier
+            machine.Memory.SelectBank(activeBank);
+
+            TickUntilPausedOrBoundary(machine);
+            Assert.True(machine.IsPaused);
+        }
+    }
+
+    [Fact]
+    public void MemWriteBreakpoint_BankQualified_FiresOnlyWhenQualifiedBankIsActive()
+    {
+        var machineWrongBank = new Machine(new MachineConfig { RamVariant = RamVariant.T102 });
+        machineWrongBank.Memory.LoadRom(WriteToBankedAddressLoop());
+        machineWrongBank.Breakpoints.AddMemWrite(0xE000, bank: 2);
+        machineWrongBank.Memory.SelectBank(5); // NOT the qualified bank
+
+        for (var i = 0; i < 500; i++) machineWrongBank.Tick();
+        Assert.False(machineWrongBank.IsPaused);
+
+        var machineRightBank = new Machine(new MachineConfig { RamVariant = RamVariant.T102 });
+        machineRightBank.Memory.LoadRom(WriteToBankedAddressLoop());
+        machineRightBank.Breakpoints.AddMemWrite(0xE000, bank: 2);
+        machineRightBank.Memory.SelectBank(2); // the qualified bank
+
+        TickUntilPausedOrBoundary(machineRightBank);
+        Assert.True(machineRightBank.IsPaused);
+    }
+
+    [Fact]
+    public void MemWriteBreakpoint_Unqualified_FiresRegardlessOfActiveBank()
+    {
+        foreach (var activeBank in new byte[] { 0, 2 })
+        {
+            var machine = new Machine(new MachineConfig { RamVariant = RamVariant.T102 });
+            machine.Memory.LoadRom(WriteToBankedAddressLoop());
+            machine.Breakpoints.AddMemWrite(0xE000); // no bank qualifier
+            machine.Memory.SelectBank(activeBank);
+
+            TickUntilPausedOrBoundary(machine);
+            Assert.True(machine.IsPaused);
+        }
+    }
+
+    /// <summary>Regression guard: a machine with no banked-RAM card at all (project CLAUDE.md §13
+    /// milestone 24's "the qualifier path is simply unavailable" case) must keep existing
+    /// breakpoint behavior completely unaffected — an unqualified breakpoint at an address inside
+    /// the (here, unpopulated/open-bus) banked window still fires exactly as any other address
+    /// would, since <see cref="Memory.PageTable.Write"/> still issues the write attempt (silently
+    /// discarded) that the breakpoint check runs against.</summary>
+    [Fact]
+    public void UnbankedConfiguration_ReportsZeroBanks_ExistingBreakpointBehaviorUnaffected()
+    {
+        var machine = new Machine(new MachineConfig { RamVariant = RamVariant.T38 });
+        Assert.Equal(0, machine.Memory.BankCount);
+
+        machine.Memory.LoadRom(WriteToBankedAddressLoop());
+        machine.Breakpoints.AddMemWrite(0xE000); // unqualified — the only shape this config could ever use
+
+        TickUntilPausedOrBoundary(machine);
+
+        Assert.True(machine.IsPaused);
+    }
+
+    [Theory]
+    [InlineData(BreakpointKind.Exec)]
+    [InlineData(BreakpointKind.MemRead)]
+    [InlineData(BreakpointKind.MemWrite)]
+    [InlineData(BreakpointKind.MemAccess)]
+    public void AddWithBankQualifier_AddressOutsideBankedWindow_Throws(BreakpointKind kind)
+    {
+        var store = new BreakpointStore();
+        Action add = kind switch
+        {
+            BreakpointKind.Exec => () => store.AddExec(0x6000, bank: 0),
+            BreakpointKind.MemRead => () => store.AddMemRead(0x6000, bank: 0),
+            BreakpointKind.MemWrite => () => store.AddMemWrite(0x6000, bank: 0),
+            BreakpointKind.MemAccess => () => store.AddMemAccess(0x6000, bank: 0),
+            _ => throw new ArgumentOutOfRangeException(nameof(kind)),
+        };
+
+        Assert.Throws<ArgumentException>(add);
+    }
+
     // ---- Multiple breakpoints — only first fires (per tick) ---------------------
 
     [Fact]

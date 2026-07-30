@@ -20,6 +20,7 @@ public sealed class RegisterFileVm : ObservableObject
     private string _f = None, _flagsText = None;
     private string _iff1 = None, _iff2 = None, _im = None;
     private string _fieldTState = None;
+    private string _bankInfo = None;
 
     public bool   HasSnapshot  { get => _hasSnapshot;  set => SetProperty(ref _hasSnapshot,  value); }
 
@@ -51,15 +52,24 @@ public sealed class RegisterFileVm : ObservableObject
 
     public string FieldTState  { get => _fieldTState;  set => SetProperty(ref _fieldTState,  value); }
 
+    /// <summary>Live active-bank indicator (project CLAUDE.md §14 milestone 17; machine ms.24) —
+    /// "No banking" when the installed card has none, otherwise "Bank N / count". Refreshed every
+    /// observer tick like the rest of this VM, not just at debugger-open.</summary>
+    public string BankInfo     { get => _bankInfo;     set => SetProperty(ref _bankInfo,     value); }
+
     // ────────────────────────────────────────────────────────────────────────
 
     /// <summary>
     /// Populate from live CPU register state (best-effort; call on UI thread).
     /// Used while the machine is running — values may be mid-instruction.
+    /// <paramref name="bankCount"/>/<paramref name="activeBank"/> mirror
+    /// <see cref="P2000.Machine.Debug.MachineSnapshot.BankCount"/>/<c>ActiveBank</c> — passed
+    /// separately here since the live path has no snapshot to read them from.
     /// </summary>
-    public void UpdateLive(in Z80.Core.Registers reg, int fieldTState)
+    public void UpdateLive(in Z80.Core.Registers reg, int fieldTState, int bankCount, int? activeBank)
     {
         HasSnapshot = true;
+        BankInfo = FormatBankInfo(bankCount, activeBank);
 
         AF  = $"{reg.AF:X4}";
         BC  = $"{reg.BC:X4}";
@@ -122,6 +132,7 @@ public sealed class RegisterFileVm : ObservableObject
         IM   = snap.IM.ToString();
 
         FieldTState = snap.FieldTState.ToString();
+        BankInfo = FormatBankInfo(snap.BankCount, snap.ActiveBank);
     }
 
     /// <summary>Clear all properties (machine resumed after break).</summary>
@@ -135,7 +146,11 @@ public sealed class RegisterFileVm : ObservableObject
         FlagsText = None;
         IFF1 = IFF2 = IM = None;
         FieldTState = None;
+        BankInfo = None;
     }
+
+    private static string FormatBankInfo(int bankCount, int? activeBank) =>
+        bankCount == 0 ? "No banking" : $"Bank {activeBank} / {bankCount}";
 
     private static string BuildFlags(MachineSnapshot s)
         => BuildFlagsFromByte(s.F);

@@ -2,6 +2,7 @@ using Avalonia.Threading;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using P2000.Machine.Debug;
+using P2000.Machine.Memory;
 using P2000.UI.Runner;
 using System.Collections.ObjectModel;
 using MachineCore = P2000.Machine.Machine;
@@ -21,8 +22,25 @@ public sealed partial class DebuggerWindowVm : ObservableObject, IDisposable
     // Last corruption snapshot from FrameReady (stable, at field boundary)
     private bool[] _lastCorruption = new bool[40 * 24];
 
-    // Tracks exec breakpoint addresses; updated via SyncBreakpointsToMachine.
-    private readonly HashSet<ushort> _execBpSet = new();
+    // Tracks exec breakpoint addresses and their optional bank qualifier (project CLAUDE.md §14
+    // milestone 17; machine ms.24) — null = unqualified (fires regardless of active bank, the
+    // only shape that existed before this milestone). Updated via SyncBreakpointsToMachine.
+    private readonly Dictionary<ushort, int?> _execBps = new();
+
+    /// <summary>"Any" (default) — used for the "Bank" qualifier picker shown alongside the
+    /// disassembly gutter (project CLAUDE.md §14 milestone 17). Populated with "Bank N" for
+    /// each populated bank, mirroring <see cref="MemoryWatchVm.BankOptions"/>'s shape.</summary>
+    public const string AnyBankOption = "Any";
+
+    public ObservableCollection<string> BreakpointBankOptions { get; } = new() { AnyBankOption };
+
+    [ObservableProperty] private string _selectedBreakpointBankOption = AnyBankOption;
+
+    /// <summary>True only when the installed card has at least one bank — gates whether the
+    /// breakpoint bank-filter picker is shown at all (project CLAUDE.md §14 milestone 17: "outside
+    /// the banked region, don't offer the qualifier at all" generalizes to "no banking at all,
+    /// don't offer it anywhere").</summary>
+    [ObservableProperty] private bool _showBreakpointBankFilter;
 
     /// <summary>Raised when the VRAM window should be opened (or brought to front).</summary>
     public event Action? OpenVramWindowRequested;
@@ -68,6 +86,7 @@ public sealed partial class DebuggerWindowVm : ObservableObject, IDisposable
             var snap = m.TakeSnapshot();
 
             RegisterFile.Update(snap);
+            RefreshBankFilterOptions(snap.BankCount);
             Disassembly.Refresh(snap.PC, snap.ReadMemory);
 
             // VRAM: read from snapshot's memory view (live page table, but paused = stable).
@@ -89,7 +108,10 @@ public sealed partial class DebuggerWindowVm : ObservableObject, IDisposable
         if (!IsPaused)
         {
             MachineCore m = _runner.Machine;
-            RegisterFile.UpdateLive(m.Cpu.Reg, m.Video.FieldTState);
+            var bankCount = m.Memory.BankCount;
+            RegisterFile.UpdateLive(m.Cpu.Reg, m.Video.FieldTState,
+                bankCount, bankCount > 0 ? (int?)m.Memory.CurrentBank : null);
+            RefreshBankFilterOptions(bankCount);
 
             // Live disassembly: re-decode only when PC changes.
             ushort pc = m.Cpu.Reg.PC;
@@ -159,15 +181,25 @@ public sealed partial class DebuggerWindowVm : ObservableObject, IDisposable
 
     // ── Breakpoint commands ─────────────────────────────────────────────────
 
-    /// <summary>Toggle an exec breakpoint at <paramref name="address"/>.</summary>
+    /// <summary>Toggle an exec breakpoint at <paramref name="address"/>. When
+    /// <paramref name="address"/> falls in the banked window (0xE000-0xFFFF) and the currently
+    /// selected breakpoint bank filter (<see cref="SelectedBreakpointBankOption"/>) is a specific
+    /// bank, not "Any", the NEW breakpoint is qualified to that bank (project CLAUDE.md §14
+    /// milestone 17; machine ms.24) — removing an already-armed breakpoint ignores the current
+    /// filter and just removes whatever qualifier it already had.</summary>
     public void ToggleExecBreakpoint(ushort address)
     {
-        if (!_execBpSet.Remove(address))
-            _execBpSet.Add(address);
+        if (!_execBps.Remove(address))
+        {
+            int? bank = address is >= PageTable.BankedWindowStart and <= PageTable.BankedWindowEnd
+                ? ParseBankOption(SelectedBreakpointBankOption)
+                : null;
+            _execBps[address] = bank;
+        }
 
         // Keep the disassembly dots in sync.
         Disassembly.BreakpointAddresses.Clear();
-        foreach (var a in _execBpSet) Disassembly.BreakpointAddresses.Add(a);
+        foreach (var a in _execBps.Keys) Disassembly.BreakpointAddresses.Add(a);
         Disassembly.RefreshBreakpointDots();
 
         SyncBreakpointsToMachine();
@@ -177,8 +209,30 @@ public sealed partial class DebuggerWindowVm : ObservableObject, IDisposable
     {
         // Clear all then re-add. Safe because the queue drains atomically at one boundary.
         _runner.Machine.Enqueue(new ClearBreakpointsCommand());
-        foreach (var a in _execBpSet)
-            _runner.Machine.Enqueue(new AddExecBreakpointCommand(a));
+        foreach (var (address, bank) in _execBps)
+            _runner.Machine.Enqueue(new AddExecBreakpointCommand(address, bank));
+    }
+
+    private static int? ParseBankOption(string option) =>
+        option == AnyBankOption ? null : int.Parse(option.AsSpan("Bank ".Length));
+
+    /// <summary>Rebuilds <see cref="BreakpointBankOptions"/>/<see cref="ShowBreakpointBankFilter"/>
+    /// from the live machine's bank count (project CLAUDE.md §14 milestone 17) — called every
+    /// observer tick (alongside the register-file refresh) so it stays correct across a live
+    /// topology change, not just at debugger-open.</summary>
+    private void RefreshBankFilterOptions(int bankCount)
+    {
+        ShowBreakpointBankFilter = bankCount > 0;
+
+        if (BreakpointBankOptions.Count != bankCount + 1)
+        {
+            BreakpointBankOptions.Clear();
+            BreakpointBankOptions.Add(AnyBankOption);
+            for (var i = 0; i < bankCount; i++) BreakpointBankOptions.Add($"Bank {i}");
+        }
+
+        if (!BreakpointBankOptions.Contains(SelectedBreakpointBankOption))
+            SelectedBreakpointBankOption = AnyBankOption;
     }
 
     // ── Satellite window commands ────────────────────────────────────────────

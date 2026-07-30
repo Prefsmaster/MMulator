@@ -284,7 +284,8 @@ public sealed class Machine
                 "(Z80.AtInstructionBoundary must be true). " +
                 "Drive Tick() until AtInstructionBoundary before calling.");
 
-        return new MachineSnapshot(Cpu.Reg, Video.FieldTState, Memory.Read);
+        return new MachineSnapshot(Cpu.Reg, Video.FieldTState, Memory.Read,
+            Memory.BankCount, Memory.BankCount > 0 ? (int?)Memory.CurrentBank : null);
     }
 
     /// <summary>Rebuilds the machine to its cold-reset state (locked decision §2.3:
@@ -375,7 +376,7 @@ public sealed class Machine
                 // D. Exec breakpoint — includes temporary bps planted by StepOver/StepOut.
                 if (Breakpoints.AnyArmed)
                 {
-                    var execHit = Breakpoints.CheckExec(Cpu.Reg.PC);
+                    var execHit = Breakpoints.CheckExec(Cpu.Reg.PC, Memory.CurrentBank);
                     if (execHit.HasValue)
                     {
                         // Temp bp fired: remove it so it cannot re-fire on the next hit.
@@ -469,7 +470,7 @@ public sealed class Machine
 
                 if (Breakpoints.AnyArmed && !_breakPending)
                 {
-                    var hit = Breakpoints.CheckMemRead(addr);
+                    var hit = Breakpoints.CheckMemRead(addr, Memory.CurrentBank);
                     if (hit.HasValue) { _pendingBreak = hit.Value; _breakPending = true; }
                 }
             }
@@ -479,7 +480,7 @@ public sealed class Machine
                 Memory.Write(addr, Pins.GetData(_pins));
                 if (Breakpoints.AnyArmed && !_breakPending)
                 {
-                    var hit = Breakpoints.CheckMemWrite(addr);
+                    var hit = Breakpoints.CheckMemWrite(addr, Memory.CurrentBank);
                     if (hit.HasValue) { _pendingBreak = hit.Value; _breakPending = true; }
                 }
             }
@@ -613,16 +614,16 @@ public sealed class Machine
                     break;
 
                 case AddExecBreakpointCommand addExec:
-                    Breakpoints.AddExec(addExec.Address);
+                    Breakpoints.AddExec(addExec.Address, addExec.Bank);
                     break;
                 case AddMemReadBreakpointCommand addMr:
-                    Breakpoints.AddMemRead(addMr.Address);
+                    Breakpoints.AddMemRead(addMr.Address, addMr.Bank);
                     break;
                 case AddMemWriteBreakpointCommand addMw:
-                    Breakpoints.AddMemWrite(addMw.Address);
+                    Breakpoints.AddMemWrite(addMw.Address, addMw.Bank);
                     break;
                 case AddMemAccessBreakpointCommand addMa:
-                    Breakpoints.AddMemAccess(addMa.Address);
+                    Breakpoints.AddMemAccess(addMa.Address, addMa.Bank);
                     break;
                 case AddIoReadBreakpointCommand addIr:
                     Breakpoints.AddIoRead(addIr.Port);

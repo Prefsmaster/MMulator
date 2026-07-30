@@ -83,17 +83,23 @@ public sealed record LoadImageCommand(ushort StartAddress, byte[] Data) : Machin
 
 // ── Breakpoint CRUD ────────────────────────────────────────────────────────────────────
 
-/// <summary>Add an execute breakpoint at <see cref="Address"/>.</summary>
-public sealed record AddExecBreakpointCommand(ushort Address) : MachineCommand;
+/// <summary>Add an execute breakpoint at <see cref="Address"/>. <see cref="Bank"/> (project
+/// CLAUDE.md §13 milestone 24) optionally restricts the hit to one specific bank when
+/// <see cref="Address"/> falls in the banked window (0xE000-0xFFFF) — see
+/// <see cref="BreakpointStore.AddExec"/>.</summary>
+public sealed record AddExecBreakpointCommand(ushort Address, int? Bank = null) : MachineCommand;
 
-/// <summary>Add a memory-read watchpoint at <see cref="Address"/>.</summary>
-public sealed record AddMemReadBreakpointCommand(ushort Address) : MachineCommand;
+/// <summary>Add a memory-read watchpoint at <see cref="Address"/>. <see cref="Bank"/> — see
+/// <see cref="AddExecBreakpointCommand"/>.</summary>
+public sealed record AddMemReadBreakpointCommand(ushort Address, int? Bank = null) : MachineCommand;
 
-/// <summary>Add a memory-write watchpoint at <see cref="Address"/>.</summary>
-public sealed record AddMemWriteBreakpointCommand(ushort Address) : MachineCommand;
+/// <summary>Add a memory-write watchpoint at <see cref="Address"/>. <see cref="Bank"/> — see
+/// <see cref="AddExecBreakpointCommand"/>.</summary>
+public sealed record AddMemWriteBreakpointCommand(ushort Address, int? Bank = null) : MachineCommand;
 
-/// <summary>Add a memory-access watchpoint (read or write) at <see cref="Address"/>.</summary>
-public sealed record AddMemAccessBreakpointCommand(ushort Address) : MachineCommand;
+/// <summary>Add a memory-access watchpoint (read or write) at <see cref="Address"/>.
+/// <see cref="Bank"/> — see <see cref="AddExecBreakpointCommand"/>.</summary>
+public sealed record AddMemAccessBreakpointCommand(ushort Address, int? Bank = null) : MachineCommand;
 
 /// <summary>Add an I/O-read watchpoint on <see cref="Port"/>.</summary>
 public sealed record AddIoReadBreakpointCommand(byte Port) : MachineCommand;

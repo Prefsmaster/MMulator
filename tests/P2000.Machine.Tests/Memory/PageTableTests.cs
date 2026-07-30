@@ -245,6 +245,98 @@ public class PageTableTests
         Assert.Equal(PageTable.OpenBus, pageTable.Read(PageTable.BankedWindowStart));
     }
 
+    // ---- Debugger per-bank access (project CLAUDE.md §13 milestone 24) ----------------
+
+    [Fact]
+    public void BankCount_Unbanked_IsZero()
+    {
+        var pageTable = Create(new MachineConfig { RamVariant = RamVariant.T38 });
+
+        Assert.Equal(0, pageTable.BankCount);
+    }
+
+    [Fact]
+    public void BankCount_T102_IsSix()
+    {
+        var pageTable = Create(new MachineConfig { RamVariant = RamVariant.T102 });
+
+        Assert.Equal(6, pageTable.BankCount);
+    }
+
+    [Fact]
+    public void BankCount_HomebrewOverride_ReflectsExplicitBankCount()
+    {
+        var pageTable = Create(new MachineConfig { RamVariant = RamVariant.T38, BankCount = 10 });
+
+        Assert.Equal(10, pageTable.BankCount);
+    }
+
+    [Fact]
+    public void GetBankRaw_ReturnsBankNsBytes_RegardlessOfWhichBankIsCurrentlyActive()
+    {
+        var pageTable = Create(new MachineConfig { RamVariant = RamVariant.T102 });
+        for (byte b = 0; b < 6; b++)
+        {
+            pageTable.SelectBank(b);
+            pageTable.Write(PageTable.BankedWindowStart, (byte)(0x30 + b));
+        }
+        pageTable.SelectBank(3); // leave some OTHER bank live-active
+
+        for (byte b = 0; b < 6; b++)
+        {
+            var raw = pageTable.GetBankRaw(b);
+            Assert.Equal((byte)(0x30 + b), raw[0]);
+        }
+    }
+
+    [Fact]
+    public void GetBankRaw_SwitchingActiveBankLive_DoesNotChangeWhatASpecificGetBankRawReturns()
+    {
+        var pageTable = Create(new MachineConfig { RamVariant = RamVariant.T102 });
+        pageTable.SelectBank(2);
+        pageTable.Write(PageTable.BankedWindowStart, 0x42);
+
+        var before = pageTable.GetBankRaw(2);
+
+        pageTable.SelectBank(0); // switch away — bank 2 is no longer live-active
+        pageTable.Write(PageTable.BankedWindowStart, 0xFF); // mutate whatever's NOW active (bank 0)
+
+        var after = pageTable.GetBankRaw(2);
+
+        Assert.Equal(0x42, before[0]);
+        Assert.Equal(0x42, after[0]); // bank 2's own bytes are untouched by the switch + other bank's write
+    }
+
+    [Fact]
+    public void GetBankRaw_ReturnsADefensiveCopy_NotTheLiveBackingArray()
+    {
+        var pageTable = Create(new MachineConfig { RamVariant = RamVariant.T102 });
+        pageTable.SelectBank(0);
+        pageTable.Write(PageTable.BankedWindowStart, 0x11);
+
+        var raw = pageTable.GetBankRaw(0);
+        raw[0] = 0x99; // mutate the RETURNED copy
+
+        Assert.Equal(0x11, pageTable.Read(PageTable.BankedWindowStart)); // live core unaffected
+    }
+
+    [Fact]
+    public void GetBankRaw_OutOfRangeIndex_Throws()
+    {
+        var pageTable = Create(new MachineConfig { RamVariant = RamVariant.T102 }); // 6 banks (0-5)
+
+        Assert.Throws<ArgumentOutOfRangeException>(() => pageTable.GetBankRaw(6));
+        Assert.Throws<ArgumentOutOfRangeException>(() => pageTable.GetBankRaw(-1));
+    }
+
+    [Fact]
+    public void GetBankRaw_NoBankingAtAll_AnyIndexThrows()
+    {
+        var pageTable = Create(new MachineConfig { RamVariant = RamVariant.T38 }); // 0 banks
+
+        Assert.Throws<ArgumentOutOfRangeException>(() => pageTable.GetBankRaw(0));
+    }
+
     // ---- FillRam (project CLAUDE.md §17, 2026-07-21/22 finding: RAM powers up non-zero) ------
 
     [Fact]

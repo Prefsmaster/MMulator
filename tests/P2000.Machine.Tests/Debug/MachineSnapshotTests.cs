@@ -252,4 +252,60 @@ public class MachineSnapshotTests
 
         Assert.InRange(snap.FieldTState, 0, VideoFetchUnit.TStatesPerField - 1);
     }
+
+    // ---- Bank-switched RAM (project CLAUDE.md §13 milestone 24) --------------------
+
+    [Fact]
+    public void BankCount_And_ActiveBank_NoBankedCard_ReportZeroAndNull()
+    {
+        var machine = new Machine(new MachineConfig { RamVariant = RamVariant.T38 });
+        machine.Memory.LoadRom(new byte[] { 0x00 }); // NOP
+
+        RunToNextBoundary(machine);
+        var snap = machine.TakeSnapshot();
+
+        Assert.Equal(0, snap.BankCount);
+        Assert.Null(snap.ActiveBank);
+    }
+
+    /// <summary>The "1-bit RAMSW card" shape (reference doc §5) — reached via the atomic
+    /// floppy+RAM board, which auto-forces T102 (project CLAUDE.md §17, milestone 14 finding).
+    /// No separate machine-layer code path exists for it: it's the same generic N-bank array as
+    /// a homebrew card, just always landing on 6 banks — see this milestone's PageTable
+    /// doc comment.</summary>
+    [Fact]
+    public void ActiveBank_TracksPort0x94Writes_Exactly_RamswShape()
+    {
+        var machine = new Machine(new MachineConfig { RamVariant = RamVariant.T102 }); // 6 banks
+        machine.Memory.LoadRom(new byte[] { 0x00 }); // NOP
+        RunToNextBoundary(machine);
+
+        Assert.Equal(6, machine.TakeSnapshot().BankCount);
+        Assert.Equal(0, machine.TakeSnapshot().ActiveBank); // default, nothing written yet
+
+        machine.Ports.Write(PageTable.BankSelectPort, 4);
+        Assert.Equal(4, machine.TakeSnapshot().ActiveBank);
+
+        machine.Ports.Write(PageTable.BankSelectPort, 1);
+        Assert.Equal(1, machine.TakeSnapshot().ActiveBank);
+    }
+
+    /// <summary>A homebrew/N-bank card (a free-standing <see cref="MachineConfig.BankCount"/>
+    /// override, independent of <see cref="RamVariant"/> — see PageTableTests' own
+    /// "BankIndexIsStoredUnmasked" test for the same pattern).</summary>
+    [Fact]
+    public void ActiveBank_TracksPort0x94Writes_Exactly_HomebrewNBankShape()
+    {
+        var machine = new Machine(new MachineConfig { RamVariant = RamVariant.T38, BankCount = 10 });
+        machine.Memory.LoadRom(new byte[] { 0x00 }); // NOP
+        RunToNextBoundary(machine);
+
+        Assert.Equal(10, machine.TakeSnapshot().BankCount);
+
+        machine.Ports.Write(PageTable.BankSelectPort, 7);
+        Assert.Equal(7, machine.TakeSnapshot().ActiveBank);
+
+        machine.Ports.Write(PageTable.BankSelectPort, 0);
+        Assert.Equal(0, machine.TakeSnapshot().ActiveBank);
+    }
 }

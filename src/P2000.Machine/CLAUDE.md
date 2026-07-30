@@ -1510,6 +1510,47 @@ is NO machine-layer runner milestone here — it's promoted in with the external
     - **Applies to:** `src/P2000.Machine/Devices/Fdc/DskImage.cs` (`DetectDirectoryFormat`), UI
       milestone 16 (consumes this), `docs/P2000T-disk-formats.md` §7 item 8.
 
+24. **Debugger — per-bank access to bank-switched RAM (0xE000–0xFFFF)** (NEW, owner decision
+    2026-07-28, motivated by investigating the JWSDOS-activation bug — reference doc §5d's newly
+    tracked "TRACKED, not yet investigated" entry). The debugger's memory-watch windows and
+    breakpoints currently only ever see whichever bank is LIVE-active at port `0x94` (reference
+    doc §5) — no way to inspect a non-active bank's raw contents, nor to distinguish which bank
+    triggered a breakpoint at a shared address. Needed uniformly across every banked-RAM card
+    this project models (the 1-bit `RAMSW` card — 2 "banks," BANK1's upper/lower 8 KB half — and
+    homebrew/T-102-class N-bank cards) — do not special-case by card.
+    - **Expose each populated bank's raw backing bytes**, independent of the live active-bank
+      value, through the observer/snapshot surface (§3b.1) — e.g. a `GetBankRaw(bankIndex)` (or
+      equivalent) on whatever class owns the installed card's bank storage. Your call on the
+      exact shape against the real types; the requirement is that reading bank N's bytes must
+      not depend on bank N currently being active, and must not mutate the live core (a pure
+      snapshot read, like everything else on the observer side).
+    - **Expose the currently active bank value** (and, for a card with no banking installed,
+      that there IS no banking) as part of the state snapshot, so it can be shown live and
+      updates every observer refresh — not just a one-time read at debugger-open.
+    - **Expose how many banks the installed card has** (2 for `RAMSW`, `bankCount` for a
+      homebrew/N-bank card, 0/none for a non-banked or bare configuration) so the UI can
+      populate a per-window/per-breakpoint bank selector without hardcoding a count.
+    - **Bank-qualified breakpoints:** extend the existing memory R/W/X + execute breakpoint
+      store (§3b.2) so a breakpoint whose address falls in 0xE000–0xFFFF can optionally carry a
+      specific bank index alongside it. At evaluation time, a bank-qualified breakpoint fires
+      ONLY when the live active-bank value matches its qualifier; an unqualified breakpoint (the
+      existing, default shape) fires regardless of which bank is active, exactly as today — no
+      behavior change for any breakpoint outside the banked region, or for existing unqualified
+      ones inside it.
+    - **Tests:** a synthetic multi-bank fixture (distinct known bytes per bank) confirms
+      `GetBankRaw(N)` returns bank N's bytes regardless of which bank is currently active, and
+      that switching the active bank live doesn't change what a specific `GetBankRaw(N)` call
+      returns; the active-bank snapshot value tracks port `0x94` writes exactly; a bank-qualified
+      breakpoint at an E000-region address fires only when that bank is active (test with the
+      SAME address, two different active banks, only one qualified) and an unqualified
+      breakpoint at the same address fires in both; a non-banked configuration reports zero/none
+      banks and the qualifier is simply unavailable (existing breakpoint behavior at any address,
+      banked-region or not, is completely unaffected).
+    - **Applies to:** whatever class owns the installed card's bank storage (reference doc §5 —
+      the `RAMSW`/homebrew bank-register device), the breakpoint store (§3b.2), the observer
+      snapshot surface (§3b.1), `docs/P2000T-reference.md` §3a "Debugger" section, UI milestone
+      17 (consumes all three).
+
 ---
 
 ## 14. Deferred (build the seams now, implement later)
@@ -1582,6 +1623,70 @@ marked synced. Do NOT edit the reference doc from this project.
 - **Applies to:** reference doc §… / <file/port>
 - **Synced:** yes (2026-07-05, into P2000T-reference.md + device guides)
 -->
+
+### 2026-07-28 — Milestone 24 IMPLEMENTED: debugger per-bank access to bank-switched RAM
+- **Trigger:** owner decision, motivated by a debugger gap hit while investigating the (separate,
+  untouched-here) JWSDOS-activation bug — the debugger's memory watches/breakpoints only ever saw
+  whichever bank is live-active at port `0x94`, with no way to inspect a non-active bank or tell
+  which bank triggered a shared-address breakpoint.
+- **Found — no separate "1-bit RAMSW card" code path exists to special-case:** the milestone's
+  own framing (2 banks for RAMSW, `bankCount` for a homebrew card) suggested two shapes to build
+  against, but `PageTable._banks` is already ONE generic N-bank array regardless of how it's
+  reached — the atomic floppy+RAM board (§17 2026-07-23 entry) just always lands on 6 banks via
+  `RamVariant.T102`, a homebrew `RamOnly` card uses the identical array via an explicit
+  `MachineConfig.BankCount`. Nothing to make "uniform across every card" — it already is, by
+  construction. Documented this directly in `PageTable.BankCount`'s own doc comment so a future
+  reader doesn't go looking for a RAMSW-specific class that was never built.
+- **Built:**
+  - `PageTable.BankCount` (`int`, `_banks.Length`) and `PageTable.GetBankRaw(int bankIndex)` —
+    returns a DEFENSIVE COPY of that bank's 8 KB, independent of which bank is live-active,
+    never mutating the live core. Throws `ArgumentOutOfRangeException` for an index ≥ `BankCount`
+    (including on a 0-bank/unbanked machine — there's nothing valid to return).
+  - `MachineSnapshot.BankCount`/`ActiveBank` (`int?`, `null` when `BankCount == 0` — "no banking"
+    is a distinct, deliberate value, not a meaningless bank index) — populated by
+    `Machine.TakeSnapshot()` every call, so it's refreshed every observer tick like the rest of
+    the snapshot, not just read once at debugger-open.
+  - Bank-qualified breakpoints: `BreakpointStore`'s `Entry` gained an `int? Bank` field;
+    `AddExec`/`AddMemRead`/`AddMemWrite`/`AddMemAccess` gained an optional `bank` parameter
+    (IoRead/IoWrite did NOT — ports have no relationship to the banked window). `Check(kind,
+    address, activeBank)` now takes the live active bank and skips a bank-qualified entry whose
+    `Bank` doesn't match; an unqualified entry (`Bank: null`, the only shape that existed before
+    this milestone) is unaffected — matches on kind+address exactly as before, ignoring
+    `activeBank` entirely. `Machine.Tick()`'s three call sites (`CheckExec`/`CheckMemRead`/
+    `CheckMemWrite`) now pass `Memory.CurrentBank`; `CheckIoRead`/`CheckIoWrite` unchanged (no
+    bank parameter, pass `activeBank: 0` internally — inert, since no I/O breakpoint can ever
+    carry a qualifier).
+  - Validation: `BreakpointStore.Add` throws `ArgumentException` if a non-null `bank` is given for
+    an address OUTSIDE the banked window (0xE000-0xFFFF) — a bank qualifier anywhere else is
+    structurally meaningless. Deliberately does NOT validate `bank < installedBankCount` — the
+    store has no reference to the page table's bank count, and a qualifier for a bank that
+    doesn't exist just never matches `Memory.CurrentBank`, which is self-descriptive enough
+    (never crashes, never fires) without adding a second dependency for a purely defensive check.
+- **`.state`:** no change — `BreakpointStore` was never serialized (confirmed: no `SaveState`/
+  `LoadState` on it, and nothing calls into it from `MachineStateFile`), so the new `Bank` field
+  needed no version bump.
+- **Tests:** `PageTableTests` (+8) — `BankCount` for unbanked/T102/homebrew-override; `GetBankRaw`
+  returns bank N's bytes regardless of the live-active bank and is unaffected by a later live
+  switch + write to a DIFFERENT bank; confirms the returned array is a copy (mutating it doesn't
+  touch the live core); out-of-range and no-banking-at-all both throw.
+  `MachineSnapshotTests` (+3) — `BankCount`/`ActiveBank` are `0`/`null` for an unbanked machine;
+  `ActiveBank` tracks `OUT (0x94),n`-equivalent port writes exactly for both the RAMSW shape
+  (`RamVariant.T102`) and a homebrew shape (`RamOnly` + explicit `BankCount`).
+  `BreakpointStoreTests` (+7) — a bank-qualified Exec/MemWrite breakpoint at the SAME address
+  fires only under its qualified active bank, not a different one; an unqualified breakpoint at
+  the same address fires under every active bank tested; a 0-bank/unbanked machine's existing
+  unqualified-breakpoint behavior is completely unaffected (regression guard); all four
+  bank-capable `Add*` methods reject a bank qualifier outside the banked window.
+- **Applies to:** `src/P2000.Machine/Memory/PageTable.cs` (`BankCount`, `GetBankRaw`),
+  `src/P2000.Machine/Debug/MachineSnapshot.cs` (`BankCount`, `ActiveBank`),
+  `src/P2000.Machine/Debug/BreakpointStore.cs` (bank-qualified `Entry`/`Add*`/`Check*`),
+  `src/P2000.Machine/Debug/MachineCommand.cs` (`Bank` on the four breakpoint-add commands),
+  `src/P2000.Machine/Machine.cs` (`TakeSnapshot`, the three tick-loop Check* call sites, the
+  command-queue dispatch), `tests/P2000.Machine.Tests/Memory/PageTableTests.cs`,
+  `tests/P2000.Machine.Tests/Debug/MachineSnapshotTests.cs`,
+  `tests/P2000.Machine.Tests/Debug/BreakpointStoreTests.cs`. UI milestone 17 (consumes all of the
+  above), reference doc §3a's Debugger section, reference doc §5 (bank-switching facts).
+- **Synced:** no
 
 ### 2026-07-28 — Milestone 23 IMPLEMENTED: blank-disk detection no longer defaults to `Jwsdos`
 - **Trigger:** owner decision, fast-follow onto milestone 22 (reference doc §3a same RESOLVED

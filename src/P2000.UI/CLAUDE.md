@@ -1360,6 +1360,44 @@ builds did. Do not advance while the current milestone is red. Record spec corre
       bytes) still shows the original "unknown" message, unchanged — regression guard that this
       milestone didn't accidentally widen the blank-message case to cover real garbage too.
 
+17. **Debugger — per-bank memory watch override + live active-bank indicator + bank-qualified
+    breakpoint UI** (NEW, owner decision 2026-07-28, depends on machine milestone 24).
+    - **Live active-bank indicator:** somewhere in the debugger's always-visible state (the
+      register-file view or a small status readout alongside it — your call on placement) show
+      the machine's current active-bank value from milestone 24's snapshot exposure, refreshed
+      every observer tick like the rest of the debugger. Shows "no banking" (or is hidden) when
+      the installed card has none.
+    - **Per-window bank override on memory watch windows:** each window gains a "Bank" selector —
+      "Auto" (default; today's existing behavior, shows whatever's live-active) plus one option
+      per populated bank (from milestone 24's bank-count exposure). The selector is only
+      shown/enabled when the window's configured [Base, Base+Length) range intersects
+      0xE000–0xFFFF at all — hidden otherwise (nothing to select for a window that never touches
+      the banked region), and hidden entirely when the installed card has no banking. Selecting a
+      specific bank pins THAT WINDOW's rendering of addresses inside the banked region to
+      `GetBankRaw`'s bytes for that bank, regardless of what's actually live-active; any part of
+      the window's range outside 0xE000–0xFFFF is unaffected either way. This is per-window state
+      (not global) — opening two windows over the same banked range, one pinned to bank 0 and one
+      to bank 1, shows both simultaneously side by side, the owner's own explicit motivating case.
+    - **Bank-qualified breakpoints:** wherever breakpoints are set (the disassembly gutter for
+      execute breakpoints; the memory-watch/breakpoint dialog for R/W ones), an address inside
+      0xE000–0xFFFF gets an additional "Bank" qualifier alongside it — "Any" (default) or a
+      specific populated bank index. Outside the banked region the qualifier is simply not
+      offered (nothing to qualify). Wire straight through to milestone 24's bank-qualified
+      breakpoint store — no new evaluation logic on the UI side, just the picker and passing the
+      chosen value through.
+    - **Tests:** a memory watch window over an E000-region range with "Auto" selected still
+      tracks the live-active bank exactly as before (regression guard); pinning it to a specific
+      bank shows that bank's bytes even while a DIFFERENT bank is live-active, and a second
+      window pinned to another bank shows different bytes at the same addresses simultaneously;
+      the bank selector is absent/disabled for a window whose range is entirely outside
+      0xE000–0xFFFF, and for any window when the installed card has no banking; setting a
+      bank-qualified breakpoint at an E000-region address and running past it while a DIFFERENT
+      bank is active does NOT break, while switching to the qualified bank and hitting the same
+      address DOES.
+    - **Applies to:** `src/P2000.UI` debugger views/VMs (memory watch window, breakpoint-setting
+      UI, register-file/status view), machine milestone 24 (`GetBankRaw`, active-bank snapshot
+      value, bank-qualified breakpoint store — all consumed here).
+
 ---
 
 ## 15. Deferred (build the seams now, implement later)
@@ -1417,6 +1455,71 @@ project.
 - **Applies to:** reference doc §3a / <file>
 - **Synced:** yes (YYYY-MM-DD)
 -->
+
+### 2026-07-28 — Milestone 17 IMPLEMENTED: debugger per-bank access to bank-switched RAM
+- **Trigger:** owner decision (project CLAUDE.md §14 milestone 17; machine ms.24, same day).
+  Depends entirely on machine milestone 24's `PageTable.GetBankRaw`/`BankCount`,
+  `MachineSnapshot.BankCount`/`ActiveBank`, and the bank-qualified `BreakpointStore`.
+- **Found — a real, pre-existing gap this milestone's own text assumed didn't exist:** the
+  spec's item 3 says to add a bank qualifier "wherever breakpoints are set (the disassembly
+  gutter for execute breakpoints; the memory-watch/breakpoint dialog for R/W ones)" — but no
+  memory R/W breakpoint-setting UI exists ANYWHERE in this project today. The only real
+  breakpoint-setting surface is `DebuggerWindowVm.ToggleExecBreakpoint` (the disassembly gutter's
+  click-to-toggle), which only ever creates Exec breakpoints. **Scoped this milestone's UI work to
+  what actually exists** — the gutter's exec breakpoints gained the qualifier; the machine-layer
+  `AddMemRead`/`AddMemWrite`/`AddMemAccess` bank support is fully built and ready, but there is
+  nothing to attach a picker to until a memory-watch/breakpoint dialog is built as its own,
+  separate milestone. Not fabricating that dialog here — out of this milestone's actual scope.
+- **Built:**
+  1. **Live active-bank indicator:** `RegisterFileVm.BankInfo` ("No banking" / "Bank N / count"),
+     updated from both `Update(MachineSnapshot)` (paused — reads `snap.BankCount`/`ActiveBank`
+     directly) and the live path `UpdateLive(reg, fieldTState, bankCount, activeBank)` — the live
+     path had no snapshot to read these from, so `DebuggerWindowVm.OnFrameReady` now passes
+     `m.Memory.BankCount`/`CurrentBank` through explicitly. Shown as a new "Bank" row in the
+     register panel, right below FT-state.
+  2. **Per-window bank override:** `MemoryWatchVm.SelectedBankOption` ("Auto" default, or
+     "Bank N") + `BankOptions`/`ShowBankSelector`, all recomputed inside `Update()` itself (not
+     just at window-construction) so it tracks a live topology change. `Update()`'s per-byte read
+     loop substitutes `Memory.GetBankRaw(pinnedBank)` for any address inside 0xE000-0xFFFF when a
+     specific bank is pinned — calling `GetBankRaw` ONCE per `Update()` call (not once per byte;
+     it allocates+copies 8 KB) and indexing into the cached result. Genuinely per-window state —
+     confirmed two independent `MemoryWatchVm` instances over the identical range, pinned to
+     different banks, show different bytes simultaneously (the owner's own explicit motivating
+     case), since neither reads or writes any shared field.
+  3. **Bank-qualified breakpoints (gutter only, see the gap above):** `DebuggerWindowVm` gained
+     `SelectedBreakpointBankOption`/`BreakpointBankOptions`/`ShowBreakpointBankFilter` (same
+     "Any"/"Bank N" shape as the memory-watch selector) and a small "Bp bank:" picker in the
+     stepping toolbar. `_execBpSet` (a bare `HashSet<ushort>`) became `_execBps`
+     (`Dictionary<ushort, int?>`) so each toggled breakpoint remembers its own qualifier.
+     `ToggleExecBreakpoint` only attaches the CURRENTLY-selected filter when the clicked address
+     falls in the banked window; outside it, the filter is unconditionally ignored (`bank: null`)
+     — matches the spec's "outside the banked region, don't offer the qualifier at all" even
+     though there's no separate UI affordance to hide, since the picker's current value simply
+     doesn't apply there. `SyncBreakpointsToMachine` passes each entry's stored `int?` straight
+     through to `AddExecBreakpointCommand(address, bank)` — no bank-comparison logic duplicated
+     here, exactly as the milestone asked.
+- **Tests:** `MemoryWatchVmTests` (+5) — "Auto" still tracks a live bank switch (regression
+  guard); pinning to a specific bank shows that bank's bytes while a DIFFERENT bank is
+  live-active; two windows pinned to different banks show different bytes at the same addresses
+  simultaneously; the selector is hidden for a range entirely outside the banked window, and for
+  any window when the installed card has no banking at all. `DebuggerWindowVmTests` (+4) — a
+  bank-qualified gutter breakpoint fires only under its qualified active bank (using the same
+  "SelectBank works even with no real banked card behind it" technique the machine layer's own
+  `BreakpointStoreTests` uses — the check only ever reads `PageTable.CurrentBank`, the raw
+  register); the "Any" default fires under every active bank tested (regression guard); an
+  address outside the banked window never gets a qualifier attached (confirmed by NOT throwing —
+  `BreakpointStore.Add` throws for a bank-qualified address outside 0xE000-0xFFFF, so a wrongly-
+  attached qualifier would surface exactly there); `ShowBreakpointBankFilter`/
+  `BreakpointBankOptions` track a live Reconfigure from bare to a 6-bank card.
+- **Applies to:** `src/P2000.UI/ViewModels/RegisterFileVm.cs` (`BankInfo`, `UpdateLive`'s new
+  params), `src/P2000.UI/ViewModels/MemoryWatchVm.cs` (`SelectedBankOption`/`BankOptions`/
+  `ShowBankSelector`, `Update`'s per-byte bank substitution), `src/P2000.UI/ViewModels/
+  DebuggerWindowVm.cs` (`_execBps`, breakpoint bank-filter properties, `ToggleExecBreakpoint`/
+  `SyncBreakpointsToMachine`, `RefreshBankFilterOptions`), `src/P2000.UI/Views/
+  MemoryWatchWindow.axaml` (Bank selector), `src/P2000.UI/Views/DebuggerWindow.axaml` (Bank
+  row, Bp-bank picker), `tests/P2000.UI.Tests/ViewModels/MemoryWatchVmTests.cs`,
+  `tests/P2000.UI.Tests/ViewModels/DebuggerWindowVmTests.cs`. Machine ms.24 (consumed throughout).
+- **Synced:** no
 
 ### 2026-07-28 — FIXED: Standard-Host force-ON (unshifted `'`/`"` and `=`/`+`) needed the same field-boundary gap as force-OFF, contradicting an earlier "confirmed working with zero gap" note
 - **Trigger:** owner-reported bug, still reproducing after the KeyUp/menu-gating fix immediately

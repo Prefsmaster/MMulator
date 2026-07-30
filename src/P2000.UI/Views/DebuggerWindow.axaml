@@ -76,7 +76,7 @@
                     <ScrollViewer VerticalScrollBarVisibility="Auto"
                                   HorizontalScrollBarVisibility="Disabled">
                         <Grid ColumnDefinitions="44,*,44,*"
-                              RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,8,Auto,Auto,Auto,8,Auto,Auto,8,Auto">
+                              RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,8,Auto,Auto,Auto,8,Auto,Auto,8,Auto,Auto">
                             <!-- Row 0: AF / BC -->
                             <TextBlock Grid.Row="0" Grid.Column="0" Classes="reglabel" Text="AF" />
                             <TextBlock Grid.Row="0" Grid.Column="1" Classes="regvalue" Text="{Binding RegisterFile.AF}" />
@@ -144,6 +144,11 @@
                                        Classes="reglabel" Text="FT-state" />
                             <TextBlock Grid.Row="16" Grid.Column="2" Grid.ColumnSpan="2"
                                        Classes="regvalue" Text="{Binding RegisterFile.FieldTState}" />
+                            <!-- Row 17: live active-bank indicator (project CLAUDE.md §14 milestone 17) -->
+                            <TextBlock Grid.Row="17" Grid.Column="0" Grid.ColumnSpan="2"
+                                       Classes="reglabel" Text="Bank" />
+                            <TextBlock Grid.Row="17" Grid.Column="2" Grid.ColumnSpan="2"
+                                       Classes="regvalue" Text="{Binding RegisterFile.BankInfo}" />
                         </Grid>
                     </ScrollViewer>
                 </DockPanel>
@@ -173,6 +178,16 @@
                                 Command="{Binding StepOutCommand}"
                                 MinWidth="50" FontSize="11"
                                 ToolTip.Tip="Step out (Shift+F11)" />
+                        <StackPanel Orientation="Horizontal" Spacing="4"
+                                    IsVisible="{Binding ShowBreakpointBankFilter}">
+                            <Separator />
+                            <TextBlock Text="Bp bank:" FontSize="11" Foreground="#888"
+                                       VerticalAlignment="Center" />
+                            <ComboBox MinWidth="64" FontSize="10"
+                                      ItemsSource="{Binding BreakpointBankOptions}"
+                                      SelectedItem="{Binding SelectedBreakpointBankOption}"
+                                      ToolTip.Tip="Qualifies the NEXT exec breakpoint toggled at a banked-window (0xE000-0xFFFF) address — fires only when this bank is live-active. Addresses outside that window always ignore this filter." />
+                        </StackPanel>
                     </StackPanel>
                 </Border>
 

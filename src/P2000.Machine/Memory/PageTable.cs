@@ -135,6 +135,33 @@ public sealed class PageTable
     /// cost when unused) — mirrors <see cref="P2000.Machine.Devices.Fdc.Upd765.Trace"/>.</summary>
     public Action<byte>? BankSelected { get; set; }
 
+    /// <summary>How many 8 KB banks are populated at 0xE000-0xFFFF — project CLAUDE.md §13
+    /// milestone 24 (debugger per-bank access). Uniform across every banked-RAM card this
+    /// project models: 6 for a T/102-class card (whether reached via the atomic floppy+RAM
+    /// board or an explicit homebrew <see cref="MachineConfig.BankCount"/>), 0 for a bare/T38/T54
+    /// machine with no banking at all. There is no separate code path for the "1-bit RAMSW"
+    /// card (reference doc §5) — its 2-position register is just a smaller instance of this SAME
+    /// generic N-bank array, never actually configured that way by anything in this codebase
+    /// today (<see cref="MachineConfig.EffectiveBankCount"/> only ever produces 0 or 6+).</summary>
+    public int BankCount => _banks.Length;
+
+    /// <summary>Reads bank <paramref name="bankIndex"/>'s raw 8 KB backing bytes, independent of
+    /// which bank is currently LIVE-active at <see cref="BankSelectPort"/> (project CLAUDE.md §13
+    /// milestone 24) — the debugger's per-window bank override needs to show a non-active bank's
+    /// contents without disturbing the running machine. Returns a defensive COPY (never the live
+    /// backing array) so a caller can't mutate the live core through the returned bytes — the same
+    /// "pure snapshot read" rule <see cref="MachineSnapshot.ReadMemory"/> already follows.</summary>
+    public byte[] GetBankRaw(int bankIndex)
+    {
+        if ((uint)bankIndex >= (uint)_banks.Length)
+            throw new ArgumentOutOfRangeException(nameof(bankIndex),
+                $"Bank {bankIndex} does not exist — this machine has {_banks.Length} bank(s) (0-{_banks.Length - 1}).");
+
+        var copy = new byte[BankSize];
+        _banks[bankIndex].CopyTo(copy, 0);
+        return copy;
+    }
+
     /// <summary>True when <paramref name="addr"/> is backed by the DRAM array (VRAM,
     /// the SAA5020 fetch unit exclusively addresses this VRAM chip. Base RAM, expansion RAM,
     /// and the banked window are separate chips not accessed by the SAA5020 — a Z80 write to

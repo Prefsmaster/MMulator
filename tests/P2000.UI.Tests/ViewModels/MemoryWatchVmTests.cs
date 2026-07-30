@@ -1,4 +1,7 @@
+using Avalonia.Headless.XUnit;
+using P2000.Machine;
 using P2000.Machine.Debug;
+using P2000.Machine.Memory;
 using P2000.UI.Runner;
 using P2000.UI.ViewModels;
 
@@ -282,6 +285,122 @@ public class MemoryWatchVmTests
 
         for (var i = 0; i < data.Length; i++)
             Assert.Equal(data[i], runner.Machine.Memory.Read((ushort)(0x6000 + i)));
+    }
+
+    // ── Per-bank access to bank-switched RAM (project CLAUDE.md §14 milestone 17;
+    // machine ms.24) ─────────────────────────────────────────────────────────────────────
+
+    /// <summary>A running runner reconfigured to a homebrew/N-bank card (6 banks via T102) —
+    /// same "Reconfigure needs Start() + a real thread-swap delay" pattern as
+    /// <c>ConfigWindowVmTests.LoadFromCurrentConfig_ReflectsAnAlreadyFloppyRamMachine</c>.</summary>
+    private static async Task<EmulationRunner> NewBankedRunnerAsync()
+    {
+        var runner = new EmulationRunner();
+        runner.Start();
+        await Task.Delay(60);
+        runner.Reconfigure(new MachineConfig { Board = InternalBoard.RamOnly, RamVariant = RamVariant.T102 });
+        await Task.Delay(60);
+        return runner;
+    }
+
+    [AvaloniaFact]
+    public async Task BankSelector_AutoOption_StillTracksLiveActiveBank_RegressionGuard()
+    {
+        var runner = await NewBankedRunnerAsync();
+        var vm = new MemoryWatchVm(runner);
+        vm.SetRange(PageTable.BankedWindowStart, 16);
+        Assert.Equal(MemoryWatchVm.AutoBankOption, vm.SelectedBankOption); // default
+
+        runner.Machine.Memory.SelectBank(2);
+        runner.Machine.Memory.Write(PageTable.BankedWindowStart, 0xAA);
+        vm.Update(runner.Machine.Memory.Read);
+        Assert.Equal("AA", vm.Rows[0].Bytes[0].Hex);
+
+        runner.Machine.Memory.SelectBank(4);
+        runner.Machine.Memory.Write(PageTable.BankedWindowStart, 0xBB);
+        vm.Update(runner.Machine.Memory.Read);
+        Assert.Equal("BB", vm.Rows[0].Bytes[0].Hex); // "Auto" follows the switch, exactly as before
+
+        runner.Dispose();
+    }
+
+    [AvaloniaFact]
+    public async Task BankSelector_PinnedToSpecificBank_ShowsThatBanksBytes_EvenWhileADifferentBankIsLiveActive()
+    {
+        var runner = await NewBankedRunnerAsync();
+        runner.Machine.Memory.SelectBank(2);
+        runner.Machine.Memory.Write(PageTable.BankedWindowStart, 0x22);
+        runner.Machine.Memory.SelectBank(5);
+        runner.Machine.Memory.Write(PageTable.BankedWindowStart, 0x55);
+        runner.Machine.Memory.SelectBank(5); // bank 5 is now the LIVE-active one
+
+        var vm = new MemoryWatchVm(runner);
+        vm.SetRange(PageTable.BankedWindowStart, 16);
+        vm.Update(runner.Machine.Memory.Read); // populate BankOptions
+        Assert.Contains("Bank 2", vm.BankOptions);
+        vm.SelectedBankOption = "Bank 2";
+
+        vm.Update(runner.Machine.Memory.Read);
+
+        Assert.Equal("22", vm.Rows[0].Bytes[0].Hex); // bank 2's own byte, not bank 5's (live-active)
+
+        runner.Dispose();
+    }
+
+    [AvaloniaFact]
+    public async Task BankSelector_TwoWindowsPinnedToDifferentBanks_ShowDifferentBytesSimultaneously()
+    {
+        var runner = await NewBankedRunnerAsync();
+        runner.Machine.Memory.SelectBank(0);
+        runner.Machine.Memory.Write(PageTable.BankedWindowStart, 0x10);
+        runner.Machine.Memory.SelectBank(1);
+        runner.Machine.Memory.Write(PageTable.BankedWindowStart, 0x11);
+        runner.Machine.Memory.SelectBank(3); // whatever's live-active is irrelevant to either window below
+
+        var vmBank0 = new MemoryWatchVm(runner);
+        vmBank0.SetRange(PageTable.BankedWindowStart, 16);
+        vmBank0.Update(runner.Machine.Memory.Read);
+        vmBank0.SelectedBankOption = "Bank 0";
+
+        var vmBank1 = new MemoryWatchVm(runner);
+        vmBank1.SetRange(PageTable.BankedWindowStart, 16);
+        vmBank1.Update(runner.Machine.Memory.Read);
+        vmBank1.SelectedBankOption = "Bank 1";
+
+        vmBank0.Update(runner.Machine.Memory.Read);
+        vmBank1.Update(runner.Machine.Memory.Read);
+
+        Assert.Equal("10", vmBank0.Rows[0].Bytes[0].Hex);
+        Assert.Equal("11", vmBank1.Rows[0].Bytes[0].Hex); // both correct, side by side, at the same address
+
+        runner.Dispose();
+    }
+
+    [AvaloniaFact]
+    public async Task BankSelector_RangeEntirelyOutsideBankedWindow_IsHidden()
+    {
+        var runner = await NewBankedRunnerAsync(); // has banking...
+        var vm = new MemoryWatchVm(runner);
+        vm.SetRange(0x6000, 256); // ...but this window never touches 0xE000-0xFFFF at all
+
+        vm.Update(runner.Machine.Memory.Read);
+
+        Assert.False(vm.ShowBankSelector);
+
+        runner.Dispose();
+    }
+
+    [Fact]
+    public void BankSelector_NoBankedCardAtAll_IsHidden()
+    {
+        var runner = new EmulationRunner(); // bare — Board.None, RamVariant.T38
+        var vm = new MemoryWatchVm(runner);
+        vm.SetRange(PageTable.BankedWindowStart, 256); // squarely inside the (unpopulated) window
+
+        vm.Update(runner.Machine.Memory.Read);
+
+        Assert.False(vm.ShowBankSelector);
+        Assert.Equal(new[] { MemoryWatchVm.AutoBankOption }, vm.BankOptions);
     }
 
     // ── Helpers ──────────────────────────────────────────────────────────────────────────

@@ -17,11 +17,14 @@ public readonly struct MachineSnapshot
 {
     // ---- Constructor (package-private — only Machine creates these) -----------------
 
-    internal MachineSnapshot(Registers reg, int fieldTState, Func<ushort, byte> readMemory)
+    internal MachineSnapshot(Registers reg, int fieldTState, Func<ushort, byte> readMemory,
+        int bankCount, int? activeBank)
     {
         Registers = reg;
         FieldTState = fieldTState;
         ReadMemory = readMemory;
+        BankCount = bankCount;
+        ActiveBank = activeBank;
     }
 
     // ---- Full register file ---------------------------------------------------------
@@ -109,4 +112,18 @@ public readonly struct MachineSnapshot
     /// <paramref name="address"/> as it would be seen by a CPU MREQ+RD at that address
     /// (open-bus 0xFF for unpopulated regions; no side-effects).</summary>
     public Func<ushort, byte> ReadMemory { get; }
+
+    // ---- Bank-switched RAM (0xE000-0xFFFF) — project CLAUDE.md §13 milestone 24 ------
+
+    /// <summary>How many 8 KB banks the installed card has populated at 0xE000-0xFFFF
+    /// (<see cref="Memory.PageTable.BankCount"/>) — 0 for a bare/unbanked machine. Refreshed
+    /// every snapshot, not just read once at debugger-open, since the topology itself is fixed
+    /// but this is cheap to re-read regardless.</summary>
+    public int BankCount { get; }
+
+    /// <summary>The LIVE-active bank at <see cref="Memory.PageTable.BankSelectPort"/> at the
+    /// snapshot boundary, or <c>null</c> when <see cref="BankCount"/> is 0 — deliberately
+    /// distinct from a meaningless bank index on a machine with no banking at all, rather than
+    /// always reporting the page table's raw (here, unused) register value.</summary>
+    public int? ActiveBank { get; }
 }

@@ -8,6 +8,7 @@ using Avalonia.Threading;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using P2000.Machine.Debug;
+using P2000.Machine.Memory;
 using P2000.UI.Runner;
 
 namespace P2000.UI.ViewModels;
@@ -45,6 +46,29 @@ public sealed partial class MemoryWatchVm : ObservableObject
     [ObservableProperty] private string _follow = "None";
 
     [ObservableProperty] private string _title = "Memory 5000h";
+
+    // ── Per-window bank override (project CLAUDE.md §14 milestone 17; machine ms.24) ────────
+
+    public const string AutoBankOption = "Auto";
+
+    /// <summary>"Auto" (default — today's existing behavior: shows whatever's live-active) plus
+    /// one option per populated bank, from the live machine's <c>PageTable.BankCount</c>.
+    /// Recomputed on every <see cref="Update"/> call so it stays correct across a live topology
+    /// change, not just at window-open.</summary>
+    public ObservableCollection<string> BankOptions { get; } = new() { AutoBankOption };
+
+    /// <summary>"Auto" or "Bank N" — selecting a specific bank pins this window's rendering of
+    /// addresses inside the banked window (0xE000-0xFFFF) to that bank's raw bytes
+    /// (<see cref="PageTable.GetBankRaw"/>) regardless of what's actually live-active; any part
+    /// of this window's own [<see cref="BaseAddress"/>, BaseAddress+<see cref="Length"/>) range
+    /// outside the banked window is unaffected either way. Per-window state — two windows over
+    /// the same banked range, pinned to different banks, show both simultaneously side by side.</summary>
+    [ObservableProperty] private string _selectedBankOption = AutoBankOption;
+
+    /// <summary>Shown/enabled only when this window's configured range intersects the banked
+    /// window AND the installed card has at least one bank — hidden otherwise (nothing to
+    /// select for a window that never touches the banked region, or a card with no banking).</summary>
+    [ObservableProperty] private bool _showBankSelector;
 
     /// <summary>Target address (hex text) for "Load file to address…"; defaults to the
     /// window's own range start but is independently editable (§14 milestone 12).</summary>
@@ -94,7 +118,9 @@ public sealed partial class MemoryWatchVm : ObservableObject
     /// <summary>
     /// Reads memory starting at <paramref name="baseOverride"/> (or <see cref="BaseAddress"/>
     /// if null) and refreshes all rows. Call from the UI thread (or post if coming from
-    /// emulation thread).
+    /// emulation thread). Any address inside the banked window (0xE000-0xFFFF) is read from
+    /// <see cref="SelectedBankOption"/>'s pinned bank instead of <paramref name="readMemory"/>
+    /// when a specific bank (not "Auto") is selected (project CLAUDE.md §14 milestone 17).
     /// </summary>
     public void Update(Func<ushort, byte> readMemory, ushort? baseOverride = null)
     {
@@ -103,8 +129,18 @@ public sealed partial class MemoryWatchVm : ObservableObject
 
         Array.Copy(_curr, _prev, bufSize);
 
+        RefreshBankOptions();
+        var pinnedBank = ParseSelectedBank();
+        byte[]? pinnedBankBytes = pinnedBank is int b ? _runner.Machine.Memory.GetBankRaw(b) : null;
+
         for (int i = 0; i < bufSize; i++)
-            _curr[i] = readMemory((ushort)(addr + i));
+        {
+            var a = (ushort)(addr + i);
+            _curr[i] = pinnedBankBytes is not null
+                && a >= PageTable.BankedWindowStart && a <= PageTable.BankedWindowEnd
+                ? pinnedBankBytes[a - PageTable.BankedWindowStart]
+                : readMemory(a);
+        }
 
         for (int row = 0; row < Rows.Count; row++)
         {
@@ -115,6 +151,35 @@ public sealed partial class MemoryWatchVm : ObservableObject
 
         _firstUpdate = false;
     }
+
+    /// <summary>Rebuilds <see cref="BankOptions"/>/<see cref="ShowBankSelector"/> from the live
+    /// machine's bank count and this window's own configured range — called every
+    /// <see cref="Update"/>, so it stays correct across both a live topology change and the user
+    /// editing Base/Length, not just at window-open.</summary>
+    private void RefreshBankOptions()
+    {
+        var bankCount = _runner.Machine.Memory.BankCount;
+        ShowBankSelector = bankCount > 0 && RangeIntersectsBankedWindow(BaseAddress, Length);
+
+        if (BankOptions.Count != bankCount + 1)
+        {
+            BankOptions.Clear();
+            BankOptions.Add(AutoBankOption);
+            for (var i = 0; i < bankCount; i++) BankOptions.Add($"Bank {i}");
+        }
+
+        if (!BankOptions.Contains(SelectedBankOption))
+            SelectedBankOption = AutoBankOption;
+    }
+
+    private static bool RangeIntersectsBankedWindow(ushort baseAddress, int length)
+    {
+        var rangeEndInclusive = baseAddress + length - 1;
+        return baseAddress <= PageTable.BankedWindowEnd && rangeEndInclusive >= PageTable.BankedWindowStart;
+    }
+
+    private int? ParseSelectedBank() =>
+        SelectedBankOption == AutoBankOption ? null : int.Parse(SelectedBankOption.AsSpan("Bank ".Length));
 
     // ── Export / import (§14 milestone 12) ──────────────────────────────────
 

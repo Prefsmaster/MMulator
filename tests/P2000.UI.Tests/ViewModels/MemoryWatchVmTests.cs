@@ -403,6 +403,114 @@ public class MemoryWatchVmTests
         Assert.Equal(new[] { MemoryWatchVm.AutoBankOption }, vm.BankOptions);
     }
 
+    // ── Save/Load respect the pinned bank (project CLAUDE.md §14 milestone 12's 2026-07-30 fix
+    // — Save used to always read the live-active bank regardless of what the window was pinned
+    // to display; Load has no bank-targeted write path at all, so it must disable instead) ────
+
+    [AvaloniaFact]
+    public async Task ComputeExportBytes_PinnedToSpecificBank_ExportsThatBanksBytes_NotTheLiveActiveBanks()
+    {
+        var runner = await NewBankedRunnerAsync();
+        runner.Machine.Memory.SelectBank(2);
+        runner.Machine.Memory.Write(PageTable.BankedWindowStart, 0x22);
+        runner.Machine.Memory.SelectBank(5);
+        runner.Machine.Memory.Write(PageTable.BankedWindowStart, 0x55);
+        runner.Machine.Memory.SelectBank(5); // bank 5 is now the LIVE-active one
+
+        var vm = new MemoryWatchVm(runner);
+        vm.SetRange(PageTable.BankedWindowStart, 16);
+        vm.Update(runner.Machine.Memory.Read); // populate BankOptions
+        vm.SelectedBankOption = "Bank 2";
+
+        var exported = vm.ComputeExportBytes(PageTable.BankedWindowStart, 16);
+
+        Assert.Equal(0x22, exported[0]); // bank 2's own byte, not bank 5's (live-active)
+
+        runner.Dispose();
+    }
+
+    [AvaloniaFact]
+    public async Task ComputeExportBytes_Auto_ExportsLiveActiveBank_RegressionGuard()
+    {
+        var runner = await NewBankedRunnerAsync();
+        runner.Machine.Memory.SelectBank(3);
+        runner.Machine.Memory.Write(PageTable.BankedWindowStart, 0x33);
+
+        var vm = new MemoryWatchVm(runner);
+        vm.SetRange(PageTable.BankedWindowStart, 16);
+        vm.Update(runner.Machine.Memory.Read); // "Auto" is the default — unchanged
+
+        var exported = vm.ComputeExportBytes(PageTable.BankedWindowStart, 16);
+
+        Assert.Equal(0x33, exported[0]); // the live snapshot, exactly as before this fix
+
+        runner.Dispose();
+    }
+
+    [AvaloniaFact]
+    public async Task ComputeExportBytes_PinnedBank_BytesOutsideBankedWindow_AreUnaffected()
+    {
+        var runner = await NewBankedRunnerAsync();
+        runner.Machine.Memory.Write(0x6000, 0x77); // ordinary, unbanked RAM
+        runner.Machine.Memory.SelectBank(1);
+        runner.Machine.Memory.Write(PageTable.BankedWindowStart, 0x11);
+
+        var vm = new MemoryWatchVm(runner);
+        vm.SetRange(0x6000, (PageTable.BankedWindowStart - 0x6000) + 16);
+        vm.Update(runner.Machine.Memory.Read);
+        vm.SelectedBankOption = "Bank 1";
+
+        var exported = vm.ComputeExportBytes(0x6000, (PageTable.BankedWindowStart - 0x6000) + 16);
+
+        Assert.Equal(0x77, exported[0]); // unbanked byte: read normally, not bank-substituted
+        Assert.Equal(0x11, exported[^16]); // banked byte: sourced from the pinned bank
+
+        runner.Dispose();
+    }
+
+    [AvaloniaFact]
+    public async Task LoadFileToAddressCommand_PinnedToADifferentBankThanLiveActive_IsDisabled()
+    {
+        var runner = await NewBankedRunnerAsync();
+        runner.Machine.Memory.SelectBank(3); // live-active bank
+
+        var vm = new MemoryWatchVm(runner);
+        vm.SetRange(PageTable.BankedWindowStart, 16);
+        vm.Update(runner.Machine.Memory.Read); // populate BankOptions
+        Assert.True(vm.LoadFileToAddressCommand.CanExecute(null)); // "Auto" — unaffected
+
+        vm.SelectedBankOption = "Bank 2"; // pinned bank != live-active bank (3)
+        Assert.False(vm.LoadFileToAddressCommand.CanExecute(null));
+
+        vm.SelectedBankOption = "Bank 3"; // pinned bank == live-active bank
+        Assert.True(vm.LoadFileToAddressCommand.CanExecute(null));
+
+        vm.SelectedBankOption = MemoryWatchVm.AutoBankOption;
+        Assert.True(vm.LoadFileToAddressCommand.CanExecute(null));
+
+        runner.Dispose();
+    }
+
+    [AvaloniaFact]
+    public async Task LoadFileToAddressCommand_LiveActiveBankChangesAwayFromThePinnedOne_BecomesDisabled()
+    {
+        var runner = await NewBankedRunnerAsync();
+        runner.Machine.Memory.SelectBank(2);
+
+        var vm = new MemoryWatchVm(runner);
+        vm.SetRange(PageTable.BankedWindowStart, 16);
+        vm.Update(runner.Machine.Memory.Read);
+        vm.SelectedBankOption = "Bank 2"; // matches live-active — enabled
+        Assert.True(vm.LoadFileToAddressCommand.CanExecute(null));
+
+        runner.Machine.Memory.SelectBank(4); // live-active drifts away from the pinned bank
+        vm.Update(runner.Machine.Memory.Read); // Update() re-notifies CanExecute every refresh
+
+        Assert.False(vm.LoadFileToAddressCommand.CanExecute(null));
+
+        runner.Dispose();
+    }
+
     // ── Helpers ──────────────────────────────────────────────────────────────────────────
 
     /// <summary>Advance to the next instruction boundary so a queued command drains

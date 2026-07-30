@@ -65,6 +65,9 @@ public sealed partial class MemoryWatchVm : ObservableObject
     /// the same banked range, pinned to different banks, show both simultaneously side by side.</summary>
     [ObservableProperty] private string _selectedBankOption = AutoBankOption;
 
+    partial void OnSelectedBankOptionChanged(string value) =>
+        LoadFileToAddressCommand.NotifyCanExecuteChanged();
+
     /// <summary>Shown/enabled only when this window's configured range intersects the banked
     /// window AND the installed card has at least one bank — hidden otherwise (nothing to
     /// select for a window that never touches the banked region, or a card with no banking).</summary>
@@ -130,16 +133,12 @@ public sealed partial class MemoryWatchVm : ObservableObject
         Array.Copy(_curr, _prev, bufSize);
 
         RefreshBankOptions();
-        var pinnedBank = ParseSelectedBank();
-        byte[]? pinnedBankBytes = pinnedBank is int b ? _runner.Machine.Memory.GetBankRaw(b) : null;
+        var pinnedBankBytes = GetPinnedBankBytes();
 
         for (int i = 0; i < bufSize; i++)
         {
             var a = (ushort)(addr + i);
-            _curr[i] = pinnedBankBytes is not null
-                && a >= PageTable.BankedWindowStart && a <= PageTable.BankedWindowEnd
-                ? pinnedBankBytes[a - PageTable.BankedWindowStart]
-                : readMemory(a);
+            _curr[i] = ReadRespectingBankPin(a, pinnedBankBytes, readMemory);
         }
 
         for (int row = 0; row < Rows.Count; row++)
@@ -150,7 +149,37 @@ public sealed partial class MemoryWatchVm : ObservableObject
         }
 
         _firstUpdate = false;
+        LoadFileToAddressCommand.NotifyCanExecuteChanged();
     }
+
+    /// <summary>The pinned bank's raw 8 KB backing bytes when <see cref="SelectedBankOption"/>
+    /// names a specific bank, or <c>null</c> on "Auto" — shared by <see cref="Update"/> and
+    /// <see cref="SaveRangeToFileAsync"/> so both source banked-window bytes identically (project
+    /// CLAUDE.md §14 milestone 12's 2026-07-30 fix — Save used to always read the live-active
+    /// bank regardless of what the window was pinned to display).</summary>
+    private byte[]? GetPinnedBankBytes()
+    {
+        var pinnedBank = ParseSelectedBank();
+        return pinnedBank is int b ? _runner.Machine.Memory.GetBankRaw(b) : null;
+    }
+
+    /// <summary>Sources one byte: <paramref name="pinnedBankBytes"/> for any address inside the
+    /// banked window (0xE000-0xFFFF) when pinned, <paramref name="readMemory"/> otherwise — the
+    /// one substitution rule both display refresh and file export must apply identically.</summary>
+    private static byte ReadRespectingBankPin(ushort address, byte[]? pinnedBankBytes, Func<ushort, byte> readMemory) =>
+        pinnedBankBytes is not null
+            && address >= PageTable.BankedWindowStart && address <= PageTable.BankedWindowEnd
+            ? pinnedBankBytes[address - PageTable.BankedWindowStart]
+            : readMemory(address);
+
+    /// <summary>Whether "Load file to address…" may proceed right now (project CLAUDE.md §14
+    /// milestone 12's 2026-07-30 fix). <c>GetBankRaw</c> is deliberately read-only — there is no
+    /// bank-targeted write path — so a load always lands in whichever bank is ACTUALLY live-active
+    /// at the moment it runs. Disabling here (rather than silently writing to the wrong bank) is
+    /// only needed when the window is pinned to a DIFFERENT bank than that: on "Auto," or when the
+    /// pinned bank happens to already be live-active, a load behaves exactly as intended.</summary>
+    private bool CanLoadFileToAddress() =>
+        SelectedBankOption == AutoBankOption || ParseSelectedBank() == _runner.Machine.Memory.CurrentBank;
 
     /// <summary>Rebuilds <see cref="BankOptions"/>/<see cref="ShowBankSelector"/> from the live
     /// machine's bank count and this window's own configured range — called every
@@ -181,6 +210,22 @@ public sealed partial class MemoryWatchVm : ObservableObject
     private int? ParseSelectedBank() =>
         SelectedBankOption == AutoBankOption ? null : int.Parse(SelectedBankOption.AsSpan("Bank ".Length));
 
+    /// <summary>The actual byte-sourcing logic behind <see cref="SaveRangeToFileAsync"/>,
+    /// factored out so it's directly testable without a StorageProvider/file dialog (project
+    /// CLAUDE.md §14 milestone 12's 2026-07-30 fix) — reads from the pinned bank, when one is
+    /// selected, exactly like <see cref="Update"/> does for on-screen display.</summary>
+    internal byte[] ComputeExportBytes(ushort start, int length)
+    {
+        var pinnedBankBytes = GetPinnedBankBytes();
+        var data = new byte[length];
+        for (var i = 0; i < length; i++)
+        {
+            var a = (ushort)(start + i);
+            data[i] = ReadRespectingBankPin(a, pinnedBankBytes, addr => _runner.Machine.Memory.Read(addr));
+        }
+        return data;
+    }
+
     // ── Export / import (§14 milestone 12) ──────────────────────────────────
 
     /// <summary>
@@ -189,6 +234,14 @@ public sealed partial class MemoryWatchVm : ObservableObject
     /// may differ from what's currently on screen) — to a raw binary file, no header. The
     /// caller (view code-behind) prompts for start/length, defaulting to the window's own
     /// <see cref="BaseAddress"/>/<see cref="Length"/> but independently editable.
+    ///
+    /// <b>Exports from the SAME source the window is currently displaying (project CLAUDE.md
+    /// §14 milestone 12's 2026-07-30 fix), not unconditionally from the live-active bank:</b> on
+    /// "Auto" this is identical to before (the live snapshot); pinned to a specific bank, any
+    /// byte in range falling inside 0xE000-0xFFFF is sourced from that bank via
+    /// <see cref="GetPinnedBankBytes"/>/<see cref="ReadRespectingBankPin"/> — the exact
+    /// substitution <see cref="Update"/> already applies for on-screen display. Bytes outside
+    /// the banked window are never bank-dependent and are read the same way regardless.
     /// </summary>
     public async Task SaveRangeToFileAsync(ushort start, int length)
     {
@@ -204,9 +257,7 @@ public sealed partial class MemoryWatchVm : ObservableObject
         });
         if (file is null) return;
 
-        var data = new byte[length];
-        for (var i = 0; i < length; i++)
-            data[i] = _runner.Machine.Memory.Read((ushort)(start + i));
+        var data = ComputeExportBytes(start, length);
 
         try
         {
@@ -224,8 +275,14 @@ public sealed partial class MemoryWatchVm : ObservableObject
     /// <see cref="LoadImageCommand"/> (already-shipped command queue, machine ms.15) — the
     /// first real caller of that command. Rejects a file whose length would run past the top
     /// of addressable RAM (0xFFFF) rather than silently truncating or wrapping.
+    ///
+    /// <b>Disabled (see <see cref="CanLoadFileToAddress"/>, project CLAUDE.md §14 milestone 12's
+    /// 2026-07-30 fix) whenever this window is pinned to a bank other than whatever is actually
+    /// live-active</b> — there is no bank-targeted write path (<c>GetBankRaw</c> is deliberately
+    /// read-only), so a load always lands in the live-active bank regardless of what the window
+    /// displays; the owner must never be able to believe a load landed in a bank it didn't.
     /// </summary>
-    [RelayCommand]
+    [RelayCommand(CanExecute = nameof(CanLoadFileToAddress))]
     private async Task LoadFileToAddressAsync()
     {
         var text = LoadAddressText.Trim().TrimStart('0', 'x', 'X', '$');

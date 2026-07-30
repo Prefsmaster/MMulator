@@ -1456,6 +1456,63 @@ project.
 - **Synced:** yes (YYYY-MM-DD)
 -->
 
+### 2026-07-30 — FIXED: milestone 12/17's Save/Load-to-address in a memory watch window didn't respect the window's own pinned bank
+- **Trigger:** owner question, confirmed and diagnosed correctly against the actual source
+  before any fix landed: `MemoryWatchVm.SaveRangeToFileAsync` read via
+  `_runner.Machine.Memory.Read` (`PageTable.Read`), which for any address in `0xE000`-`0xFFFF`
+  always returns whatever bank is LIVE-ACTIVE on the real machine — it never consulted
+  `SelectedBankOption` or called `GetBankRaw(pinnedBank)`, diverging from `Update()` (milestone
+  17), which already does the correct per-byte substitution for on-screen display. Net effect: a
+  window pinned to, say, "Bank 2" showed Bank 2's bytes on screen but silently exported whatever
+  bank was actually live-active instead, whenever the two differed. `LoadFileToAddressAsync` had
+  the mirror-image problem: it writes through the ordinary, non-bank-aware `load-image-to-address`
+  command, so a load always lands in whatever bank is live-active at that moment, regardless of
+  what the window is pinned to.
+- **Fixed — Save now sources from the SAME place the window displays:** factored `Update()`'s
+  per-byte substitution logic (pinned-bank bytes for any address inside the banked window, the
+  live read otherwise) into a shared `GetPinnedBankBytes()`/`ReadRespectingBankPin()` pair both
+  `Update()` and the new `ComputeExportBytes(start, length)` call — `SaveRangeToFileAsync` now
+  calls `ComputeExportBytes` instead of reading `Memory.Read` directly. On "Auto" this is
+  byte-for-byte identical to before (still reads the live snapshot); pinned to a specific bank,
+  any byte falling inside `0xE000`-`0xFFFF` is sourced from that bank instead; bytes outside the
+  banked window are read the same way regardless of pin state, since they're never
+  bank-dependent.
+- **Fixed — Load is disabled, not silently misleading, when it would land in the wrong bank:**
+  `GetBankRaw` is deliberately read-only/defensive-copy by design (machine ms.24) — there is no
+  bank-targeted write path, and this fix does NOT add one. Instead, `LoadFileToAddressCommand`
+  gained `CanExecute = nameof(CanLoadFileToAddress)`, which returns `true` on "Auto" or when the
+  pinned bank happens to already be the live-active one, `false` otherwise. `CanExecute` is
+  re-evaluated both when `SelectedBankOption` changes (`OnSelectedBankOptionChanged` →
+  `NotifyCanExecuteChanged()`) and on every `Update()` call (so the command correctly re-disables
+  itself if the live-active bank drifts away from the pinned one between refreshes, not just when
+  the user touches the selector).
+- **Test-only seam added deliberately, not a design change:** `ComputeExportBytes` is `internal`
+  (not `private`) specifically so it's directly testable without a StorageProvider/file dialog —
+  same rationale and the same `[InternalsVisibleTo("P2000.UI.Tests")]` seam milestone 14c already
+  established. `SaveRangeToFileAsync` itself is otherwise unchanged in shape (still prompts via
+  the file picker, still writes via `IStorageFile`).
+- **Tests (`MemoryWatchVmTests.cs`, +5):** a window pinned to a specific bank exports THAT bank's
+  bytes, not the live-active bank's, when the two differ (the core regression case, mirroring
+  milestone 17's own `BankSelector_PinnedToSpecificBank_...` shape exactly, at the export layer
+  instead of the display layer); a window left on "Auto" exports the live snapshot unchanged
+  (regression guard that the fix doesn't touch the already-working common case); a pinned export
+  spanning both banked and unbanked addresses sources each half correctly, not uniformly;
+  `LoadFileToAddressCommand.CanExecute` is `false` when pinned to a bank other than live-active
+  and `true` on "Auto" or a matching pin; `CanExecute` correctly flips to `false` when the
+  live-active bank drifts away from an already-pinned selection on a later `Update()`, not just
+  at selection time. Full `P2000.UI.Tests`: 235/235 for `MemoryWatchVmTests` and everything not
+  affected by this change; full-suite runs show 1-2 unrelated, pre-existing, flaky failures in
+  `DisplayWindowKeyboardNavigationTests`/other `MemoryWatchVmTests` bank-selector tests
+  (Avalonia headless-rendering/dispatcher-timing environment noise, different tests fail each
+  run, none in the code this fix touches — confirmed via 3 repeated isolated runs of
+  `MemoryWatchVmTests` alone, all 30/30 green every time).
+- **Applies to:** `src/P2000.UI/ViewModels/MemoryWatchVm.cs` (`GetPinnedBankBytes`,
+  `ReadRespectingBankPin`, `ComputeExportBytes`, `CanLoadFileToAddress`,
+  `OnSelectedBankOptionChanged`, `Update`'s `NotifyCanExecuteChanged` call),
+  `tests/P2000.UI.Tests/ViewModels/MemoryWatchVmTests.cs`. Reference doc §3a's Debugger section
+  (alongside the milestone 17 writeup); machine ms.24 (`GetBankRaw`, consumed here, unchanged).
+- **Synced:** no
+
 ### 2026-07-28 — Milestone 17 IMPLEMENTED: debugger per-bank access to bank-switched RAM
 - **Trigger:** owner decision (project CLAUDE.md §14 milestone 17; machine ms.24, same day).
   Depends entirely on machine milestone 24's `PageTable.GetBankRaw`/`BankCount`,
@@ -1519,7 +1576,10 @@ project.
   MemoryWatchWindow.axaml` (Bank selector), `src/P2000.UI/Views/DebuggerWindow.axaml` (Bank
   row, Bp-bank picker), `tests/P2000.UI.Tests/ViewModels/MemoryWatchVmTests.cs`,
   `tests/P2000.UI.Tests/ViewModels/DebuggerWindowVmTests.cs`. Machine ms.24 (consumed throughout).
-- **Synced:** no
+- **Synced:** yes (2026-07-30, into `docs/P2000T-reference.md` §3a -- Debugger section's RESOLVED
+  paragraph rewritten to IMPLEMENTED, folding in this milestone's build details alongside machine
+  ms.24's, including the memory-watch/breakpoint-dialog scope note: bank-qualified breakpoints
+  ship for the disassembly gutter only, since no memory R/W breakpoint-setting UI exists yet).
 
 ### 2026-07-28 — FIXED: Standard-Host force-ON (unshifted `'`/`"` and `=`/`+`) needed the same field-boundary gap as force-OFF, contradicting an earlier "confirmed working with zero gap" note
 - **Trigger:** owner-reported bug, still reproducing after the KeyUp/menu-gating fix immediately

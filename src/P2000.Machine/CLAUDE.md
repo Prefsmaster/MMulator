@@ -1680,10 +1680,18 @@ marked synced. Do NOT edit the reference doc from this project.
   `ConfigWindow`, 71/71) unaffected — the 3 unrelated failures elsewhere in that project's own
   suite are pre-existing Avalonia headless-rendering environment issues (`IFontManagerImpl`
   unavailable), not caused by this change.
+- **CONFIRMED against real hardware-equivalent usage (owner, 2026-07-30, same day): "just tested
+  and JWS Dos boots perfectly now."** This closes out the original JWSDOS-activation bug
+  (reference doc §5d) end to end — the third and final hypothesis investigated for it (after the
+  checksum hypothesis and the port-0x94-0x97-aliasing hypothesis, both independently disproven
+  earlier the same day) was the real root cause. Everything up to this point in the entry was
+  verified via test fixtures and byte-level analysis only; this is the first confirmation via an
+  actual observed boot.
 - **Still open, deliberately deferred (owner's own call, 2026-07-30):** the "duplicate content"
   puzzle in `Spel1.dsk` (the same directory-shaped bytes appearing a second time, shifted by
   exactly `0x1800`, at raw `0x2800`/`0x3000`) — owner theory is stale data from the JWS system
-  tool or the disk-dumping process, not investigated further this pass.
+  tool or the disk-dumping process, not investigated further this pass. Unrelated to the fix
+  above and does not affect JWSDOS booting correctly, per the confirmation immediately above.
 - **Applies to:** `src/P2000.Machine/Devices/Fdc/DskImage.cs` (`SectorOffset`, class doc comment,
   `DirectoryOffset` doc comment), `src/P2000.Machine/Devices/Fdc/ImdFormat.cs` (`Read`/`Write`
   offset computation, class doc comment), `tests/P2000.Machine.Tests/Devices/Fdc/DskImageTests.cs`,

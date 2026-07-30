@@ -411,6 +411,27 @@ Config changes that alter hardware topology **require a machine reset to take ef
     functionally, never touches the live core.
 - **Breakpoints:** execute AND **memory read/write/execute** watchpoints, plus **I/O port
   breakpoints** (break on access to a port — how you'll debug the CTC probe and FDC).
+- **RESOLVED (owner, 2026-07-28) — bank-switched RAM (0xE000–0xFFFF, port 0x94, §5) needs
+  first-class debugger support: today's debugger only ever sees whichever bank is LIVE-active,
+  with no way to inspect a non-active bank or to tell which bank triggered a breakpoint at a
+  shared address.** Motivated directly by investigating the JWSDOS-activation bug (§5d) — the
+  owner wants to inspect bank 1's actual contents at `0xE000`–`0xFFFF` without losing sight of
+  bank 0, and to catch a breakpoint on bank-1 code specifically without also catching unrelated
+  activity at the same address in a different bank. Three related capabilities, applying
+  uniformly across every banked-RAM card this project models (the 1-bit `RAMSW` card's two
+  "banks," and homebrew/T-102-class N-bank cards) — no per-card special-casing:
+  1. **Live active-bank indicator** — the debugger shows the current port-0x94-selected bank
+     value somewhere always-visible, refreshed every observer tick.
+  2. **Per-window bank override on memory watch windows** — each window gains a "Bank" selector
+     ("Auto," today's existing live-active behavior, by default; or a specific bank), relevant
+     only when the window's range touches 0xE000–0xFFFF. Pinning a window to a specific bank
+     shows that bank's raw bytes regardless of what's actually active — **per-window, so opening
+     two windows over the same range shows two different banks side by side simultaneously.**
+  3. **Bank-qualified breakpoints** — an execute/memory breakpoint at an address in
+     0xE000–0xFFFF gets the same "Any bank" (default, current behavior) vs. "this specific bank"
+     qualifier; a qualified breakpoint fires only when that bank is the one live-active at the
+     moment of the access.
+  See machine milestone 24 / UI milestone 17 for the concrete build items.
 - **Live in-frame T-state / cycle counter** (position within the 50,000-cycle frame —
   invaluable for contention debugging).
 - **Stepping:** single-step, **step-over, step-out**, and — because cycle-exact — **run to
@@ -2664,7 +2685,7 @@ owner-supplied page references, 2026-07-23), CORRECTS an earlier mis-scoping thi
     | `0x86`/`0x87` | Serial — RS422 (data/control) | Z80 SIO channel B. |
     | `0x8C`/`0x8D`/`0x90`-`0x93` | FDC | **Same port assignment as the FDC already documented in §5d** — but chip identity is revision-dependent: **the first ~100 M2200 units shipped with a µPD7265** (Sony-compatible format), **later units with the µPD765** (CONFIRMED, M2200 manual) — a µPD7265 unit is explicitly out of scope for now. **Connector CONFIRMED with 4 drive-select lines (`DRISEL0`-`3`)**, decoded from the chip's native US0/US1 via an external 2-to-4 decoder, gated by motor-on — a materially richer connector than the "2 drives" figure above; whether the plain single-purpose board's own connector matches is still open. Full detail (control-register bit table, clock/formatting caveat, drive-timeout watchdog) in `docs/M2200-implementation.md` §2.1. |
     | `0x94` | RAM bank-switch (`RAMSW`) | **Same port as the plain floppy+RAM board's bank-switch** (§5 memory). **Bit-width now CONFIRMED for M2200 specifically: 3 bits, 6 banks × 8 KB (values 0-5, 6/7 alias to bank 0, default bank 0)** — the "homebrew wider decode" case §5 memory already anticipated. Corroborates (does not prove identical to) the `T/102` 80 KB variant's total. Full detail in `docs/M2200-implementation.md` §2.2. |
-    | `0x95`/`0x96`/`0x97` | RAM disk (track/sector/data) | Genuinely new — a separate device from the FDC, **not** a media variant of it (owner-confirmed: "RAM disk is port driven"). **Geometry CONFIRMED:** 256 B/sector, max 16 sectors/track, 64 KB or 256 KB total (track register 4 or 6 bits respectively). Contents confirmed to survive a reset-BUTTON press specifically (dedicated refresh-continuity circuit); full power-off persistence not stated. Full detail in `docs/M2200-implementation.md` §3.2. |
+    | `0x95`/`0x96`/`0x97` | RAM disk (track/sector/data) | Genuinely new — a separate device from the FDC, **not** a media variant of it (owner-confirmed: "RAM disk is port driven"). **Geometry CONFIRMED:** 256 B/sector, max 16 sectors/track, 64 KB or 256 KB total (track register 4 or 6 bits respectively). Contents confirmed to survive a reset-BUTTON press specifically (dedicated refresh-continuity circuit); full power-off persistence not stated. **Software-side confirmation (2026-07-28, `docs/jwsdos5.0.asm`):** JWSDOS 5.0 defines `ramdisk_Track`/`ramdisk_Sector`/`ramdisk_IO` at exactly these three ports — real, deliberate M2200 RAM-disk support, not a coincidence. `init_ramdisk` probes presence/size (64K vs. 256K) via a track-17 read/write trick and, if found, lets drive 0 specifically be serviced by the RAM disk instead of the real FDC — see §5d's JWSDOS-activation bug entry for the full trace and reasoning (whether this port group's own probe can derail bank 1 via a port-0x94-aliasing mechanism is a REOPENED, still-live question there, not settled either way). Full hardware detail in `docs/M2200-implementation.md` §3.2. |
     | `0x98`-`0x9B` | Centronics (data/status/strobe-on/strobe-off) | Strobe ports are access-triggered — read or write, same effect, data byte irrelevant. Status bits CONFIRMED: bit4 Error, bit3 Printer On, bit2 Paper Out, bit1 Busy, bit0 ACK. |
     | `0x9C`/`0x9D` | RTC (select/data) | **Chip CONFIRMED: Hitachi HD146818** (MC146818-family — the same RTC used as the IBM PC/AT's CMOS clock), cross-confirmed via both owner statement and the M2200 manual's own parts list. **Full Register A/B/C/D bit layout now CONFIRMED** (update-in-progress, periodic/alarm/update-ended interrupt enables and flags, BCD/binary + 12/24-hour mode, crystal-select code) — see `docs/M2200-implementation.md` §3.1 for the complete table. IRQ wired to **CTC1 channel 2** (cross-confirms the already ROM-disassembly-sourced IM2 vector table, §5e). `Reset()` must preserve the battery-backed contents (see the non-volatility note above). |
 
@@ -3322,6 +3343,92 @@ running. **No disassembly of Philips Disk BASIC's own disk driver exists or is p
 `Disk.asm`/`jwsdos5.0.asm` disassemblies already on hand were weeks of the owner's own manual
 labor, not to be repeated lightly. The three real bugs above were found entirely from trace
 evidence, without one — but the remaining mystery may genuinely need it, per the analysis above.
+
+**TRACKED, mechanism now CONFIRMED (owner-supplied `Startup.asm`/`jwsdos5.0.asm` disassemblies,
+2026-07-28) — a SEPARATE bug from the "Disk I/O error" bug above: manually activating JWSDOS from
+a plain BASIC boot fails, and "RST 0, as if a checksum test failed" turns out to be exactly,
+literally what happens — not an approximation.** Distinct repro — different boot path, different
+DOS, do not conflate the two. **Repro:** an ordinary BASIC cartridge (not the PDOS `Basic24k.bin`
+cartridge above) plus a JWSDOS boot disk; JWSDOS isn't auto-loaded at boot (§5d's own `getdos`
+gate only fires for a DOS-requesting cartridge) — instead activated manually from BASIC via
+`DEFUSR=5:?USR(0)`.
+- **The monitor ROM's own jump table (`Startup.asm`, `org 0x0000`) is now sourced, not
+  reconstructed:** `0x0005 cpm_start`, `0x0008 printscreen`, `0x000B readdisk`, `0x0010 rstdebug`,
+  `0x0013 writedisk`, `0x0018 cassette`, `0x001B initkey`, `0x001E getdos` (already known — the
+  vector `disk_init`/M19's boot-gate calls), plus more. `DEFUSR=5:?USR(0)` reaches address 5
+  because that's simply where the monitor ROM happens to expose `cpm_start` in this fixed table —
+  not a special-cased DEFUSR restriction.
+- **`cpm_start` — exactly as the owner described, and straightforward, no banking quirk
+  involved:** saves SP, points SP at a fixed DOS stack (`0x6130`, unbanked base RAM — safe across
+  the switch), `OUT (0x94),1` (select bank 1), `CALL`s a fixed entry point at `0xE000`, then
+  unconditionally restores bank 0 and the caller's SP on return. One single, ordinary bank-select
+  write — nothing here is broken.
+- **The monitor's own generic `readdisk`/`writedisk` (0x000B/0x0013) also toggle `0x94` around FDC
+  I/O** — switch to bank 0 before polling/transferring via the FDC, back to bank 1 (JWSDOS's own
+  code/data) after — confirming the same "DOS code lives in bank 1, drops to bank 0 only to touch
+  the FDC" pattern already known from `getdos`, now independently sourced from a second routine.
+- **At `0xE000` (JWSDOS's own image — first byte confirmed `0x20`/`JR NZ`, exactly as already
+  documented from byte inspection; now also explained: both branches of that jump land on the
+  same next instruction, `JP StartDOS`, so it's functionally inert padding, not a real
+  conditional):** on first activation (the owner's exact repro — `dos_hook_active` starts `0`),
+  `StartDOS` falls into `insert_dos_hook`, which patches BASIC's hooks (`CLEAR 0xDFFF` to protect
+  the DOS, unhooks `?USR(0)` now that DOS is active, sets the memory-size byte) and THEN,
+  unconditionally, calls `checksum_control`.
+- **`checksum_control` — the exact, literal mechanism behind the reported symptom, sourced from
+  the disassembly's own comments:** sums N bytes starting at `0xE000` into a running 16-bit value,
+  where **N (byte count) and the starting seed are read from a 4-byte RAM scratch variable
+  (`ramdisk_tmp_storage+1`..`+4`)**, not a compile-time constant. If the final sum isn't exactly
+  zero, the code executes **`RST 0`, with the disassembler's own comment reading "no: terminate
+  with reboot."** This is not "as if" — it IS the checksum test, and it IS what reboots into BASIC.
+- **A genuinely new, independently-sourced fact that confirms half the owner's own brainwave
+  exactly:** `jwsdos5.0.asm` defines `ramdisk_Track`/`ramdisk_Sector`/`ramdisk_IO` at **exactly
+  `0x95`/`0x96`/`0x97`** — byte-for-byte matching the M2200 manual's own RAM-disk port assignments
+  (§5c). JWSDOS 5.0 genuinely has real, deliberate M2200 RAM-disk support: `init_ramdisk` probes
+  for a RAM disk's presence/size (64K vs. 256K, via a track-17 read/write trick) and, if found,
+  gated by a `ramdisk_status` flag, lets **drive 0 specifically** be serviced by the RAM disk
+  instead of the real FDC (`is_ramdisk_active`/`start_disks`/`do_disk_IO` dispatch) — manually
+  toggleable in JWSDOS's own UI via an `R` keypress. Real, sourced confirmation that JWSDOS 5.0 is
+  at least partly written with the M2200 card in mind, independent of this specific bug — worth
+  keeping on record regardless of how the bug itself resolves.
+- **CHECKSUM RULED OUT BY DIRECT EXPERIMENT (owner, 2026-07-28) — this is no longer a static-code
+  guess.** The owner patched `checksum_control` to unconditionally return Z (always "pass") and
+  still got the same reset-to-BASIC symptom. This eliminates the checksum/`RST 0` entirely as the
+  cause: whatever's happening, it's in the code that runs AFTER the (now-bypassed) checksum —
+  `insert_dos_hook`'s own tail (`ld a,1 / ld (dos_hook_active),a / call init_ramdisk / jp
+  credits_and_go`). `init_ramdisk`'s port-95/96/97 probe is the prime remaining suspect, exactly
+  the owner's own live hypothesis: **if the installed RAM/floppy card's bank-switch device listens
+  on more than just port `0x94` (e.g. all four of `0x94`-`0x97`), or decodes more than bit 0 of
+  the written value, an unwanted bank switch during that probe would derail execution out of bank
+  1 while PC is still physically inside `0xE000`-`0xFFFF` — landing back at BASIC via a wrecked PC
+  rather than via any intentional mechanism.**
+- **Revised bit-level read, now using this project's OWN already-documented card models (§5)
+  rather than an assumed simple bit-mask** — the earlier pass here compared against a "low N bits
+  masked" model, but this doc's own §5 describes the homebrew/T-102-class card as **raw byte value
+  = bank index directly, index ≥ populated bank count → open bus** (not a masked/wrapped value).
+  Under THAT model, `init_ramdisk`'s probe writes (`1`, then `17`/`0x11`, then `65`/`0x41`) would,
+  if aliased onto the bank register of a 6-bank (T-102-class) card, resolve to index 1 (valid,
+  stays bank 1), then index 17 (OUT OF RANGE — the entire `0xE000`-`0xFFFF` window would go
+  open-bus, typically reading back `0xFF`, i.e. **`RST 38`**, not the `0x00`/NOP-until-wraparound
+  mechanism guessed earlier), then index 65 (also out of range). Landing on open-bus mid-execution
+  and vectoring through `RST 38` (the keyboard-ISR entry, per `Startup.asm`) on a stack that's
+  `cpm_start`'s own dedicated DOS stack (`0x6130`), not BASIC's, would very plausibly cascade into
+  something that LOOKS LIKE "back to BASIC" without literally being the `RST 0` path — consistent
+  with the owner's own report and with the checksum-bypass result above. **This reframes the
+  investigation squarely onto the actual C# implementation, not further disassembly reading:**
+  does this project's own bank-switch device (a) get registered against port `0x94` alone, or
+  against a wider range that also matches `0x95`-`0x97`; and (b) for whichever card model is
+  configured, does it apply the DOCUMENTED masking/range-check behavior (1 bit for the `RAMSW`
+  card; raw-value-with-range-check for a homebrew/T-102-class card) or something looser that would
+  let an out-of-range or unintended value land. **Recommended next step:** have the actual bank-
+  switch device / port-dispatch code read directly (this is now a C# implementation question, not
+  a disassembly one) — see the dedicated investigation-and-fix prompt for this.
+- **Separately, still open regardless of the above:** what populates `ramdisk_tmp_storage+1`..
+  `+4` (the checksum's expected byte-count and seed — now moot for THIS bug since the checksum
+  itself is ruled out, but still an accurate gap in this project's own understanding of the boot
+  sequence) and what actually loads JWSDOS's own binary into bank 1 at `0xE000` in the first
+  place, when booting from a plain BASIC cartridge with no `getdos` auto-boot. Neither
+  `Startup.asm` nor `jwsdos5.0.asm` contains this — a separate boot-loader program, likely on the
+  JWSDOS boot disk itself, hasn't been supplied/disassembled yet.
 
 ---
 

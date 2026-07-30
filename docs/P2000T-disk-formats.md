@@ -905,6 +905,34 @@ on record unless the owner wants to specify further).
    `Jwsdos`/garbage fixture is unaffected. See `P2000.Machine` CLAUDE.md milestone 23 / `P2000.UI`
    CLAUDE.md milestone 16.)**
 
+9. **RESOLVED, mechanism now disassembly-CONFIRMED (2026-07-28, owner-supplied `Startup.asm`/
+   `jwsdos5.0.asm`) — JWSDOS's manual activation path from a plain BASIC prompt:**
+   `DEFUSR=5:?USR(0)` → monitor ROM jump-table entry `0x0005` (`cpm_start`, sourced from
+   `Startup.asm`'s own `org 0x0000` table) → select bank 1 → `CALL 0xE000`. The "checksum test"
+   is real, not a guess: JWSDOS's own `insert_dos_hook` → `checksum_control` sums N bytes from
+   `0xE000` (N and the seed read from a 4-byte RAM scratch var, `ramdisk_tmp_storage+1`..`+4`,
+   not a constant) and executes `RST 0` ("terminate with reboot," the disassembler's own comment)
+   if the sum isn't zero — exactly the reported symptom, literally. **Bonus, independently
+   confirms half the owner's own separate M2200 hypothesis:** `jwsdos5.0.asm` defines
+   `ramdisk_Track`/`ramdisk_Sector`/`ramdisk_IO` at exactly `0x95`/`0x96`/`0x97`, matching the
+   M2200 RAM-disk ports byte-for-byte — real, deliberate M2200 RAM-disk support in JWSDOS 5.0 (see
+   this doc's §5c cross-reference). **The checksum itself is now RULED OUT by direct experiment
+   (owner, 2026-07-28): patched to always return "pass," the reset to BASIC still happens.** This
+   points squarely at `init_ramdisk`'s port-95/96/97 probe (or later code) as the real cause, not
+   the checksum — exactly the owner's own live hypothesis. Revised bit-level read using this
+   project's OWN documented card models (§5/reference doc): the homebrew/T-102-class card is
+   **raw byte = bank index, out-of-range → open bus** (not a masked bit-value), so the probe's
+   `17`/`65` writes, IF aliased onto the bank register, would push a 6-bank card's index out of
+   range — the whole `0xE000`-`0xFFFF` window would go open-bus (`0xFF` = `RST 38`) mid-execution,
+   not silently stay on bank 1 as an earlier masked-bit analysis here assumed. This reframes the
+   question onto the actual C# implementation (does the bank-switch device listen on `0x94` alone
+   or a wider range; does it apply the documented range-check) rather than further disassembly —
+   see `P2000T-reference.md` §5d for the full reasoning. **Also still open, independent of the
+   above:** what populates `ramdisk_tmp_storage+1`..`+4` and what loads JWSDOS's binary into bank
+   1 in the first
+   place — neither disassembly in hand covers the boot-loader program itself (presumably a
+   separate file on the JWSDOS boot disk, not yet supplied).
+
 **Resolved since the last revision (moved out of this list):** **`sysdisk_status`'s ambiguous
 initial-value comment (2026-07-20)** — explained, not just flagged: the exact `0xF3` branch
 (§6 step 7) never clears it on the match path, so value `1` inherently covers two different

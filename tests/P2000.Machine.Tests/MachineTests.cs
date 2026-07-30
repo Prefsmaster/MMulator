@@ -173,6 +173,95 @@ public class MachineTests
         Assert.Equal(0xEE, machine.Memory.Read(PageTable.BankedWindowStart));
     }
 
+    // ---- Bug-investigation regression: JWSDOS-activation hypothesis (CLAUDE.md §17,
+    // 2026-07-30) — the bank-select device must respond to 0x94 ONLY, never 0x95-0x97 (the
+    // M2200 RAM-disk ports JWSDOS's own init_ramdisk probes and which have no registered
+    // listener in this project, per project CLAUDE.md §14 Deferred). -----------------------
+
+    [Theory]
+    [InlineData((byte)0x95)]
+    [InlineData((byte)0x96)]
+    [InlineData((byte)0x97)]
+    public void Tick_OutToPort95To97_DoesNotAffectTheActiveBank_OnT102Card(byte port)
+    {
+        var machine = new Machine(new MachineConfig { RamVariant = RamVariant.T102 });
+        machine.Memory.SelectBank(1);
+        machine.Memory.Write(PageTable.BankedWindowStart, 0xEE); // seed bank 1
+        machine.Memory.SelectBank(0);
+        machine.Memory.Write(PageTable.BankedWindowStart, 0x11); // seed bank 0 differently
+
+        machine.Memory.LoadRom(new byte[]
+        {
+            0x3E, 0x01, // LD A, 0x01
+            0xD3, port, // OUT (port), A - 0x95/0x96/0x97, no registered listener
+            0x76,       // HALT
+        });
+
+        for (var i = 0; i < 30; i++)
+        {
+            machine.Tick();
+        }
+
+        // Bank 0 must still be live-active: if the bank-select device over-listened on this
+        // port, this OUT would have silently switched to bank 1 (or gone open-bus).
+        Assert.Equal(0x11, machine.Memory.Read(PageTable.BankedWindowStart));
+    }
+
+    [Theory]
+    [InlineData((byte)0x95)]
+    [InlineData((byte)0x96)]
+    [InlineData((byte)0x97)]
+    public void Tick_OutToPort95To97_DoesNotAffectTheActiveBank_OnHomebrewCard(byte port)
+    {
+        var machine = new Machine(new MachineConfig { BankCount = 3 });
+        machine.Memory.SelectBank(1);
+        machine.Memory.Write(PageTable.BankedWindowStart, 0xEE); // seed bank 1
+        machine.Memory.SelectBank(0);
+        machine.Memory.Write(PageTable.BankedWindowStart, 0x11); // seed bank 0 differently
+
+        machine.Memory.LoadRom(new byte[]
+        {
+            0x3E, 0x01, // LD A, 0x01
+            0xD3, port, // OUT (port), A - 0x95/0x96/0x97, no registered listener
+            0x76,       // HALT
+        });
+
+        for (var i = 0; i < 30; i++)
+        {
+            machine.Tick();
+        }
+
+        Assert.Equal(0x11, machine.Memory.Read(PageTable.BankedWindowStart));
+    }
+
+    [Fact]
+    public void Tick_OutTo0x94_StillWorksExactlyAsBefore_AlongsideInertPorts95To97()
+    {
+        // Regression guard: confirms the 0x95-0x97 inertness above isn't accidentally
+        // achieved by breaking 0x94 itself.
+        var machine = new Machine(new MachineConfig { RamVariant = RamVariant.T102 });
+        machine.Memory.SelectBank(1);
+        machine.Memory.Write(PageTable.BankedWindowStart, 0xEE);
+        machine.Memory.SelectBank(0);
+
+        machine.Memory.LoadRom(new byte[]
+        {
+            0x3E, 0x01, // LD A, 0x01
+            0xD3, 0x95, // OUT (0x95), A - inert
+            0xD3, 0x96, // OUT (0x96), A - inert
+            0xD3, 0x97, // OUT (0x97), A - inert
+            0xD3, 0x94, // OUT (0x94), A - selects bank 1 for real
+            0x76,       // HALT
+        });
+
+        for (var i = 0; i < 80; i++)
+        {
+            machine.Tick();
+        }
+
+        Assert.Equal(0xEE, machine.Memory.Read(PageTable.BankedWindowStart));
+    }
+
     // ---- Video wiring (milestone 5) --------------------------------------------------------
 
     [Fact]

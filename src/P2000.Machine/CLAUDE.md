@@ -1624,6 +1624,85 @@ marked synced. Do NOT edit the reference doc from this project.
 - **Synced:** yes (2026-07-05, into P2000T-reference.md + device guides)
 -->
 
+### 2026-07-30 — Bugfix investigation: does the bank-switch device over-listen on ports 0x94-0x97? NO — hypothesis disproven by direct source read; no fix landed
+- **Trigger:** the JWSDOS-activation bug's "Revised bit-level read" paragraph (reference doc
+  §5d — see the entry immediately below for the fuller mechanism trace) flagged this project's
+  own bank-switch device as the prime remaining suspect once the checksum was ruled out by
+  direct experiment: if it responded to `0x95`-`0x97` (the M2200 RAM-disk ports
+  `init_ramdisk` probes) as well as `0x94`, an unintended bank switch mid-probe could derail
+  execution out of bank 1 while still physically inside `0xE000`-`0xFFFF`.
+- **Checked directly against the actual C# (not re-derived from the disassembly, per the
+  prompt's own instruction) — hypothesis does NOT hold, on three independent counts:**
+  1. **`Io/PortDispatch.cs` cannot represent a port RANGE at all — it's structurally a
+     single-port-only dispatcher**, not a coincidentally-narrow one: `_writeListeners`/
+     `_readSources` are each a fixed 256-entry array indexed by the exact port byte;
+     `RegisterWrite(byte port, ...)`/`RegisterRead(byte port, ...)` both take one literal
+     `byte`, with no range/mask overload anywhere in the type. Grepped every
+     `RegisterWrite`/`RegisterRead` call site in `src/` (`Machine.cs`,
+     `InternalExtensionBoard.cs`) — all seven registrations (keyboard 0x00-0x09 via an
+     explicit per-port loop, CPOUT 0x10, CPRIN 0x20 ×2, sound 0x50, bank-select 0x94, CTC
+     0x88-0x8B via an explicit per-channel loop, FDC 0x8C/0x8D/0x90) are single exact-byte
+     registrations — none of them, anywhere in this project's I/O dispatch, register a range.
+     So this isn't just "the bank-switch device happens to listen on 0x94 only" — no device in
+     this codebase COULD be registered against a range even if someone tried; over-wide
+     registration is not a bug shape this architecture can currently produce.
+  2. **`Machine.cs:163`** — `Ports.RegisterWrite(PageTable.BankSelectPort, Memory.SelectBank)`
+     — `PageTable.BankSelectPort` is the literal `0x94`. Exactly one write listener on exactly
+     one port.
+  3. **`PageTable.SelectBank`/`ReadBank`/`WriteBank`** (`Memory/PageTable.cs:123-127,244-253`)
+     match the documented homebrew/T-102-class behavior exactly: `SelectBank` stores the raw
+     unmasked byte (`_bankIndex = index`), and `ReadBank`/`WriteBank` gate on
+     `_bankIndex < _banks.Length` — an index at or beyond the populated bank count reads open
+     bus / discards the write, never masked or wrapped into range. Confirmed against source,
+     not assumed from the doc comment.
+  4. **Ports `0x95`/`0x96`/`0x97` have ZERO registered listeners** (confirmed by the same
+     grep as #1 above) — nothing in this project wires anything there (the M2200 RAM-disk
+     feature is deferred, project CLAUDE.md §14). `PortDispatch.Write` returns immediately
+     when `_writeListeners[port]` is `null` (a genuine no-op, not a silently-absorbed write);
+     `PortDispatch.Read` returns `OpenBus` (0xFF) when `_readSources[port]` is `null`/empty —
+     the same open-bus convention used everywhere else in this project.
+- **Traced the actual JWSDOS execution against that confirmed behavior (not just the code in
+  isolation) — the probe fails safely, exactly as designed, with zero side effects:**
+  `init_ramdisk` (`docs/jwsdos5.0.asm:2828-2859`) writes to `ramdisk_Track`/`ramdisk_Sector`
+  (`0x95`/`0x96`, both genuine no-ops here) then does `in a,(c)` on `ramdisk_IO` (`0x97`,
+  which returns open-bus `0xFF`) at line 2842, comparing that against `17` and `65` (lines
+  2856/2858) — neither matches, so `ret nz` at line 2859 returns immediately, well BEFORE the
+  signature check or the `otir` directory-erase block ever run. No bank-select write, no
+  stray I/O, no PC corruption — the RAM-disk probe is inert on this emulator by construction,
+  same "genuine silence" shape as every other presence-probe in this codebase.
+- **Conclusion (per the prompt's own item 5 — reporting plainly, not forcing a fix): this
+  specific hypothesis is DISPROVEN, not just unconfirmed.** No fix landed because there was
+  nothing to fix — the bank-switch device listens on `0x94` only, applies the documented
+  range-check (not mask/wrap) behavior, and `0x95`-`0x97` are genuinely inert. **No parallel
+  mechanism of the same shape exists elsewhere in the I/O dispatch either** — every
+  registration in the project is single-exact-port (enumerated above), so there's no second
+  over-wide-listener candidate to chase.
+- **Where this leaves the JWSDOS-activation bug (still open, root cause elsewhere):** since
+  the ramdisk-probe-derails-bank-1 mechanism is ruled out, whatever produces the "lands back
+  at BASIC" symptom is NOT in this project's port/bank-select dispatch. The reference doc
+  entry's own remaining open question — what actually loads JWSDOS's binary into bank 1 at
+  `0xE000` in the first place when booting from a plain BASIC cartridge with no `getdos`
+  auto-boot — is the more promising next thread; that boot-loader code hasn't been
+  disassembled/supplied yet, so it can't be checked against this project's implementation the
+  way this specific hypothesis was.
+- **Tests (added even though no bug was found, since this exact behavior was previously
+  uncovered and is directly load-bearing for the ruled-out hypothesis above):**
+  `MachineTests.cs` (+7): `Tick_OutToPort95To97_DoesNotAffectTheActiveBank_OnT102Card` (3
+  cases, one per port) and `..._OnHomebrewCard` (3 cases, `BankCount = 3`) confirm an `OUT` to
+  each of `0x95`/`0x96`/`0x97` leaves the live-active bank untouched, on both the atomic
+  floppy+RAM board's 6-bank shape and an explicit homebrew `BankCount` override;
+  `Tick_OutTo0x94_StillWorksExactlyAsBefore_AlongsideInertPorts95To97` confirms `0x94` still
+  works correctly even after `OUT`s to the three inert ports immediately precede it (regression
+  guard that the inertness isn't accidentally achieved by breaking `0x94` itself). Full
+  `P2000.Machine.Tests`: 600/600 green (was 593).
+- **Applies to:** `src/P2000.Machine/Io/PortDispatch.cs`,
+  `src/P2000.Machine/Memory/PageTable.cs` (`SelectBank`/`ReadBank`/`WriteBank`,
+  `BankSelectPort`), `src/P2000.Machine/Machine.cs:163`,
+  `tests/P2000.Machine.Tests/MachineTests.cs`. Reference doc §5d's "Revised bit-level read"
+  paragraph — this closes that paragraph's own "recommended next step" (have the actual C#
+  read) with a negative result.
+- **Synced:** no
+
 ### 2026-07-28 — Milestone 24 IMPLEMENTED: debugger per-bank access to bank-switched RAM
 - **Trigger:** owner decision, motivated by a debugger gap hit while investigating the (separate,
   untouched-here) JWSDOS-activation bug — the debugger's memory watches/breakpoints only ever saw

@@ -86,7 +86,7 @@ public class HostKeyTranslatorTests
 
         t.KeyDown(Key.LeftShift);   // host Shift physically down
         t.KeyDown(Key.D2);          // '@' needs the P2000 key UNshifted
-        await AwaitForceOffGap();   // the target press is deliberately delayed — see class doc
+        await AwaitForceGap();   // the target press is deliberately delayed — see class doc
         t.KeyUp(Key.D2);
         t.KeyUp(Key.LeftShift);
 
@@ -112,7 +112,7 @@ public class HostKeyTranslatorTests
 
         t.KeyDown(Key.RightShift);
         t.KeyDown(Key.D2);
-        await AwaitForceOffGap();
+        await AwaitForceGap();
         t.KeyUp(Key.D2);
         t.KeyUp(Key.RightShift);
 
@@ -127,10 +127,14 @@ public class HostKeyTranslatorTests
         }, events);
     }
 
-    /// <summary>Waits longer than <c>HostKeyTranslator</c>'s internal force-off gap (see its
-    /// class doc — a real ROM-timing requirement, not an implementation detail to hide) so the
-    /// deferred target-key press has landed before the test asserts on it.</summary>
-    private static Task AwaitForceOffGap() => Task.Delay(80);
+    /// <summary>Waits longer than <c>HostKeyTranslator</c>'s internal force-shift gap (see its
+    /// class doc — a real ROM-timing requirement, not an implementation detail to hide), shared by
+    /// force-off AND force-on, so the deferred target-key press has landed before the test asserts
+    /// on it. 200 ms (5x the production 40 ms gap), not a tighter margin, to stay reliable when the
+    /// full suite runs under thread-pool contention from many concurrent tests (observed flaky at
+    /// 80 ms — the test's own wait occasionally lost the race against the production code's
+    /// delayed task under load, not a functional bug).</summary>
+    private static Task AwaitForceGap() => Task.Delay(200);
 
     [Fact]
     public async Task StandardHost_ForceOff_TargetPressIsDeferred_NotImmediate()
@@ -147,26 +151,48 @@ public class HostKeyTranslatorTests
 
         Assert.Equal(new[] { (9, 0, true), (9, 0, false) }, events); // shift down, then forced off — no '@' yet
 
-        await AwaitForceOffGap();
+        await AwaitForceGap();
 
         Assert.Equal(new[] { (9, 0, true), (9, 0, false), (6, 7, true) }, events); // '@' has now landed
     }
 
     [Fact]
-    public void StandardHost_PlainEquals_ForcesP2000ShiftOn()
+    public async Task StandardHost_PlainEquals_ForcesP2000ShiftOn()
     {
+        // CORRECTED (owner-reported 2026-07-28): force-ON needs the same field-boundary gap as
+        // force-off — see class doc. Without it, the real machine's ROM caught the '=' position
+        // down before observing Shift as asserted and echoed the plain digit '0' first.
         var (t, events) = NewTranslator(KeyMappingMode.StandardHost);
 
         t.KeyDown(Key.OemPlus);   // host '=' key, unshifted — but P2000 needs shift for '='
+        await AwaitForceGap();
         t.KeyUp(Key.OemPlus);
 
         Assert.Equal(new[]
         {
             (9, 0, true),   // forced ON
-            (5, 5, true),   // '=' position, shifted
+            (5, 5, true),   // '=' position, shifted (after the force gap)
             (5, 5, false),
             (9, 0, false),  // forced shift released
         }, events);
+    }
+
+    [Fact]
+    public async Task StandardHost_ForceOn_TargetPressIsDeferred_NotImmediate()
+    {
+        // Mirrors StandardHost_ForceOff_TargetPressIsDeferred_NotImmediate — confirms the fix
+        // itself, not just its eventual outcome (owner-reported 2026-07-28: unshifted '=' typed
+        // '0' followed by '=', because the target press used to fire in the same instant as the
+        // synthetic Shift).
+        var (t, events) = NewTranslator(KeyMappingMode.StandardHost);
+
+        t.KeyDown(Key.OemPlus);
+
+        Assert.Equal(new[] { (9, 0, true) }, events); // synthetic Shift asserted — '=' not pressed yet
+
+        await AwaitForceGap();
+
+        Assert.Equal(new[] { (9, 0, true), (5, 5, true) }, events); // '=' has now landed
     }
 
     [Fact]
@@ -206,7 +232,7 @@ public class HostKeyTranslatorTests
 
         t.KeyDown(Key.LeftShift);
         t.KeyDown(Key.OemSemicolon);
-        await AwaitForceOffGap();
+        await AwaitForceGap();
         t.KeyUp(Key.OemSemicolon);
         t.KeyUp(Key.LeftShift);
 
@@ -214,14 +240,18 @@ public class HostKeyTranslatorTests
     }
 
     [Fact]
-    public void StandardHost_PlainApostrophe_RedirectsToTheP2000sRealApostrophe()
+    public async Task StandardHost_PlainApostrophe_RedirectsToTheP2000sRealApostrophe()
     {
         // OemQuotes (the host "'/\"" key) positionally sits at (8,7) (owner-confirmed via real
         // P2000T hardware, 2026-07-19) — but the P2000's real apostrophe lives at (0,6) shifted
         // (Shift+7), so Standard-Host must redirect there regardless of where OemQuotes sits.
+        // CORRECTED (owner-reported 2026-07-28): also needs the force gap — see class doc. Without
+        // it, the real machine's ROM caught (0,6) down before observing Shift as asserted and
+        // echoed the plain digit '7' first, then '\'' once Shift was observed on a later scan.
         var (t, events) = NewTranslator(KeyMappingMode.StandardHost);
 
         t.KeyDown(Key.OemQuotes);
+        await AwaitForceGap();
         t.KeyUp(Key.OemQuotes);
 
         Assert.Equal(new[] { (9, 0, true), (0, 6, true), (0, 6, false), (9, 0, false) }, events);

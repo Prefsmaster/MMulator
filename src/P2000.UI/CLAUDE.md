@@ -1418,6 +1418,52 @@ project.
 - **Synced:** yes (YYYY-MM-DD)
 -->
 
+### 2026-07-28 — FIXED: Standard-Host force-ON (unshifted `'`/`"` and `=`/`+`) needed the same field-boundary gap as force-OFF, contradicting an earlier "confirmed working with zero gap" note
+- **Trigger:** owner-reported bug, still reproducing after the KeyUp/menu-gating fix immediately
+  below (which turned out to be a REAL, independently-confirmed defect but NOT the cause of this
+  specific symptom — confirmed via two live experiments: happens on a completely fresh launch with
+  zero menu interaction, and does NOT happen in P2000-Authentic mode, only Standard-Host). Symptom:
+  unshifted `'`/`"` typed `7` followed by `'`; unshifted `=`/`+` typed `0` followed by `=`.
+- **Root cause, found by elimination against `KeyMap._standardHostOverrides`:** the ONLY two table
+  entries where the host key is UNSHIFTED but the P2000 target needs Shift asserted are exactly
+  `(Key.OemQuotes, false)` (target `(0,6)` — the SAME crosspoint as digit `7`) and
+  `(Key.OemPlus, false)` (target `(5,5)` — the SAME crosspoint as digit `0`). Every OTHER entry
+  that "looks like" a forced Shift-ON (e.g. host Shift+8→`*`, Shift+9→`(`) has the host's REAL
+  Shift already down matching what the target needs, so it takes the plain no-force `Emit(target,
+  true)` branch and never touches the force-ON code path at all — confirmed live (owner tested
+  Shift+8/Shift+9, both clean). This is exactly why nothing else ever surfaced the bug: force-ON
+  was a genuinely under-exercised path, unlike force-OFF (Shift+2→`@`, Shift+3→`#`,
+  Shift+;→`:`, Shift+,→`<`), which real Standard-Host usage already exercises constantly.
+- **The bug itself:** `KeyDown`'s force-ON branch pressed the synthetic Shift crosspoint and the
+  target crosspoint in the same synchronous instant — exactly the shape force-OFF's own class doc
+  already documents as broken in the OPPOSITE direction (owner-reported 2026-07-20: releasing Shift
+  and pressing the target together still read as shifted). The 2026-07-20 note claiming force-ON
+  "does NOT need this — confirmed working with zero gap" was wrong; whatever diagnostic produced
+  that conclusion didn't actually exercise one of the two real force-ON entries (both post-date
+  that note by exactly zero — `OemQuotes`/`OemPlus` false-key overrides already existed then, so
+  this was a real, standing bug, not a new regression from anything built since).
+- **Fix:** `KeyDown`'s force-ON branch now defers the target press through the same
+  `PressAfterForceGapAsync` (renamed from `PressAfterForceOffGapAsync`, now shared by both
+  directions) force-OFF already uses — press the synthetic Shift, wait `ForceShiftGapMilliseconds`
+  (renamed from `ForceOffGapMilliseconds`, unchanged value), then press the target. `KeyUp` is
+  unchanged — releasing both crosspoints together was never reported as a problem, matching
+  force-OFF's own asymmetry (only ITS press needed the gap, not its release, either).
+- **Tests:** `HostKeyTranslatorTests` — `StandardHost_PlainEquals_ForcesP2000ShiftOn` and
+  `StandardHost_PlainApostrophe_RedirectsToTheP2000sRealApostrophe` now await the gap before
+  `KeyUp`, mirroring every force-OFF test's existing shape; new
+  `StandardHost_ForceOn_TargetPressIsDeferred_NotImmediate` mirrors
+  `StandardHost_ForceOff_TargetPressIsDeferred_NotImmediate`, asserting the target press genuinely
+  hasn't fired yet immediately after `KeyDown` returns, only after the gap elapses — the same
+  "confirms the fix itself, not just the eventual outcome" shape. `AwaitForceOffGap` renamed to
+  `AwaitForceGap` (used by both directions now) and its margin widened from 80 ms to 200 ms — the
+  original 80 ms was observed flaky under a full-suite parallel run (the test's own wait
+  occasionally lost the race against the production code's delayed task under thread-pool
+  contention, not a functional bug).
+- **Applies to:** `src/P2000.UI/Input/HostKeyTranslator.cs` (class doc, `ForceShiftGapMilliseconds`,
+  `PressAfterForceGapAsync`, `KeyDown`'s force-ON branch),
+  `tests/P2000.UI.Tests/Input/HostKeyTranslatorTests.cs`.
+- **Synced:** no
+
 ### 2026-07-28 — FIXED: milestone 14i's menu-navigation fix could permanently corrupt Standard-Host forced-Shift state on a held key
 - **Trigger:** owner-reported bug, discovered while typing shortly after 14i shipped: in
   Standard-Host mode, the unshifted `'`/`"` key spuriously ALSO produced the digit `7`

@@ -34,10 +34,19 @@ namespace P2000.UI.Input;
 /// Shift), not `@`. A one-field (20 ms) gap between the release and the press fixed it in
 /// every case tested; the P2000's keyboard scan apparently needs to observe a moment with
 /// Shift genuinely released before it will register a subsequent keypress as unshifted.
-/// The force-ON case (no real Shift held at all, e.g. plain `=` or `[`) does NOT need this —
-/// confirmed working with zero gap — because there's no stale "already pressed" state to
-/// escape; asserting Shift and the target key together is exactly how a normal Shift+key combo
-/// already works. Only <see cref="ForceOffGapAsync"/> below carries the delay.
+///
+/// <b>CORRECTED (owner-reported 2026-07-28) — force-ON needs the SAME gap; the original "zero
+/// gap" note above was wrong.</b> It was never actually exercised by anything other than the two
+/// entries that genuinely need it: plain (unshifted) `'`/`"` and `=`/`+`, both of which target
+/// the identical matrix crosspoint a plain digit key sits at ((0,6) = digit 7, (5,5) = digit 0).
+/// Pressing the synthetic Shift crosspoint and the target in the same instant produced the SAME
+/// class of stale read as force-off's own bug, just in the opposite direction: the ROM's scan
+/// caught the target crosspoint down before it had observed Shift as genuinely asserted, echoed
+/// the plain digit, and only registered the real symbol once Shift was observed on a LATER scan
+/// — e.g. unshifted `'` typing `7` followed by `'`. Every OTHER Standard-Host override that looks
+/// like it forces Shift ON in fact never takes this path at all (host Shift already held matches
+/// the target's own required state, so it's a plain, unforced press) — which is exactly why nothing
+/// else surfaced this. Both directions now share the same gap.
 /// </summary>
 public sealed class HostKeyTranslator
 {
@@ -57,9 +66,11 @@ public sealed class HostKeyTranslator
     // Used only when forcing Shift ON with no real host Shift down at all (so nothing to conflict with).
     private const int SyntheticShiftRow = 9, SyntheticShiftCol = 0;
 
-    // Gap the ROM needs to observe a genuinely-released Shift before trusting a subsequent
-    // keypress as unshifted (see the class doc above) — one 20 ms field plus safety margin.
-    private const int ForceOffGapMilliseconds = 40;
+    // Gap the ROM needs to observe a genuinely-changed Shift state (released OR newly asserted)
+    // before trusting a subsequent keypress's shift reading (see the class doc above) — one
+    // 20 ms field plus safety margin. Shared by both force-off and force-on (2026-07-28 fix —
+    // force-on was wrongly believed not to need this).
+    private const int ForceShiftGapMilliseconds = 40;
 
     // Windows (with NumLock ON) reports the NAVIGATION key, not the digit, when Shift is held
     // while a numpad key is pressed — e.g. Shift+NumPad1 delivers Key.End, not Key.NumPad1
@@ -126,22 +137,29 @@ public sealed class HostKeyTranslator
         }
 
         _activePress[key] = target; // recorded up front so KeyUp knows what to release even if
-                                     // the press below is still pending behind the force-off gap.
+                                     // the press below is still pending behind the force gap.
 
         if (needsShift is bool wants && wants != _hostShiftDown)
         {
             _activeForce[key] = wants;
             if (wants)
             {
-                if (_forceOnCount++ == 0 && !_hostShiftDown) Emit((SyntheticShiftRow, SyntheticShiftCol), true);
-                Emit(target, true); // force-ON needs no gap — confirmed by diagnostic
+                if (_forceOnCount++ == 0 && !_hostShiftDown)
+                {
+                    Emit((SyntheticShiftRow, SyntheticShiftCol), true);
+                    _ = PressAfterForceGapAsync(target); // needs the gap too — see class doc
+                }
+                else
+                {
+                    Emit(target, true); // Shift already asserted by another concurrent forced-on key
+                }
             }
             else
             {
                 if (_forceOffCount++ == 0 && _hostShiftDown)
                 {
                     ReleaseRealShifts();
-                    _ = PressAfterForceOffGapAsync(target); // needs the gap — see class doc
+                    _ = PressAfterForceGapAsync(target); // needs the gap — see class doc
                 }
                 else
                 {
@@ -156,9 +174,9 @@ public sealed class HostKeyTranslator
         return true;
     }
 
-    private async Task PressAfterForceOffGapAsync((int Row, int Col) target)
+    private async Task PressAfterForceGapAsync((int Row, int Col) target)
     {
-        await Task.Delay(ForceOffGapMilliseconds);
+        await Task.Delay(ForceShiftGapMilliseconds);
         Emit(target, true);
     }
 

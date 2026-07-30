@@ -50,25 +50,25 @@ public class RealFixtureTests
     // CLAUDE.md §17 2026-07-30) ------------------------------------------------------------------
 
     [Fact]
-    public void Spel1Dsk_ReadSectorCylinder1Head0Sector9_MatchesRawFileBytesAtOffset0x1800()
+    public void JwsSytemDsk_ReadSectorCylinder1Head0_MatchesRawFileBytesAtOffset0x2000_NotSideMajorOffset0x1000()
     {
-        // Independent ground truth: read the raw file bytes directly (no DskImage/SectorOffset
-        // involved) and confirm ReadSector's CHS addressing agrees. Also directly confirms the
-        // owner's alternative "cylinder-major, side-minor" convention does NOT hold for this real
-        // disk: under that convention (cylinder=1, head=0, sector=9) would land at raw offset
-        // 0x2800, not 0x1800, and the bytes there are demonstrably different (see the raw-string
-        // search finding in this entry's own findings-log write-up: "Tralieenspel"/"BABA" sit at
-        // 0x1800, not 0x2800).
-        var path = DiskPath("Spel1.dsk");
+        // Ground truth pinned against real bytes (no DskImage/SectorOffset involved on the
+        // "expected" side): getdos's real second-track read is (cylinder=1, head=0) — the
+        // monitor ROM has no double-sided support (owner, 2026-07-30 bug-investigation finding,
+        // project CLAUDE.md §17). Under the CORRECTED cylinder-major layout that lands on raw
+        // 0x2000, not raw 0x1000 (the disproven side-major reading's prediction — genuinely
+        // blank on this real disk).
+        var path = DiskPath("jws-sytem.dsk");
         var raw = File.ReadAllBytes(path);
-        var expected = raw.AsSpan(0x1800, 256).ToArray();
+        var expected = raw.AsSpan(0x2000, 256).ToArray();
 
         var disk = new DskImage(path);
-        var actual = disk.ReadSector(cylinder: 1, head: 0, sector: 9).ToArray();
+        var actual = disk.ReadSector(cylinder: 1, head: 0, sector: 1).ToArray();
 
         Assert.Equal(expected, actual);
-        // Sanity: this is genuinely the active side-1 directory's first sector, not blank filler.
-        Assert.Contains("Tralieenspel", System.Text.Encoding.ASCII.GetString(actual));
+        // Sanity: real, non-trivial Z80 code, not the blank filler that sits at raw 0x1000 on
+        // this specific disk.
+        Assert.False(actual.All(b => b == 0x00));
     }
 
     // ---- Directory browse: exact real content, stale cluster excluded ---------------------------
@@ -384,7 +384,9 @@ public class RealFixtureTests
             read[i] = fdc.ReadData();
         }
 
-        var expected = File.ReadAllBytes(path).AsSpan(0x1000, 4096).ToArray();
+        // Cylinder-major layout (project CLAUDE.md §17, 2026-07-30 correction): cylinder 1/head 0
+        // lands at raw 0x2000, not 0x1000 — the disproven side-major reading's prediction.
+        var expected = File.ReadAllBytes(path).AsSpan(0x2000, 4096).ToArray();
         Assert.Equal(expected, read);
     }
 }

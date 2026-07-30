@@ -107,8 +107,12 @@ public class DiskBootTests
             Assert.Equal(track1Bytes[offset], machine.Memory.Read((ushort)(0xE000 + offset)));
         }
 
-        // Track 2 (cylinder 1, head 0) lands at 0xF000-0xFFFF.
-        var track2Bytes = File.ReadAllBytes(diskPath).AsSpan(0x1000, 4096).ToArray();
+        // Track 2 (cylinder 1, head 0) lands at 0xF000-0xFFFF. Cylinder-major, head-minor raw
+        // layout (project CLAUDE.md §17, 2026-07-30 correction — the monitor ROM has no
+        // double-sided support; getdos reads two consecutive physical cylinders, both head 0):
+        // cylinder 1/head 0 is raw 0x2000, not raw 0x1000 (the disproven side-major reading's
+        // prediction, genuinely blank/unrelated content on real disks).
+        var track2Bytes = File.ReadAllBytes(diskPath).AsSpan(0x2000, 4096).ToArray();
         for (var offset = 0; offset < 4096; offset += 512)
         {
             Assert.Equal(track2Bytes[offset], machine.Memory.Read((ushort)(0xF000 + offset)));

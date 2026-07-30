@@ -56,13 +56,16 @@ public class DskImageTests
         foreach (var b in disk.ReadSector(0, 0, 1)) Assert.Equal(0x00, b);
     }
 
-    // ---- CHS sector addressing (side-major, cylinder-minor — derived, see DskImage's doc) -----
+    // ---- CHS sector addressing (cylinder-major, head-minor — CORRECTED 2026-07-30, project
+    // CLAUDE.md §17; see DskImage's own class doc comment for the full evidence) --------------
 
     [Fact]
-    public void ReadWriteSector_Side0Cylinder1Sector9_LandsAtRawOffset0x1800()
+    public void ReadWriteSector_Cylinder1Head0Sector9_LandsAtRawOffset0x2800()
     {
-        // docs/P2000T-disk-formats.md §2: side 1's active directory sits at raw 0x1800-0x1FFF, which
-        // is cylinder 1 (getdos's "track 2"), head 0, sectors 9-16 — this pins that identity.
+        // Cylinder 1 ("track 2" in getdos's own naming), head 0, sector 9 — a round trip through
+        // DskImage's own read/write is convention-agnostic on its own (it always matches itself
+        // regardless of which formula is used), so this only pins the identity/name; the
+        // ABSOLUTE offset is independently pinned by the raw-bytes test below.
         var disk = DskImage.CreateBlank(tracks: 40, sides: 2);
         var pattern = new byte[256];
         for (var i = 0; i < 256; i++) pattern[i] = (byte)(i + 1);
@@ -73,16 +76,17 @@ public class DskImageTests
     }
 
     [Fact]
-    public void ReadSector_Cylinder1Head0Sector9_ReadsFromRawFileOffset0x1800_NotCylinderMajorOffset0x2800()
+    public void ReadSector_Cylinder1Head0Sector9_ReadsFromRawFileOffset0x2800_NotSideMajorOffset0x1800()
     {
         // Bug-investigation regression (CLAUDE.md §17, 2026-07-30 "geometry mapping / getdos
         // fixed side-0 read" entry): pins the CHS->offset formula against an ABSOLUTE raw file
         // offset, not a round-trip through DskImage's own read/write (which is convention-
-        // agnostic and can't distinguish side-major from cylinder-major on its own). Under the
-        // confirmed side-major/cylinder-minor formula, (cylinder=1, head=0, sector=9) lands at
-        // raw 0x1800 (docs/P2000T-disk-formats.md §2, dir_side1_prep's own confirmed target).
-        // Under the owner's alternative "cylinder-major, side-minor" hypothesis it would instead
-        // land at raw 0x2800 ((1*2+0)*4096 + 8*256). This test builds the raw bytes directly (no
+        // agnostic and can't distinguish cylinder-major from side-major on its own). Under the
+        // CORRECTED cylinder-major/head-minor formula, (cylinder=1, head=0, sector=9) lands at
+        // raw 0x2800 ((1*2+0)*4096 + 8*256) — confirmed against real disk images (getdos's real
+        // second-track read, and an independently-sourced clean JWSDOS reference binary, both
+        // land on raw 0x2000-based content, not 0x1000). The earlier, disproven side-major
+        // reading predicted raw 0x1800 instead. This test builds the raw bytes directly (no
         // DskImage involved in the write) so it's a genuine external ground truth, not
         // self-consistency.
         var raw = new byte[40 * 2 * DskImage.BytesPerTrack];
@@ -90,20 +94,23 @@ public class DskImageTests
         raw[0x0FFF] = 41;        // 40 tracks + 1
         var marker = new byte[256];
         for (var i = 0; i < 256; i++) marker[i] = (byte)(i + 1);
-        marker.CopyTo(raw, 0x1800);
+        marker.CopyTo(raw, 0x2800);
 
         var disk = new DskImage(raw);
 
         Assert.Equal(marker, disk.ReadSector(cylinder: 1, head: 0, sector: 9).ToArray());
 
-        // The cylinder-major candidate offset (0x2800) must be untouched (all-zero) — confirms
-        // this isn't a coincidental match that would hold under both conventions.
-        Assert.All(raw.AsSpan(0x2800, 256).ToArray(), b => Assert.Equal(0x00, b));
+        // The disproven side-major candidate offset (0x1800) must be untouched (all-zero) —
+        // confirms this isn't a coincidental match that would hold under both conventions.
+        Assert.All(raw.AsSpan(0x1800, 256).ToArray(), b => Assert.Equal(0x00, b));
     }
 
     [Fact]
-    public void ReadWriteSector_Head1_IsInTheSecondHalfOfTheImage()
+    public void ReadWriteSector_Head1_IsASeparatePhysicalSurfaceFromHead0()
     {
+        // Cylinder-major, head-minor (CORRECTED 2026-07-30): head 1 of cylinder 0 is the
+        // NEXT 4 KB block after head 0's (raw 0x1000-0x1FFF for cylinder 0), not "the second
+        // half of the image" the way the disproven side-major reading had it.
         var disk = DskImage.CreateBlank(tracks: 40, sides: 2);
         var pattern = new byte[256];
         for (var i = 0; i < 256; i++) pattern[i] = (byte)(200 - i);

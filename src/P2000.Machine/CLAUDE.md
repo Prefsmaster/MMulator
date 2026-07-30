@@ -1624,7 +1624,77 @@ marked synced. Do NOT edit the reference doc from this project.
 - **Synced:** yes (2026-07-05, into P2000T-reference.md + device guides)
 -->
 
-### 2026-07-30 — Bugfix investigation: disk-image geometry mapping vs. getdos's fixed-side-0 read — mapping and FDC dispatch BOTH confirmed correct; likely non-bug explanation for the observed symptom found instead
+### 2026-07-30 — CORRECTION (supersedes the entry immediately below): disk-image raw layout FIXED to cylinder-major/head-minor — the entry below's "no bug" conclusion was wrong
+- **This entry OVERTURNS the "geometry mapping vs. getdos's fixed-side-0 read" entry immediately
+  below.** That entry concluded the side-major formula was correct, based on a same-day, real
+  ROM-driven execution test matching raw offset `0x1000` exactly. That match was real but
+  **circular**: it only proved the emulator consistently reads from wherever its OWN formula
+  points, not that the formula points to the historically/hardware-correct location. It never
+  independently validated `0x1000` as correct.
+- **Owner-provided, independent ground truth broke the circularity:** two reference files
+  (`assets/JWSDosSpel1disk.bin`, then a corrected `assets/JWS.bin` — a clean, known-good JWSDOS
+  binary not derived from this project's own disk fixtures or its own formula) were compared
+  directly against raw bytes in `assets/Disks/jws-sytem.dsk` and `Spel1.dsk`. Both real disks'
+  content for what should be `getdos`'s SECOND track — the confirmed clean reference's own
+  `0x1000-0x113F` region — is byte-for-byte identical to raw disk offset `0x2000-0x213F`, NOT
+  `0x1000` (blank on `jws-sytem.dsk`; unrelated directory data on `Spel1.dsk`). The clean
+  reference's first ~292 bytes also matched raw `0x0000` on both disks exactly, confirming the
+  alignment (reference byte 0 = raw disk offset 0 = memory `0xE000`) before the divergence at
+  `0x2000`.
+- **Owner's own direct authority on the monitor ROM sealed it:** `getdos` loads exactly two
+  PHYSICAL CYLINDERS, both head 0 (the monitor ROM has NO double-sided support at all) — cylinder
+  0/head 0 then cylinder 1/head 0. Under the disk's real raw layout, cylinder 0/head 0 = raw
+  `0x0000` (agreed by everyone, always was) and cylinder 1/head 0 = raw `0x2000` — the owner's
+  own hex-editor inspection of `jws-sytem.dsk`, a genuine, real, working JWS boot-disk image (not
+  a utility/template disk — confirmed directly by the owner, ruling out that alternative theory).
+- **Fixed:** `DskImage.SectorOffset` (`Devices/Fdc/DskImage.cs`) changed from side-major/
+  cylinder-minor (`head * Tracks * BytesPerTrack + cylinder * BytesPerTrack + ...`) to
+  **cylinder-major/head-minor** (`cylinder * Sides * BytesPerTrack + head * BytesPerTrack +
+  (sector-1) * BytesPerSector`) — a cylinder's heads are stored back-to-back before the next
+  cylinder begins, not all of side 0's cylinders before side 1 starts. `ImdFormat.Read`/`Write`
+  (`Devices/Fdc/ImdFormat.cs`) independently duplicated the OLD formula in two places (never
+  routed through `DskImage.SectorOffset`) — both updated to match. Fixed absolute-offset
+  constants (`DirectoryOffset=0x1800`, `PdosFcbOffset=0x0000`, `SideIndicatorOffset=0x0FEF`,
+  `TrackCountOffset=0x0FFF`) needed NO value changes — they're literal raw byte positions, not
+  derived via the CHS formula — but `DirectoryOffset`'s doc comment was corrected: under the new
+  layout, raw `0x1800` is (cylinder 0, head 1, sector 9), not (cylinder 1, head 0, sector 9) as
+  previously assumed. This also resolves an unrelated, previously-flagged tension in
+  `docs/P2000T-disk-formats.md` §2 (the active directory's own entries carry a confirmed
+  `DE_head=1` byte, which never fit the old "cylinder 1, head 0" reading — it fits the corrected
+  "head 1" reading cleanly). Which specific JWSDOS routine (`dir_side1_prep` vs.
+  `dir_side2_prep`) targets this region is a separate, still-open question, not re-verified here.
+- **Single-sided images are unaffected** — when `Sides == 1`, cylinder-major and side-major
+  formulas are numerically identical (the head term multiplies by 0 for the only head), so this
+  fix only changes behavior for double-sided images.
+- **Tests updated (5 existing tests broke and were fixed, not weakened):**
+  `DskImageTests`/`RealFixtureTests`/`Upd765Tests`/`DiskBootTests` — every test that hardcoded a
+  raw offset under the old formula (synthetic marker placement, `Spel1.dsk`/`jws-sytem.dsk`
+  raw-byte comparisons, and critically the REAL ROM-driven `DiskBootTests.
+  GetDos_LoadsBothTracksByteIdentical_FromRealJwsdosImage` integration test) now targets `0x2000`
+  instead of `0x1000` for cylinder 1/head 0, and `0x2800` instead of `0x1800` for cylinder 1/head
+  0/sector 9. The real-fixture regression pinning the CHS→offset identity was moved off
+  `Spel1.dsk` (whose own `0x2800` region has an unresolved, separately-flagged "duplicate
+  content" oddity the owner is still investigating — deliberately not built on top of it) onto
+  `jws-sytem.dsk`'s clean, unambiguous real-code match at `0x2000` instead. Full
+  `P2000.Machine.Tests`: 604/604 green; `P2000.UI.Tests` disk/config-related suites (`DiskDriveVm`/
+  `ConfigWindow`, 71/71) unaffected — the 3 unrelated failures elsewhere in that project's own
+  suite are pre-existing Avalonia headless-rendering environment issues (`IFontManagerImpl`
+  unavailable), not caused by this change.
+- **Still open, deliberately deferred (owner's own call, 2026-07-30):** the "duplicate content"
+  puzzle in `Spel1.dsk` (the same directory-shaped bytes appearing a second time, shifted by
+  exactly `0x1800`, at raw `0x2800`/`0x3000`) — owner theory is stale data from the JWS system
+  tool or the disk-dumping process, not investigated further this pass.
+- **Applies to:** `src/P2000.Machine/Devices/Fdc/DskImage.cs` (`SectorOffset`, class doc comment,
+  `DirectoryOffset` doc comment), `src/P2000.Machine/Devices/Fdc/ImdFormat.cs` (`Read`/`Write`
+  offset computation, class doc comment), `tests/P2000.Machine.Tests/Devices/Fdc/DskImageTests.cs`,
+  `tests/P2000.Machine.Tests/Devices/Fdc/RealFixtureTests.cs`,
+  `tests/P2000.Machine.Tests/Devices/Fdc/Upd765Tests.cs`,
+  `tests/P2000.Machine.Tests/Boot/DiskBootTests.cs`. Reference doc §5d's disk-geometry block and
+  `docs/P2000T-disk-formats.md` §2's "Generalized raw sector-offset formula" (needs re-deriving
+  from cylinder-major, not side-major) and §7 item 9.
+- **Synced:** no
+
+### 2026-07-30 — SUPERSEDED BY THE CORRECTION ABOVE — Bugfix investigation: disk-image geometry mapping vs. getdos's fixed-side-0 read — mapping and FDC dispatch BOTH confirmed correct; likely non-bug explanation for the observed symptom found instead
 - **Trigger:** a third JWSDOS-activation hypothesis, opened by the owner's own new empirical
   test using the per-bank debugger (milestone 24): cold-start boot (JWSDOS disk in drive 1,
   ordinary BASIC cartridge in slot 1) shows bank 1 selected twice during a genuine two-track

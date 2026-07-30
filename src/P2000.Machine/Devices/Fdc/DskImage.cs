@@ -8,15 +8,20 @@ namespace P2000.Machine.Devices.Fdc;
 /// <see cref="TimingPolicy"/> — mount/eject/create-blank/write-protect/browse never simulate
 /// real disk-drive delays; only <see cref="Upd765"/>'s command execution does.
 ///
-/// <b>Raw layout (derived, not directly stated by the format doc — flagged as such):</b> a
-/// side-major, cylinder-minor linear sector dump: side 0's cylinders 0..N-1 (each 16 sectors ×
-/// 256 B = 4096 B) come first, then side 1's, if present. This is the only layout consistent
-/// with <c>docs/P2000T-disk-formats.md</c> §2's confirmed byte ranges: "track 1" (raw
-/// <c>0x0000</c>-<c>0x0FFF</c>) and "track 2" (raw <c>0x1000</c>-<c>0x1FFF</c>) are
-/// <c>getdos</c>'s own names for cylinders 0 and 1 of side 0, and the active side-1 directory
-/// at raw <c>0x1800</c>-<c>0x1FFF</c> (cylinder 1, sectors 9-16) has every entry's side byte
-/// equal to 0 — only possible if consecutive cylinders of the SAME side are contiguous, ruling
-/// out a per-cylinder side-interleaved layout.
+/// <b>Raw layout — CORRECTED (owner, 2026-07-30, bug-investigation finding; project CLAUDE.md
+/// §17): cylinder-major, head-minor.</b> Each cylinder's heads are stored back-to-back before
+/// the next cylinder: cylinder 0/head 0, cylinder 0/head 1, cylinder 1/head 0, cylinder 1/head
+/// 1, … — i.e. head varies FASTEST. This supersedes an earlier side-major/cylinder-minor
+/// reading that was built on a since-disproven cross-check; the owner independently confirmed
+/// the correct layout two ways: (1) direct authority on the monitor ROM's own addressing — the
+/// disk-boot loader (<c>getdos</c>) reads TWO CONSECUTIVE PHYSICAL CYLINDERS, both head 0 (the
+/// monitor ROM has no double-sided support at all), landing on raw <c>0x0000</c>-<c>0x0FFF</c>
+/// (cylinder 0/head 0, "track 1") then raw <c>0x2000</c>-<c>0x2FFF</c> (cylinder 1/head 0,
+/// "track 2") — NOT raw <c>0x1000</c>, which the disproven side-major reading predicted; (2) a
+/// clean, independently-sourced reference JWSDOS binary matches the disk images' raw
+/// <c>0x2000</c>-<c>0x213F</c> region byte-for-byte for what must be track 2's content, while
+/// raw <c>0x1000</c>-<c>0x113F</c> is either blank or unrelated directory data on the same
+/// disks. See the dated findings-log entry for the full comparison evidence.
 /// </summary>
 public sealed class DskImage
 {
@@ -33,9 +38,18 @@ public sealed class DskImage
     /// <c>$FFF</c>): binary track count <b>+1</b> (e.g. <c>0x29</c> = 41 → 40 tracks).</summary>
     private const int TrackCountOffset = 0x0FFF;
 
-    /// <summary>Active side-1 directory region (<c>docs/P2000T-disk-formats.md</c> §2, confirmed via
-    /// <c>dir_side1_prep</c>): raw <c>0x1800</c>-<c>0x1FFF</c>, NOT <c>0x1000</c>-<c>0x17FF</c>
-    /// (a stale/unrelated cluster — see the format doc's §2/§7 item 3 caution).</summary>
+    /// <summary>Active directory region (<c>docs/P2000T-disk-formats.md</c> §2): raw
+    /// <c>0x1800</c>-<c>0x1FFF</c>, NOT <c>0x1000</c>-<c>0x17FF</c> (a stale/unrelated cluster —
+    /// see the format doc's §2/§7 item 3 caution). This raw offset itself is unaffected by the
+    /// 2026-07-30 cylinder-major layout correction (project CLAUDE.md §17) — it's a fixed byte
+    /// position, not derived via <see cref="SectorOffset"/>. <b>Its CHS identity DOES change
+    /// under the correction, though</b>: under cylinder-major it's (cylinder 0, head 1, sector
+    /// 9), not (cylinder 1, head 0, sector 9) as previously assumed — which is also the more
+    /// consistent reading, since every real entry here carries a confirmed <c>DE_head=1</c> byte
+    /// (this doc's own earlier "CORRECTED" paragraph flagged that as an unexplained tension under
+    /// the old layout; it isn't one anymore). Which JWSDOS routine (<c>dir_side1_prep</c> vs.
+    /// <c>dir_side2_prep</c>) actually targets this region is a separate, still-open question —
+    /// not re-verified as part of this fix.</summary>
     private const int DirectoryOffset = 0x1800;
     private const int DirectorySize = 0x0800; // 2048 B = 8 sectors = 64 × 32-byte entries
     private const int DirectoryEntrySize = 32;
@@ -292,8 +306,12 @@ public sealed class DskImage
         Sides = sides,
     };
 
+    /// <summary>Cylinder-major, head-minor (project CLAUDE.md §17, 2026-07-30 correction — see
+    /// this class's own doc comment): a cylinder's heads are stored back-to-back before the next
+    /// cylinder, so <see cref="Sides"/> (not <see cref="Tracks"/>) is the per-cylinder head
+    /// stride.</summary>
     private int SectorOffset(int cylinder, int head, int sector) =>
-        head * Tracks * BytesPerTrack + cylinder * BytesPerTrack + (sector - 1) * BytesPerSector;
+        cylinder * Sides * BytesPerTrack + head * BytesPerTrack + (sector - 1) * BytesPerSector;
 
     /// <summary>Reads one 256-byte sector. <paramref name="sector"/> is 1-based (µPD765
     /// convention). A sector address beyond the image's actual byte length (an unpadded short

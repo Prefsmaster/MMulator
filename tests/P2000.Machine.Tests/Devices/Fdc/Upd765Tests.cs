@@ -446,9 +446,11 @@ public class Upd765Tests
         var cyl0Head0 = Enumerable.Repeat((byte)0x11, 256).ToArray();
         var cyl1Head0 = Enumerable.Repeat((byte)0x22, 256).ToArray();
         var cyl1Head1 = Enumerable.Repeat((byte)0x33, 256).ToArray(); // must NEVER be read
+        // Cylinder-major, head-minor (project CLAUDE.md §17, 2026-07-30 correction): cylinder 1's
+        // two heads are back-to-back at 2*BytesPerTrack (head 0) and 3*BytesPerTrack (head 1).
         cyl0Head0.CopyTo(image, 0);
-        cyl1Head0.CopyTo(image, DskImage.BytesPerTrack);
-        cyl1Head1.CopyTo(image, 40 * DskImage.BytesPerTrack + DskImage.BytesPerTrack);
+        cyl1Head0.CopyTo(image, 2 * DskImage.BytesPerTrack);
+        cyl1Head1.CopyTo(image, 3 * DskImage.BytesPerTrack);
         var disk = new DskImage(image);
 
         var fdc = new Upd765 { Policy = TimingPolicy.Turbo };

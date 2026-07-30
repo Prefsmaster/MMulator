@@ -47,8 +47,9 @@ internal static class ImdFormat
         bytes.Length >= 4 &&
         bytes[0] == (byte)'I' && bytes[1] == (byte)'M' && bytes[2] == (byte)'D' && bytes[3] == (byte)' ';
 
-    /// <summary>Parses an IMD file into a flat side-major/cylinder-minor sector-dump buffer
-    /// (matching <see cref="DskImage"/>'s own internal layout) plus the derived geometry and each
+    /// <summary>Parses an IMD file into a flat cylinder-major/head-minor sector-dump buffer
+    /// (matching <see cref="DskImage"/>'s own internal layout — corrected 2026-07-30, project
+    /// CLAUDE.md §17) plus the derived geometry and each
     /// track's sector-order map (for <see cref="DskImage.SectorOrderMaps"/>, so a later unmodified
     /// resave round-trips the real interleave rather than silently flattening it — reference doc
     /// §3a "round-tripping the per-sector order map faithfully").</summary>
@@ -151,7 +152,7 @@ internal static class ImdFormat
             for (var i = 0; i < orderMap.Length; i++)
             {
                 var logicalSector = orderMap[i]; // 1-based, µPD765 convention
-                var offset = head * tracks * DskImage.BytesPerTrack + cylinder * DskImage.BytesPerTrack +
+                var offset = cylinder * sides * DskImage.BytesPerTrack + head * DskImage.BytesPerTrack +
                              (logicalSector - 1) * DskImage.BytesPerSector;
                 trackSectorData[t][i].CopyTo(data, offset);
             }
@@ -160,7 +161,7 @@ internal static class ImdFormat
         return (data, tracks, sides, orderMaps);
     }
 
-    /// <summary>Serializes a flat side-major/cylinder-minor sector-dump buffer into IMD form.
+    /// <summary>Serializes a flat cylinder-major/head-minor sector-dump buffer into IMD form.
     /// <paramref name="orderMaps"/> entries are reused verbatim per (cylinder, head) when present
     /// and sized correctly; otherwise a plain sequential map is emitted (milestone 21: "nothing
     /// in this project currently generates or tracks real interleave... the map still needs to
@@ -201,7 +202,7 @@ internal static class ImdFormat
 
                 foreach (var logicalSector in orderMap)
                 {
-                    var offset = head * tracks * DskImage.BytesPerTrack + cylinder * DskImage.BytesPerTrack +
+                    var offset = cylinder * sides * DskImage.BytesPerTrack + head * DskImage.BytesPerTrack +
                                  (logicalSector - 1) * DskImage.BytesPerSector;
                     stream.WriteByte(1); // normal, uncompressed
                     stream.Write(data, offset, DskImage.BytesPerSector);

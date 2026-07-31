@@ -28,6 +28,8 @@
 * Paste ascii/txt into emulator
 * Screenshot: shortcut-save: output path en naam pattern kunnen aanpassen.
 * Shortcuts tonen in menu's
+* memory-access breakpoints
+* Flag representation in debugger
 
 # Bugs
 

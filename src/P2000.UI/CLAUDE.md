@@ -1511,7 +1511,8 @@ project.
   `OnSelectedBankOptionChanged`, `Update`'s `NotifyCanExecuteChanged` call),
   `tests/P2000.UI.Tests/ViewModels/MemoryWatchVmTests.cs`. Reference doc §3a's Debugger section
   (alongside the milestone 17 writeup); machine ms.24 (`GetBankRaw`, consumed here, unchanged).
-- **Synced:** no
+- **Synced:** yes (2026-07-30, into `docs/P2000T-reference.md` §3a — new "FIXED" paragraph appended
+  directly after the milestone 17 writeup).
 
 ### 2026-07-28 — Milestone 17 IMPLEMENTED: debugger per-bank access to bank-switched RAM
 - **Trigger:** owner decision (project CLAUDE.md §14 milestone 17; machine ms.24, same day).

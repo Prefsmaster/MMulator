@@ -103,8 +103,76 @@ constants from `jwsdos5.0.asm`). This resolves the previous update's open questi
 just isn't precise about what it's loading; JWSDOS's own code re-reads the relevant pieces
 more precisely once it actually needs the directory.
 
+**FINAL CORRECTED PICTURE (2026-07-31, CC audit, driven by direct execution against real
+`Upd765`/`DskImage` code and real `Spel1.dsk` bytes — not disassembly arithmetic).** Everything
+below in this section describes how this understanding got here, including a real prior
+mislabeling; this block is the settled, current state — cross-reference it first.
+
+```
+0x0000–0x0FBE  cyl 0, head 0 — Side-1 DOS boot code, track "1"           (unchanged, invariant
+                                                                          under both formulas)
+0x0FBF–0x0FFF  cyl 0, head 0 — Geometry/system label (§3)                (unchanged)
+0x1000–0x17FF  cyl 0, head 1, sectors 1–8  — DUPLICATE content, byte-for-byte match of
+               0x2800–0x2FFF (side 1's real directory) — see "duplicate content" below.
+0x1800–0x1FFF  cyl 0, head 1, sectors 9–16 — DUPLICATE content, 2047/2048-byte match of
+               0x3000–0x37FF (side 2's real directory, one differing transfer-address byte).
+0x2000–0x27FF  cyl 1, head 0, sectors 1–8  — real DOS code: `getdos`'s own confirmed second
+               boot-track read target, AND `JWS Systeem Disk`'s own confirmed track-2/
+               sectors-1–8 write target (independently converging on the same block).
+0x2800–0x2FFF  cyl 1, head 0, sectors 9–16 — **side 1's REAL, genuine directory**
+               (`dir_side1_prep`'s actual target, confirmed via direct FDC replay — NOT a
+               "stale cluster," see below). Spel1.dsk: 20 real entries ("Fraxxon + scores"…
+               "Superlaser"), every one `DE_head=0`, self-consistent.
+0x3000–0x37FF  cyl 1, head 1, sectors 1–8  — **side 2's REAL, genuine directory**
+               (`dir_side2_prep`'s actual target, confirmed via direct FDC replay). Spel1.dsk:
+               18 real entries ("Tralieenspel"…"BABA"), every one `DE_head=1`.
+0x3800–0x3FFF  cyl 1, head 1, sectors 9–16 — genuinely blank (all-zero); only 8 of 16 sectors
+               of this region are ever written by anything.
+```
+
+**The old "stale 20-entry cluster" theory (below, kept as historical record) was a real
+mislabeling, not stale data at all.** Zero filename overlap between the two clusters was
+correctly observed but wrongly read as evidence of contamination from another disk. It's
+exactly what a working double-sided disk's two INDEPENDENT per-side catalogs look like: 20
+files on side 1, 18 on side 2, 38 total — close to the owner's own independently-reported "37
+files" in `Spel1.dsk`'s real menu (off by one, not chased further, doesn't change the
+conclusion). Both real per-side directories, at their confirmed real locations
+(`0x2800`/`0x3000`), fully explain the data; no "stale leftover from a different disk" theory is
+needed at all, and the elaborate `JWS Systeem Disk`/`DIR_side_1_mem`-RAM-dump theory built below
+to explain a "stale cluster" was solving a problem that didn't exist. What DOES still need
+explaining (open, not chased further by the owner's own choice): why the `0x1000`–`0x1FFF`
+region — cylinder 0's own flip side — holds a near-exact DUPLICATE of both real directories
+concatenated (differing by exactly one byte, a transfer-address field, consistent with a stale
+RAM snapshot at some write moment, not a new anomaly). The `JWS Systeem Disk` write-scope claim
+(full track 1 + only 8 sectors of track 2) is independently CONFIRMED correct from that
+program's own disassembly and direct replay — but it describes the `0x2000`–`0x27FF` DOS-code
+region, not this directory-duplicate region; see §7 items 2–4 for the full resolution.
+
+**FIXED (2026-07-31) — was a real, confirmed bug: the Floppy Drives window only ever showed one
+side's files, on any double-sided JWSDOS disk, and it wasn't reliably even the right side.**
+`DskImage.ReadDirectory()`/`EnumerateDirectorySlots()` used to read from exactly one fixed offset,
+`DirectoryOffset = 0x1800` — never either real directory location; it was the duplicate-content
+region, which only happened to closely match side 2's real content on `Spel1.dsk` specifically.
+**Fixed:** directory reads now compute each side's raw offset via the same CHS formula every
+other sector read uses (`SectorOffset(cylinder: 1, head, sector: head==0?9:1)`), replacing
+`DirectoryOffset` entirely — `0x1800` is no longer read for directory purposes at all. Verified
+safe across every real double-sided fixture in the project before landing, not just `Spel1.dsk` —
+and it turned out NOT to be a coincidental wash: **three of four real double-sided fixtures
+(`jws-sytem.dsk`, `empty-jws.dsk`, `hires_demo.dsk`) had genuine directory content the old
+`0x1800` offset was silently missing entirely**, previously reading as having no real directory at
+all. `jws-sytem.dsk`'s newly-surfaced 14 real side-1 entries are exactly what a JWSDOS system/
+utility disk should list ("JWS Systeem Disk," "Format," "AUTORUN," "Disk-report 2.1," and other
+real utility filenames). Single-sided images confirmed a genuine no-op both mathematically (the
+formula for cylinder 1/head 0/sector 9 collapses to exactly the old `0x1800` value when
+`Sides == 1`) and by full existing test-suite runs on `volorg.dsk`/`diskbasic_1.6uk.dsk`.
+`Spel1.dsk`'s `AUTORUN` entry's `TransferAddress` changes from `0x7000` (the `0x1800` duplicate)
+to the correct `0x6547` (the real `0x3000` location) — the exact one byte already identified as
+differing between the duplicate and the real content, now confirmed to matter for exactly the
+field predicted. See §7 item 2a for the closure write-up.
+
 **CONFIRMED, byte-verified against `Spel1.dsk`, cross-checked against `jwsdos5.0.asm`'s
-`dir_side1_prep`/`dir_side2_prep` routines:**
+`dir_side1_prep`/`dir_side2_prep` routines — kept as the historical on-disk-layout finding this
+section originally recorded, now superseded by the corrected picture above:**
 
 ```
 0x0000–0x0FBE  Side-1 DOS boot code, track "1"
@@ -123,34 +191,60 @@ more precisely once it actually needs the directory.
 0x2000–0x2FFF  More DOS code (unchanged from previous finding, not re-examined this pass)
 ```
 
-**Generalized raw sector-offset formula — CONFIRMED (2026-07-22, `P2000.Machine` milestone-19
-implementation, `DskImage.SectorOffset`), derived from this section's own confirmed byte ranges
-and now validated against real fixtures:**
+**Both raw-offset attributions in the table immediately above turned out to be wrong (not the
+underlying `dir_side1_prep`/`dir_side2_prep` facts, just which raw region each one targets) —
+2026-07-31, direct FDC replay against real `Spel1.dsk`: `dir_side1_prep`'s real target is raw
+`0x2800`-`0x2FFF`, not `0x1800`; `dir_side2_prep`'s real target is raw `0x3000`-`0x37FF`, not
+somewhere unlocated. See the corrected picture at the top of this section.**
+
+**CORRECTED (2026-07-30) — the formula below (side-major/cylinder-minor) was WRONG, and this
+doc's own 2026-07-22 "CONFIRMED" validation of it was a real, instructive false start: worth
+recording plainly rather than quietly overwriting.** The 2026-07-22 validation checked the formula
+by searching for known real directory filenames (`Spel1.dsk`'s "Fraxxon"/"Tralieen") at the raw
+offsets the formula itself predicted, then declared a match — **circular**: it only proved the
+formula was self-consistent with data that had itself been interpreted through that same formula,
+not that the formula matched genuine independent ground truth. The circularity was broken the same
+day (2026-07-30) by comparing raw disk bytes against a clean, known-good JWSDOS binary reference
+(`assets/JWS.bin`, not derived from this project's own fixtures or formula) — that comparison
+placed `getdos`'s real second track at raw `0x2000`, not `0x1000`, and the owner's own direct
+authority on the monitor ROM (`getdos` loads exactly two PHYSICAL CYLINDERS, both head 0 — the ROM
+has no double-sided support at all) sealed cylinder-major/head-minor as correct. **Fixed:**
+`DskImage.SectorOffset` and `ImdFormat`'s independently-duplicated copy of the old formula (machine
+CLAUDE.md, 2026-07-30 entry). **Confirmed via an actual observed boot: "JWS Dos boots perfectly
+now."** See §7 item 9 for the full bug-closure narrative.
+
+**Generalized raw sector-offset formula — CORRECTED (2026-07-30, `P2000.Machine`
+`DskImage.SectorOffset` fix), superseding the 2026-07-22 entry below:**
 
 ```
-raw_offset = head * Tracks * BytesPerTrack
-           + cylinder * BytesPerTrack
+raw_offset = cylinder * Sides * BytesPerTrack
+           + head * BytesPerTrack
            + (sector - 1) * BytesPerSector
 ```
 
-**Side-major, cylinder-minor** — i.e. side/head is the OUTERMOST grouping (all of head 0's
-cylinders are contiguous before head 1 begins anywhere), not interleaved per-cylinder. Derived
-from this section's own confirmed identity: `(cylinder=1, head=0, sector=9) → raw 0x1800`
-(`dir_side1_prep`'s own target) only holds if consecutive cylinders of the SAME head are
-contiguous in the file. Validated directly against real `Spel1.dsk` bytes (both DOS-track reads
-match exactly) and against three further real images (`jws-sytem.dsk`, `empty-jws.dsk`,
-`hires_demo.dsk`) — geometry auto-detect and directory reads all check out; see
-`tests/P2000.Machine.Tests/Devices/Fdc/DskImageTests.cs`/`RealFixtureTests.cs`.
+**Cylinder-major, head-minor** — a cylinder's two heads are stored back-to-back (all of cylinder
+0 before cylinder 1 begins), not all of head 0's cylinders before head 1 starts anywhere.
+Single-sided images are unaffected (with `Sides == 1` the head term is always 0, so the two
+formulas are numerically identical) — this only changes behavior, and only mattered, for
+double-sided images. **Direct consequence for this section's own confirmed byte ranges above: the
+raw offsets themselves (`0x0000`, `0x1000`, `0x1800`, `0x2000`, etc.) are unchanged — the same real
+bytes are still exactly where they were found — but the CHS (cylinder/head/sector) label attached
+to each one changes.** In particular, raw `0x1000`–`0x1FFF` (the "stale 20-entry cluster" and the
+"active 18-entry directory," both described just above as "Track '2'," i.e. cylinder 1) is now
+understood to be **cylinder 0, head 1** — the flip side of the very same boot track, not a
+different cylinder at all. This directly resolves the DE_head tension flagged below: the active
+directory's own entries reading `DE_head=1` now matches the corrected physical location cleanly,
+rather than contradicting it. **Which specific routine's read command (`dir_side1_prep` vs.
+`dir_side2_prep`) actually computes to this exact physical spot is a separate question CC's own fix
+entry explicitly left open, not re-verified as part of the geometry fix** — treat the "why does
+`dir_side1_prep`'s own head=0 FDC parameter end up here" mechanics as still unresolved (see item 2
+below), while treating the raw-offset↔real-file-content mapping itself (§2's byte dump) as
+unaffected and correct.
 
-**Direct implication for open item 2 below (where does side 2's directory live?) — a strong
-candidate answer, but NOT independently verified against real head=1 data yet.** If the formula
-holds for head=1 the same way it's confirmed for head=0, side 2's data begins at raw offset
-`Tracks * BytesPerTrack` (e.g. `0x28000` for this disk's 40 tracks), and `dir_side2_prep`'s own
-target (`DE_start_sector=0x11`/17 = "track-2 sector 1", head=1) would land at raw
-`Tracks*BytesPerTrack + 1*BytesPerTrack + 0 = 0x29000` for a 40-track disk. This is a direct
-arithmetic consequence of the formula above, not yet cross-checked against actual bytes at that
-offset in a real image with real side-2 content — flagging as the strongest lead on open item 2,
-not a closed answer.
+**Open item 2 below (where does side 2's directory live?) — ANSWERED, 2026-07-31, CC audit via
+direct FDC replay against real `Spel1.dsk`: raw `0x3000`-`0x37FF` (cylinder 1, head 1), 18 real
+entries, every one `DE_head=1`.** See the "FINAL CORRECTED PICTURE" block at the top of this
+section for the full layout and §7 item 2 for the closure write-up.
 
 **Why sectors 1–8 (0x1000–0x17FF) hold a second, different directory — write-SCOPE now
 CONFIRMED from `JWS Systeem Disk`'s own disassembly (owner, 2026-07-20); the data-SOURCE half
@@ -262,6 +356,30 @@ disk's active directory is uniformly side-2-flagged" as an open provenance quest
 one disk image, not a DOS-semantics question — likely unanswerable without more disk images to
 compare against.
 
+**CORRECTED, substantially simplifying the picture (2026-07-30, `DskImage.SectorOffset` geometry
+fix — see §2's own correction, cylinder-major/head-minor replacing side-major/cylinder-minor).**
+The "open tension" this whole sub-thread was built on — active-directory entries reading
+`DE_head=1` while sitting at a raw offset the doc assumed was head-0 territory — is now understood
+differently at its root: raw `0x1800` (and the whole `0x1000`–`0x1FFF` range) is, under the
+corrected formula, **physically head 1 of cylinder 0**, not head 0 of cylinder 1 as previously
+assumed. A `DE_head=1` reading there is therefore no longer an anomaly needing the
+defragment-reassignment theory to explain its mere EXISTENCE — it's simply, straightforwardly
+correct: that data really is on physical head 1. The defragment mechanism above remains a real,
+sourced fact and still plausibly explains why the reading is UNIFORM across all 18 entries (a
+disk's operational history could still leave every entry pointing the same way), but it's no
+longer load-bearing for the more basic question of why `DE_head=1` shows up there at all.
+**ANSWERED (2026-07-31, CC audit, direct FDC replay against real `Spel1.dsk` — not more
+disassembly arithmetic):** `dir_side1_prep`'s real target is raw `0x2800`-`0x2FFF` (cylinder 1,
+head 0) — the naive "sector 25 → cylinder 1, head 0" division DOES hold, it just lands at
+`0x2800`, not `0x1800` as this doc mistakenly assumed while first applying the corrected formula
+the day before. `dir_side2_prep`'s real target is raw `0x3000`-`0x37FF` (cylinder 1, head 1). So
+raw `0x1800` — where the doc's original byte search actually found the real, currently-active
+directory data — is neither routine's real target; it's the still-unexplained "duplicate
+content" region (cylinder 0's own flip side), which happens to closely match `dir_side2_prep`'s
+real output. **This also means the "stale cluster" at raw `0x1000`-`0x17FF` was never stale at
+all** — see the retirement note below and the "FINAL CORRECTED PICTURE" block near the top of
+this section for the complete, current understanding.
+
 **`save_directory`'s exact mechanics — CONFIRMED source-level (owner, 2026-07-20, re-read of
 `jwsdos5.0.asm` lines 1107–1143), a strong new candidate explanation for the stale cluster:**
 
@@ -317,6 +435,25 @@ side-byte-0 detail the original theory didn't account for.
   side-2 directory is written via `dir_side2_prep`'s head-1 path, it must live SOMEWHERE in the
   raw file, and this pass didn't locate it — it is almost certainly NOT the same bytes as the
   stale cluster this theory explains, since those are side-1-shaped, not side-2-shaped.
+
+**RETIRED (2026-07-31, CC audit) — the entire "stale 20-entry cluster" investigation above,
+including the `JWS Systeem Disk`/`DIR_side_1_mem`-RAM-dump synthesis, was solving a problem that
+didn't exist.** Direct FDC replay against real `Spel1.dsk` (not more disassembly arithmetic)
+found: the "stale cluster" IS `dir_side1_prep`'s own real, genuine target — it just lives at raw
+`0x2800`-`0x2FFF`, not `0x1000`-`0x17FF` as every paragraph above assumed (an artifact of the
+same side-major/cylinder-minor formula bug the JWSDOS-boot fix corrected). Its 20 entries, every
+one `DE_head=0`, are exactly what side 1's real, currently-active directory looks like — not
+stale leftovers from another disk. Symmetrically, `dir_side2_prep`'s real target (raw
+`0x3000`-`0x37FF`, 18 entries, every one `DE_head=1`) is side 2's real directory, first located
+this pass. **The zero-filename-overlap observation that drove this whole theory was real and
+correctly noted — it just means "two independent per-side catalogs," which is exactly what a
+working double-sided disk has, not evidence of anything stale or contaminated.** The `JWS Systeem
+Disk` write-scope claim above (full track 1 + 8 sectors of track 2) is independently confirmed
+correct — it just describes the real DOS-code region at `0x2000`-`0x27FF`, not either directory,
+and was never actually the source of directory content at all. What DOES remain genuinely open:
+why `0x1000`-`0x1FFF` (cylinder 0's own flip side) holds a near-duplicate of both real
+directories concatenated — see the "FINAL CORRECTED PICTURE" block near the top of this section
+and §7 item 3 (now rewritten) for the current, accurate state.
 
 ---
 
@@ -800,53 +937,64 @@ on record unless the owner wants to specify further).
    operator manually matching the format menu to whatever disk is inserted — worth
    double-checking before concluding the emulator's auto-detect-from-label behavior (§3) is
    purely an enhancement rather than also fixing a real usability gap.
-2. **Where does side 2's own directory actually live in a raw `.dsk` image?** (§2)
-   `dir_side2_prep` reads a physically different disk surface (FDC head = 1); not located in
-   `Spel1.dsk`'s raw bytes in this pass — depends on the image's side-interleaving
-   convention, which itself isn't confirmed. **UPDATE (2026-07-22):** the now-confirmed
-   side-major/cylinder-minor raw-offset formula (§2) gives a strong candidate answer —
-   `Tracks * BytesPerTrack + BytesPerTrack` (e.g. `0x29000` on a 40-track disk) for
-   `dir_side2_prep`'s own target — but this is a direct arithmetic consequence of a formula
-   validated only against head=0 data so far, not independently checked against real bytes at
-   that offset. **UPDATE (2026-07-22, `jwsdos5.0.asm` source read directly): the "offset-24
-   values don't mean what this doc assumed" half of the tangle is resolved — they do mean
-   physical side, confirmed from source (§2).** Location is still open on its own terms: the
-   formula's head=0 branch is confirmed, its head=1 branch (where side 2 actually sits) is not
-   yet checked against real bytes. **Flagged (Claude Code, UI milestone 15, 2026-07-28): no
-   known real fixture has a directory with entries on BOTH sides** — `Spel1.dsk`'s active
-   entries are uniformly `Head=1`. The new Side column's "Side 1" vs. "Side 2" label rendering
-   is currently only exercised against a small synthetic image, not real mixed-side data. Worth
-   a real disk if one with genuinely mixed sides (or a defragmented-then-resaved history) ever
-   turns up.
-3. **Origin of the stale 20-entry directory cluster at raw `0x1000`–`0x17FF`** (§2) — read as
-   real, valid, cross-validated directory entries, but not touched by the current build's
-   read/save routines and sharing no filenames with the 18-entry active directory.
-   **Write SCOPE now CONFIRMED (owner, 2026-07-20, from `JWS Systeem Disk`'s disassembly):**
-   the program writes a full track 1 (16 sectors) plus only 8 sectors of track 2 (sectors
-   1–8) — sectors 9–16 (where the active directory lives) are not touched at all, not written,
-   not cleared. This replaces the earlier "clears/rewrites the active-directory portion"
-   framing with a simpler, confirmed one. **Still OPEN, but now a much stronger candidate: the
-   data SOURCE for sectors 1–8.** Refined theory (owner write-scope finding + a fresh
-   `jwsdos5.0.asm` re-read, both 2026-07-20, see §2): the write-scope's implied source range
-   (`0xE000`–`0xF7FF`, from "full track 1 + 8 sectors of track 2") **exactly contains
-   `DIR_side_1_mem` (`0xF000`–`0xF7FF`)** — the specific RAM buffer `dir_side1_prep`/
-   `save_directory`/`read_directory` use for ordinary side-1 directory operations, confirmed
-   never zeroed between disks. `JWS Systeem Disk`'s blind sequential copy would sweep up
-   whatever side-1 directory happened to be sitting there (most plausibly from some other disk
-   read shortly before), landing it on the new disk's sectors 17–24 — and because that buffer
-   is structurally side-1-only by construction, this also explains the previously-unexplained
-   detail that all 20 stale entries have side-byte 0. Still not a closed item — this is a
-   strong synthesis of two confirmed facts, not a direct trace of the actual write instructions
-   populating the buffer at `JWS Systeem Disk` runtime. **Also not resolved by the 2026-07-19
-   label-writing finding (§3)** — that confirmed `JWS Systeem Disk` writes the label correctly,
-   a separate question from this one. Owner's next step is still reading the rest of
-   `JWS Systeem Disk`'s disassembly to confirm this specific mechanism.
-   **Separately (2026-07-22, `jwsdos5.0.asm` source): the active directory's own DE_head=1
-   discrepancy (§2) is NOT explained by this item's theory** — this item concerns the STALE
-   cluster (confirmed side-byte=0, unaffected by the correction) sourced from a blind
-   `JWS Systeem Disk` copy, whereas the active cluster's anomaly is now understood via a
-   different, unrelated mechanism: ordinary `defragment` operation can reassign a file's side
-   during normal DOS use (§2, §5). Keep these two explanations separate — don't conflate them.
+2. **Where does side 2's own directory actually live in a raw `.dsk` image?** **RESOLVED
+   (2026-07-31, CC audit, direct FDC replay against real `Spel1.dsk` — not disassembly
+   arithmetic): raw `0x3000`-`0x37FF` (cylinder 1, head 1)** — `dir_side2_prep`'s real,
+   confirmed target: 18 real entries, every one `DE_head=1`, self-consistent. This supersedes
+   every earlier "strong candidate"/arithmetic-only answer this item carried through
+   2026-07-22 and 2026-07-30. **Flagged (Claude Code, UI milestone 15, 2026-07-28) — still
+   relevant, now sharper:** no known real fixture has a directory with entries on BOTH sides in
+   the SAME on-disk image at the SAME time — `Spel1.dsk` has 20 real side-1 files at `0x2800`
+   and 18 real side-2 files at `0x3000`, genuinely on both sides. **RESOLVED as of the item 2a
+   fix below:** now exercised end-to-end — `Spel1.dsk` correctly returns all 38 entries split
+   across both sides.
+2a. **FIXED (2026-07-31) — was a real, confirmed bug: `DskImage.ReadDirectory()`/
+   `EnumerateDirectorySlots()` used to read only raw `0x1800`, which was neither real directory
+   location** — it was the "duplicate content" region (cylinder 0's own flip side), which only
+   happened to closely match side 2's real content on `Spel1.dsk` specifically. **Fixed:**
+   directory reads now compute both sides' raw offsets via the same CHS formula every other
+   sector read already uses (`SectorOffset(cylinder: 1, head, sector: head==0?9:1)`), entirely
+   replacing the old `DirectoryOffset` constant — `0x1800` is no longer read for directory
+   purposes at all, resolving the open question this item originally flagged (whether to keep
+   `0x1800` alongside a new read, or move to the confirmed real locations — the fix moved fully
+   to the real locations, per its own explicit instruction). **This was not a coincidental wash:
+   three of four real double-sided fixtures in the project (`jws-sytem.dsk`, `empty-jws.dsk`,
+   `hires_demo.dsk`) had genuine directory content the old `0x1800` read was silently missing
+   entirely** — all three previously read as having no real directory at all; `jws-sytem.dsk`
+   alone has 14 real, well-formed side-1 entries (a genuine JWSDOS utility disk's file list:
+   "JWS Systeem Disk," "Format," "AUTORUN," and others), now correctly surfaced.
+   `empty-jws.dsk` — despite sharing `jws-sytem.dsk`'s identical boot code/label and its first
+   two side-1 entries — is confirmed NOT a byte-identical copy overall; it genuinely has only 2
+   entries, checked directly rather than assumed. Single-sided images (`volorg.dsk`,
+   `diskbasic_1.6uk.dsk`) confirmed a genuine no-op, both mathematically (the formula collapses
+   to the old `0x1800` value exactly when `Sides == 1`) and via unchanged full test-suite runs.
+   `Spel1.dsk`'s `AUTORUN` entry's `TransferAddress` correctly changes from `0x7000` (the
+   `0x1800` duplicate) to `0x6547` (the real `0x3000` location) — the one byte already identified
+   as differing between the duplicate and the real content, confirmed to matter for exactly the
+   field predicted. Presentation order (side 1 then side 2) is a UI-layer choice, left open for
+   reconsideration. Full `P2000.Machine.Tests`: 605/605 green (was 603).
+3. **RESOLVED (2026-07-31, CC audit) — the "stale 20-entry directory cluster at raw
+   `0x1000`-`0x17FF`" was never stale at all — it was a real mislabeling of `dir_side1_prep`'s
+   own genuine target, which actually lives at raw `0x2800`-`0x2FFF`.** The zero-filename-overlap
+   observation that drove this whole investigation (below, kept as historical record) was real
+   and correctly noted — it's simply what two independent, healthy per-side catalogs look like
+   (20 files on side 1, 18 on side 2), not evidence of contamination from another disk. The `JWS
+   Systeem Disk` write-scope claim (full track 1 + only 8 sectors of track 2) is independently
+   **CONFIRMED CORRECT** from that program's own disassembly (`docs/jwssysdisk.asm`, owner-
+   supplied) and direct replay against a real `DskImage` — but its raw-offset target corrected
+   from `0x1000`-`0x17FF` to **`0x2000`-`0x27FF`** (cylinder 1, head 0 — the real DOS-code
+   region, matching `getdos`'s own confirmed second boot-track-read target exactly, an
+   independent convergence between the reader and the writer). This program was never the
+   source of any directory content — the elaborate `DIR_side_1_mem`-RAM-dump synthesis built to
+   explain a "stale cluster" (kept below as historical record) was solving a problem that turned
+   out not to exist. **What DOES remain genuinely open, not resolved by this pass, deliberately
+   not chased further (owner's own call):** why raw `0x1000`-`0x1FFF` (cylinder 0's own flip
+   side) holds a near-exact duplicate of BOTH real directories concatenated — its first half
+   (`0x1000`-`0x17FF`) matches side 1's real directory (`0x2800`-`0x2FFF`) byte-for-byte; its
+   second half (`0x1800`-`0x1FFF`) matches side 2's real directory (`0x3000`-`0x37FF`) except one
+   differing byte (a transfer-address field, offset 22 of one entry — consistent with the
+   existing "stale RAM snapshot at some write moment" theory, not a new anomaly). This is now
+   the sharpest open thread on this whole topic.
 4. **Follow-on from the now-precisely-understood `0xF3`/`sysdisk_status` branch (§6 step 7):**
    does `sysdisk_status` actually gate whether the loaded DOS launches, and if so, how does a
    real JWSDOS disk boot despite legitimately ending with `sysdisk_status = 0`? Evidence now
@@ -905,8 +1053,10 @@ on record unless the owner wants to specify further).
    `Jwsdos`/garbage fixture is unaffected. See `P2000.Machine` CLAUDE.md milestone 23 / `P2000.UI`
    CLAUDE.md milestone 16.)**
 
-9. **RESOLVED, mechanism now disassembly-CONFIRMED (2026-07-28, owner-supplied `Startup.asm`/
-   `jwsdos5.0.asm`) — JWSDOS's manual activation path from a plain BASIC prompt:**
+9. **RESOLVED AND FIXED (2026-07-30) — root cause found and confirmed via an actual observed
+   boot: "JWS Dos boots perfectly now."** Three hypotheses investigated in sequence, the first two
+   disproven, the third the real cause — kept below in full as the historical record, closing with
+   the fix. Originally: **JWSDOS's manual activation path from a plain BASIC prompt:**
    `DEFUSR=5:?USR(0)` → monitor ROM jump-table entry `0x0005` (`cpm_start`, sourced from
    `Startup.asm`'s own `org 0x0000` table) → select bank 1 → `CALL 0xE000`. The "checksum test"
    is real, not a guess: JWSDOS's own `insert_dos_hook` → `checksum_control` sums N bytes from
@@ -918,20 +1068,99 @@ on record unless the owner wants to specify further).
    M2200 RAM-disk ports byte-for-byte — real, deliberate M2200 RAM-disk support in JWSDOS 5.0 (see
    this doc's §5c cross-reference). **The checksum itself is now RULED OUT by direct experiment
    (owner, 2026-07-28): patched to always return "pass," the reset to BASIC still happens.** This
-   points squarely at `init_ramdisk`'s port-95/96/97 probe (or later code) as the real cause, not
-   the checksum — exactly the owner's own live hypothesis. Revised bit-level read using this
-   project's OWN documented card models (§5/reference doc): the homebrew/T-102-class card is
-   **raw byte = bank index, out-of-range → open bus** (not a masked bit-value), so the probe's
-   `17`/`65` writes, IF aliased onto the bank register, would push a 6-bank card's index out of
-   range — the whole `0xE000`-`0xFFFF` window would go open-bus (`0xFF` = `RST 38`) mid-execution,
-   not silently stay on bank 1 as an earlier masked-bit analysis here assumed. This reframes the
-   question onto the actual C# implementation (does the bank-switch device listen on `0x94` alone
-   or a wider range; does it apply the documented range-check) rather than further disassembly —
-   see `P2000T-reference.md` §5d for the full reasoning. **Also still open, independent of the
-   above:** what populates `ramdisk_tmp_storage+1`..`+4` and what loads JWSDOS's binary into bank
-   1 in the first
-   place — neither disassembly in hand covers the boot-loader program itself (presumably a
-   separate file on the JWSDOS boot disk, not yet supplied).
+   pointed squarely at `init_ramdisk`'s port-95/96/97 probe as the next suspect — exactly the
+   owner's own live hypothesis, and a plausible-sounding mechanical story under this project's own
+   documented card models (§5/reference doc: homebrew/T-102-class card is raw byte = bank index,
+   out-of-range → open bus, so the probe's `17`/`65` writes, IF aliased onto the bank register,
+   would push a 6-bank card's index out of range and derail bank 1 via open-bus). **DISPROVEN
+   (CC, direct C# source investigation, 2026-07-30):** `PortDispatch.cs` is structurally
+   single-exact-port only (fixed 256-entry arrays, no range/mask registration exists anywhere in
+   the project) — an over-wide listener spanning `0x94`-`0x97` is architecturally impossible, not
+   merely absent; `Machine.cs:163` registers exactly one listener on exactly `0x94`; ports
+   `0x95`-`0x97` have zero registered listeners (the M2200 RAM-disk device itself is deferred), so
+   `init_ramdisk`'s writes are genuine no-ops and its read returns open-bus `0xFF` — which matches
+   neither `17` nor `65`, so its own `ret nz` fires immediately, well before any bank-select write
+   could occur. No bank-select write, no stray I/O, no PC corruption; 7 new tests confirm the
+   inertness (full `P2000.Machine.Tests`: 600/600 green). See `P2000T-reference.md` §5d for the
+   full reasoning — the port-aliasing hypothesis is now provably dead, not just empirically
+   unlucky. **Root cause still fully open, and now narrower:** neither the checksum nor
+   port-aliasing is the cause, so whatever produces the symptom isn't in this project's port/
+   bank-select dispatch at all. What populates `ramdisk_tmp_storage+1`..`+4`, and what actually
+   loads JWSDOS's binary into bank 1 in the first place for a plain-BASIC-cartridge manual
+   activation, remain open — this session's fresh reading of the newly-supplied `Disk.asm`
+   confirms `getdos` itself is NOT that loader (it only auto-runs for a DOS-requesting cartridge,
+   and never touches `ramdisk_tmp_storage`), and the now-complete monitor-ROM disassembly
+   (`Startup.asm`/`Cassette.asm`/`Printer.asm`/`Disk.asm`/`Symbols.asm`, confirmed byte-identical
+   to the real ROM via `P2000ROM.asm`'s own build check) contains no such loader either — it's a
+   separate program, most likely on the JWSDOS boot disk itself, still unsupplied/undisassembled.
+   **Recommended next step:** use the newly-built per-bank debugger (reference doc §3a, machine
+   milestone 24 / UI milestone 17) to directly inspect bank 1 and `ramdisk_tmp_storage` at the
+   moment `DEFUSR=5:?USR(0)` runs. **Done (owner, 2026-07-30) — different repro (cold start with
+   the JWSDOS disk in drive 1 and a BASIC cartridge, not manual `DEFUSR=5`), same symptom, and a
+   materially better mechanism found.** The live bank indicator confirmed bank 1 is selected TWICE
+   during a genuine 2-track disk-boot read at cold start — meaning `getdos` (or something with an
+   identical read pattern) DOES run here, correcting this entry's own earlier claim that it "only
+   auto-runs for a DOS-requesting cartridge" for a plain BASIC cartridge; that gating condition
+   needs re-examining. Inspecting bank 1 directly: `0xE000`-`0xEFFF` correctly holds JWSDOS's image;
+   **`0xF000`-`0xFFFF` is entirely zero** — an unbroken run of `NOP` until `PC` wraps `0xFFFF`→
+   `0x0000` (the monitor's own cold-boot vector), visually indistinguishable from "reboot to BASIC"
+   but mechanically nothing like the checksum/`RST 0` or port-aliasing/`RST 38` guesses — no
+   checksum, no bank-switch device, no I/O involved at all; bank 1's second half was simply never
+   populated. **Re-reading `getdos` (`Disk.asm`) precisely against the owner's own confirmed disk
+   geometry (40-track, double-sided, cylinder-major/side-minor layout: T1S1→image `0x0000`,
+   T1S2→`0x1000`, T2S1→`0x2000`, T2S2→`0x3000`):** the "Disk IO" read command's head bit and its
+   separate explicit side-# byte are BOTH `0` in `disk_constants`, copied once, and **never touched
+   again** across the whole two-track loop — only `disk_track_num` (a separate RAM word) advances,
+   driving a completely different "Goto Track" Search command (drive#+track# only, no side field)
+   that just seeks the head to the next cylinder. Net effect, read directly from the code: both
+   reads use side 0; only the cylinder advances. So `getdos` reads (cylinder 1, side 0) →
+   `0xE000`-`0xEFFF`, then (cylinder 2, side 0) → `0xF000`-`0xFFFF` — **it never reads side 2 of any
+   cylinder.** Under the owner's own layout that's image offset `0x0000` (correct) then `0x2000`
+   (T2S1) — never `0x1000` (T1S2). If this boot disk's system image actually spans both SIDES of
+   cylinder 1 rather than two side-0 cylinders, `getdos` as literally written could never load it
+   correctly — a property of the ROM routine versus this disk's layout, not necessarily an emulator
+   bug. **Two things still need checking before concluding that (2026-07-30):** (1) whether the
+   emulator's own disk-image (cylinder, head, sector)→byte-offset mapping actually matches the
+   owner's stated cylinder-major/side-minor convention — the owner's own explicit ask, not yet
+   verified against the C# source; (2) whether the emulator's FDC/disk-command handling honors the
+   `getdos` command bytes literally (side `0`, cylinder-only advance) rather than tracking head
+   state some other way. See the dedicated investigation prompt and `P2000T-reference.md` §5d for
+   the full reasoning.
+   - **First check, same day: a false start.** CC's first pass concluded the existing side-major/
+     cylinder-minor formula was empirically correct — validated by finding known real directory
+     filenames (`Spel1.dsk`'s "Fraxxon"/"Tralieen") at the exact offsets that formula predicts. This
+     was **circular**: it only proved the formula was self-consistent with data already interpreted
+     through it, not that it matched genuine independent ground truth. Under that (wrong) belief,
+     the FDC command-dispatch check (2) came back clean too — `Upd765.DispatchDataCommand` does
+     read the head bit fresh from the command bytes every dispatch and seeking genuinely can't
+     affect it — and the conclusion drawn was "no bug in either place; the JWSDOS disk's own
+     track-2/head-0 content is just genuinely blank on the fixtures on hand, so bank 1's
+     `0xF000`-`0xFFFF` being empty is `getdos` faithfully reading real blank content, not a defect."
+   - **Overturned the same day by independent ground truth.** The owner supplied a clean,
+     known-good JWSDOS binary reference (`assets/JWS.bin`, not derived from this project's own disk
+     fixtures or formula) and compared it directly against raw bytes in real disk images
+     (`jws-sytem.dsk`, `Spel1.dsk`). The reference's own second-track content matched raw disk
+     offset `0x2000`-`0x213F` byte-for-byte — not `0x1000` as the (wrong) formula implied. Combined
+     with the owner's own direct authority on the ROM (`getdos` loads exactly two PHYSICAL
+     CYLINDERS, both head 0 — no double-sided support exists in the monitor ROM at all), this
+     sealed **cylinder-major/head-minor** as the correct formula, not side-major/cylinder-minor.
+   - **Fixed:** `DskImage.SectorOffset` (`Devices/Fdc/DskImage.cs`) changed to
+     `cylinder * Sides * BytesPerTrack + head * BytesPerTrack + (sector-1) * BytesPerSector`;
+     `ImdFormat.Read`/`Write` had independently duplicated the old formula in two places (never
+     routed through `DskImage.SectorOffset`) and needed the same fix. Single-sided images are
+     unaffected (the head term is always 0 when `Sides == 1`). 5 existing tests that had hardcoded
+     raw offsets under the old formula were updated (not weakened) to the corrected offsets; the
+     real-fixture regression test was moved off `Spel1.dsk` (whose own `0x2800` region has a
+     separately-flagged, deliberately-deferred "duplicate content" oddity) onto `jws-sytem.dsk`'s
+     clean match at `0x2000`. Full `P2000.Machine.Tests`: 604/604 green.
+   - **Confirmed via an actual observed boot (owner, 2026-07-30, same day): "just tested and JWS
+     Dos boots perfectly now."** This closes the bug end to end. See `P2000T-reference.md` §5d and
+     §2 above (the formula correction) for the full reasoning and the geometry-formula fix's own
+     ripple effects on this doc's CHS interpretations.
+   - **Still open, deliberately deferred (owner's own call):** the "duplicate content" puzzle in
+     `Spel1.dsk` (the same directory-shaped bytes appearing a second time, shifted by exactly
+     `0x1800`, at raw `0x2800`/`0x3000`) — a stale-data theory, not investigated further this pass,
+     unrelated to the fix above and doesn't affect JWSDOS booting correctly.
 
 **Resolved since the last revision (moved out of this list):** **`sysdisk_status`'s ambiguous
 initial-value comment (2026-07-20)** — explained, not just flagged: the exact `0xF3` branch

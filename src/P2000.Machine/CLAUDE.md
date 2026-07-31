@@ -1696,7 +1696,9 @@ marked synced. Do NOT edit the reference doc from this project.
   layout table) and §7 items 2/2a (side-2 location — now answered — and the ex-"stale cluster,"
   now understood as side 1's genuine directory), `docs/P2000T-reference.md` §3a (UI milestone 15
   note, needs its "side 1 only" framing corrected).
-- **Synced:** no
+- **Synced:** yes (2026-07-31, into `docs/P2000T-disk-formats.md` §2 (bug note updated to
+  FIXED, with the 3-of-4-fixtures real-content discovery) and §7 items 2/2a (both closed as
+  fixed); into `docs/P2000T-reference.md` §3a (UI milestone 15 note updated to FIXED)).
 
 ### 2026-07-31 — Follow-up: `DskImage.ReadDirectory()` only ever reads SIDE 2's directory — the "stale 20-entry cluster" was a real mislabeling, not stale data at all; the Floppy Drives window is missing half of `Spel1.dsk`'s real files
 - **Trigger:** owner observation — `Spel1.dsk`'s real menu shows 37 files/options; this

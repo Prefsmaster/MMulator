@@ -411,27 +411,74 @@ Config changes that alter hardware topology **require a machine reset to take ef
     functionally, never touches the live core.
 - **Breakpoints:** execute AND **memory read/write/execute** watchpoints, plus **I/O port
   breakpoints** (break on access to a port — how you'll debug the CTC probe and FDC).
-- **RESOLVED (owner, 2026-07-28) — bank-switched RAM (0xE000–0xFFFF, port 0x94, §5) needs
-  first-class debugger support: today's debugger only ever sees whichever bank is LIVE-active,
-  with no way to inspect a non-active bank or to tell which bank triggered a breakpoint at a
-  shared address.** Motivated directly by investigating the JWSDOS-activation bug (§5d) — the
-  owner wants to inspect bank 1's actual contents at `0xE000`–`0xFFFF` without losing sight of
-  bank 0, and to catch a breakpoint on bank-1 code specifically without also catching unrelated
-  activity at the same address in a different bank. Three related capabilities, applying
-  uniformly across every banked-RAM card this project models (the 1-bit `RAMSW` card's two
-  "banks," and homebrew/T-102-class N-bank cards) — no per-card special-casing:
-  1. **Live active-bank indicator** — the debugger shows the current port-0x94-selected bank
-     value somewhere always-visible, refreshed every observer tick.
-  2. **Per-window bank override on memory watch windows** — each window gains a "Bank" selector
-     ("Auto," today's existing live-active behavior, by default; or a specific bank), relevant
-     only when the window's range touches 0xE000–0xFFFF. Pinning a window to a specific bank
-     shows that bank's raw bytes regardless of what's actually active — **per-window, so opening
-     two windows over the same range shows two different banks side by side simultaneously.**
-  3. **Bank-qualified breakpoints** — an execute/memory breakpoint at an address in
-     0xE000–0xFFFF gets the same "Any bank" (default, current behavior) vs. "this specific bank"
-     qualifier; a qualified breakpoint fires only when that bank is the one live-active at the
-     moment of the access.
-  See machine milestone 24 / UI milestone 17 for the concrete build items.
+- **IMPLEMENTED (machine milestone 24, UI milestone 17, 2026-07-28) — bank-switched RAM
+  (0xE000–0xFFFF, port 0x94, §5) now has first-class debugger support.** Motivated directly by
+  investigating the JWSDOS-activation bug (§5d) — the owner wanted to inspect bank 1's actual
+  contents at `0xE000`–`0xFFFF` without losing sight of bank 0, and to catch a breakpoint on
+  bank-1 code specifically without also catching unrelated activity at the same address in a
+  different bank. Built uniformly across every banked-RAM card this project models (the 1-bit
+  `RAMSW` card's two "banks," and homebrew/T-102-class N-bank cards) with **no per-card
+  special-casing needed** — CC's own finding: `PageTable._banks` was already one generic N-bank
+  array regardless of card, so the "uniform across every card" goal was true by construction
+  before this milestone even started.
+  1. **Live active-bank indicator** — `PageTable.GetBankRaw(int bankIndex)` (defensive copy,
+     independent of the live-active bank) and `PageTable.BankCount` back `MachineSnapshot.BankCount`/
+     `ActiveBank` (`int?`, null when `BankCount==0`), refreshed every `Machine.TakeSnapshot()`.
+     UI: `RegisterFileVm.BankInfo` ("No banking" / "Bank N / count"), shown as a new "Bank" row in
+     the register panel below FT-state, fed from both the paused snapshot path and a new live path
+     (`DebuggerWindowVm.OnFrameReady` now passes `m.Memory.BankCount`/`CurrentBank` through
+     explicitly, since the live path had no snapshot to read them from).
+  2. **Per-window bank override on memory watch windows** — `MemoryWatchVm.SelectedBankOption`
+     ("Auto" default, or "Bank N") + `BankOptions`/`ShowBankSelector`, recomputed inside `Update()`
+     itself so it tracks a live topology change; the per-byte read loop substitutes
+     `Memory.GetBankRaw(pinnedBank)` for any address inside 0xE000-0xFFFF when a specific bank is
+     pinned (called once per `Update()`, not once per byte — it allocates+copies 8 KB). Confirmed
+     genuinely per-window: two independent `MemoryWatchVm` instances over the identical range,
+     pinned to different banks, show different bytes simultaneously — **the owner's own exact
+     motivating case.**
+  3. **Bank-qualified breakpoints** — `BreakpointStore.Entry` gained an `int? Bank` field;
+     `AddExec`/`AddMemRead`/`AddMemWrite`/`AddMemAccess` gained an optional `bank` param (IoRead/
+     IoWrite deliberately did not — no bank relationship); `Check(kind, address, activeBank)` skips
+     a bank-qualified entry whose `Bank` doesn't match; `Add` throws `ArgumentException` for a
+     non-null bank qualifier outside 0xE000-0xFFFF (deliberately does NOT validate
+     bank<installedBankCount). UI scope note: the spec assumed a memory-watch/breakpoint dialog
+     that turned out not to exist anywhere in this project yet — bank-qualified breakpoints ship
+     for the disassembly gutter's execute breakpoints only (`DebuggerWindowVm`'s
+     `SelectedBreakpointBankOption`/`BreakpointBankOptions`/`ShowBreakpointBankFilter`, a "Bp bank:"
+     picker in the stepping toolbar); memory R/W breakpoint UI is out of scope until that dialog is
+     built as its own milestone.
+  Tests: `PageTableTests` +8, `MachineSnapshotTests` +3, `BreakpointStoreTests` +7,
+  `MemoryWatchVmTests` +5, `DebuggerWindowVmTests` +4. `.state` unaffected (`BreakpointStore` never
+  serialized). See `P2000.Machine` CLAUDE.md milestone 24 / `P2000.UI` CLAUDE.md milestone 17.
+- **FIXED (2026-07-30) — memory watch Save/Load didn't respect a window's own pinned bank, a real
+  gap in milestone 17 the owner caught by using the feature directly.** `SaveRangeToFileAsync` read
+  straight from the live core (`Memory.Read`/`PageTable.Read`), which for `0xE000`-`0xFFFF` always
+  returns whatever bank is live-active — it never consulted the window's `SelectedBankOption` or
+  called `GetBankRaw(pinnedBank)`, diverging from `Update()` (which already substitutes the pinned
+  bank's bytes for on-screen display). Net effect: a window pinned to, say, Bank 2 showed Bank 2's
+  bytes on screen but silently exported whatever bank was actually live-active instead, whenever
+  the two differed. `LoadFileToAddressAsync` had the mirror problem: writes always land in the
+  live-active bank regardless of the window's pin, since there's no bank-targeted write path.
+  **Fixed, not by adding a bank-targeted write primitive (deliberately not built — `GetBankRaw`
+  stays read-only/defensive-copy by design):**
+  1. **Save** now sources bytes from the same place the window displays — `Update()`'s per-byte
+     bank-substitution logic was factored into a shared `GetPinnedBankBytes()`/
+     `ReadRespectingBankPin()` pair, and a new `ComputeExportBytes(start, length)` (internal, test-
+     only seam) uses it for the export. "Auto" is byte-for-byte unchanged from before; a pinned
+     bank sources any address inside `0xE000`-`0xFFFF` from that bank specifically; addresses
+     outside the banked window are unaffected either way (never bank-dependent).
+  2. **Load** is disabled, not silently misleading, when it would land in the wrong bank —
+     `LoadFileToAddressCommand.CanExecute` is `true` only on "Auto" or when the pinned bank already
+     matches live-active, re-evaluated both on pin change and on every `Update()` (so it correctly
+     re-disables if the live-active bank drifts away from an already-pinned selection between
+     refreshes, not only at selection time).
+  Tests: `MemoryWatchVmTests` +5 — pinned export sources the pinned bank, not live-active, when they
+  differ; "Auto" export is unchanged (regression guard); a pinned export spanning both banked and
+  unbanked addresses sources each half correctly; `CanExecute` is false for a mismatched pin, true
+  for "Auto"/a matching pin, and correctly flips false if live-active drifts after pinning. Full
+  `P2000.UI.Tests`: 235/235 for the affected suites; a handful of unrelated, pre-existing Avalonia
+  headless-rendering/dispatcher-timing flaky failures noted separately, confirmed unrelated via
+  repeated isolated runs. See `P2000.UI` CLAUDE.md, 2026-07-30 entry.
 - **Live in-frame T-state / cycle counter** (position within the 50,000-cycle frame —
   invaluable for contention debugging).
 - **Stepping:** single-step, **step-over, step-out**, and — because cycle-exact — **run to
@@ -1134,10 +1181,25 @@ format facts) lives in `docs/P2000T-disk-formats.md` §6a/§7, not duplicated he
      path keeps today's legacy table unchanged. `Spel1.dsk`'s `AUTORUN` entry (`StartSector`/
      `EndSector` 622/632) renders as `T39 S14-T40 S8` via the 16-sectors/track formula — a
      concrete real cross-check of that formula, not just the abstract math.
-   - **Flagged, not blocking:** no known real fixture has entries on both sides in one directory
-     (`Spel1.dsk`'s are all `Head=1`) or a defragmented-then-resaved fixture — the Side-column
-     label distinction itself is only exercised with a small synthetic image. Worth knowing if a
-     real mixed-side or post-defragment disk image turns up later.
+   - **Flagged, now closed as of the fix below (2026-07-31):** no known real fixture had entries
+     on both sides in one directory at the time this was written — now moot: `Spel1.dsk` renders
+     all 38 real entries (20 side-1 + 18 side-2) split correctly across both sides, and 3 of 4
+     real double-sided fixtures turned out to have real side-1 content nobody had ever seen
+     rendered before (see the fix note immediately below).
+   - **FIXED (2026-07-31) — was a real, confirmed bug, follow-on from the `DskImage.SectorOffset`
+     geometry fix: `DskImage.ReadDirectory()` used to read only ONE fixed offset (`0x1800`) —
+     neither JWSDOS directory's real, confirmed location (side 1 is at `0x2800`, side 2 at
+     `0x3000`).** Net effect before the fix: the Floppy Drives window could never show side 1's
+     files on any double-sided JWSDOS disk. **Fixed:** directory reads now compute both sides'
+     raw offsets via the same CHS formula every other sector read uses, entirely replacing the
+     old `DirectoryOffset` constant — `0x1800` is no longer read for directory purposes at all.
+     This was not a coincidental wash: **3 of 4 real double-sided fixtures in the project
+     (`jws-sytem.dsk`, `empty-jws.dsk`, `hires_demo.dsk`) had genuine directory content the old
+     code was silently missing entirely** — `jws-sytem.dsk` alone has 14 real utility-disk
+     entries ("JWS Systeem Disk," "Format," "AUTORUN," and others) now correctly surfaced for the
+     first time. Single-sided images confirmed a genuine no-op (the corrected formula collapses
+     to the exact old value when `Sides == 1`). Full `P2000.Machine.Tests`: 605/605 green (was
+     603). See `docs/P2000T-disk-formats.md` §2/§7 item 2a for the full trace.
 2. **PDOS FCB reader — IMPLEMENTED (machine milestone 22a, UI milestone 15a, 2026-07-28).** Built
    as designed, plus one real correction and one flagged assumption:
    - `DskImage.ReadPdosDirectory()` parses all 128 fixed slots on track 1, folding continuation
@@ -2685,7 +2747,7 @@ owner-supplied page references, 2026-07-23), CORRECTS an earlier mis-scoping thi
     | `0x86`/`0x87` | Serial — RS422 (data/control) | Z80 SIO channel B. |
     | `0x8C`/`0x8D`/`0x90`-`0x93` | FDC | **Same port assignment as the FDC already documented in §5d** — but chip identity is revision-dependent: **the first ~100 M2200 units shipped with a µPD7265** (Sony-compatible format), **later units with the µPD765** (CONFIRMED, M2200 manual) — a µPD7265 unit is explicitly out of scope for now. **Connector CONFIRMED with 4 drive-select lines (`DRISEL0`-`3`)**, decoded from the chip's native US0/US1 via an external 2-to-4 decoder, gated by motor-on — a materially richer connector than the "2 drives" figure above; whether the plain single-purpose board's own connector matches is still open. Full detail (control-register bit table, clock/formatting caveat, drive-timeout watchdog) in `docs/M2200-implementation.md` §2.1. |
     | `0x94` | RAM bank-switch (`RAMSW`) | **Same port as the plain floppy+RAM board's bank-switch** (§5 memory). **Bit-width now CONFIRMED for M2200 specifically: 3 bits, 6 banks × 8 KB (values 0-5, 6/7 alias to bank 0, default bank 0)** — the "homebrew wider decode" case §5 memory already anticipated. Corroborates (does not prove identical to) the `T/102` 80 KB variant's total. Full detail in `docs/M2200-implementation.md` §2.2. |
-    | `0x95`/`0x96`/`0x97` | RAM disk (track/sector/data) | Genuinely new — a separate device from the FDC, **not** a media variant of it (owner-confirmed: "RAM disk is port driven"). **Geometry CONFIRMED:** 256 B/sector, max 16 sectors/track, 64 KB or 256 KB total (track register 4 or 6 bits respectively). Contents confirmed to survive a reset-BUTTON press specifically (dedicated refresh-continuity circuit); full power-off persistence not stated. **Software-side confirmation (2026-07-28, `docs/jwsdos5.0.asm`):** JWSDOS 5.0 defines `ramdisk_Track`/`ramdisk_Sector`/`ramdisk_IO` at exactly these three ports — real, deliberate M2200 RAM-disk support, not a coincidence. `init_ramdisk` probes presence/size (64K vs. 256K) via a track-17 read/write trick and, if found, lets drive 0 specifically be serviced by the RAM disk instead of the real FDC — see §5d's JWSDOS-activation bug entry for the full trace and reasoning (whether this port group's own probe can derail bank 1 via a port-0x94-aliasing mechanism is a REOPENED, still-live question there, not settled either way). Full hardware detail in `docs/M2200-implementation.md` §3.2. |
+    | `0x95`/`0x96`/`0x97` | RAM disk (track/sector/data) | Genuinely new — a separate device from the FDC, **not** a media variant of it (owner-confirmed: "RAM disk is port driven"). **Geometry CONFIRMED:** 256 B/sector, max 16 sectors/track, 64 KB or 256 KB total (track register 4 or 6 bits respectively). Contents confirmed to survive a reset-BUTTON press specifically (dedicated refresh-continuity circuit); full power-off persistence not stated. **Software-side confirmation (2026-07-28, `docs/jwsdos5.0.asm`):** JWSDOS 5.0 defines `ramdisk_Track`/`ramdisk_Sector`/`ramdisk_IO` at exactly these three ports — real, deliberate M2200 RAM-disk support, not a coincidence. `init_ramdisk` probes presence/size (64K vs. 256K) via a track-17 read/write trick and, if found, lets drive 0 specifically be serviced by the RAM disk instead of the real FDC — see §5d's JWSDOS-activation bug entry for the full trace and reasoning (whether this port group's own probe can derail bank 1 via a port-0x94-aliasing mechanism was investigated directly against the C# source and is now DISPROVEN — `PortDispatch` is structurally single-exact-port only, `0x95`-`0x97` have zero registered listeners, and the probe is confirmed inert). Full hardware detail in `docs/M2200-implementation.md` §3.2. |
     | `0x98`-`0x9B` | Centronics (data/status/strobe-on/strobe-off) | Strobe ports are access-triggered — read or write, same effect, data byte irrelevant. Status bits CONFIRMED: bit4 Error, bit3 Printer On, bit2 Paper Out, bit1 Busy, bit0 ACK. |
     | `0x9C`/`0x9D` | RTC (select/data) | **Chip CONFIRMED: Hitachi HD146818** (MC146818-family — the same RTC used as the IBM PC/AT's CMOS clock), cross-confirmed via both owner statement and the M2200 manual's own parts list. **Full Register A/B/C/D bit layout now CONFIRMED** (update-in-progress, periodic/alarm/update-ended interrupt enables and flags, BCD/binary + 12/24-hour mode, crystal-select code) — see `docs/M2200-implementation.md` §3.1 for the complete table. IRQ wired to **CTC1 channel 2** (cross-confirms the already ROM-disassembly-sourced IM2 vector table, §5e). `Reset()` must preserve the battery-backed contents (see the non-volatility note above). |
 
@@ -3344,14 +3406,18 @@ running. **No disassembly of Philips Disk BASIC's own disk driver exists or is p
 labor, not to be repeated lightly. The three real bugs above were found entirely from trace
 evidence, without one — but the remaining mystery may genuinely need it, per the analysis above.
 
-**TRACKED, mechanism now CONFIRMED (owner-supplied `Startup.asm`/`jwsdos5.0.asm` disassemblies,
-2026-07-28) — a SEPARATE bug from the "Disk I/O error" bug above: manually activating JWSDOS from
-a plain BASIC boot fails, and "RST 0, as if a checksum test failed" turns out to be exactly,
-literally what happens — not an approximation.** Distinct repro — different boot path, different
-DOS, do not conflate the two. **Repro:** an ordinary BASIC cartridge (not the PDOS `Basic24k.bin`
-cartridge above) plus a JWSDOS boot disk; JWSDOS isn't auto-loaded at boot (§5d's own `getdos`
-gate only fires for a DOS-requesting cartridge) — instead activated manually from BASIC via
-`DEFUSR=5:?USR(0)`.
+**RESOLVED AND FIXED (2026-07-30) — root cause found and confirmed via an actual observed boot:
+"JWS Dos boots perfectly now."** Three hypotheses were investigated in sequence (checksum failure;
+port-0x94-0x97 aliasing; disk-image geometry mapping) — the first two disproven, the third the real
+cause. The full narrative is kept below as the historical record, since it's genuinely instructive
+(including a same-day false start on the third hypothesis, corrected by independent ground truth —
+see the closing paragraphs). Originally tracked as: a SEPARATE bug from the "Disk I/O error" bug
+above: manually activating JWSDOS from a plain BASIC boot fails, and "RST 0, as if a checksum test
+failed" turns out to be exactly, literally what happens — not an approximation. Distinct repro —
+different boot path, different DOS, do not conflate the two. **Repro:** an ordinary BASIC cartridge
+(not the PDOS `Basic24k.bin` cartridge above) plus a JWSDOS boot disk; JWSDOS isn't auto-loaded at
+boot (§5d's own `getdos` gate only fires for a DOS-requesting cartridge) — instead activated
+manually from BASIC via `DEFUSR=5:?USR(0)`.
 - **The monitor ROM's own jump table (`Startup.asm`, `org 0x0000`) is now sourced, not
   reconstructed:** `0x0005 cpm_start`, `0x0008 printscreen`, `0x000B readdisk`, `0x0010 rstdebug`,
   `0x0013 writedisk`, `0x0018 cassette`, `0x001B initkey`, `0x001E getdos` (already known — the
@@ -3401,34 +3467,169 @@ gate only fires for a DOS-requesting cartridge) — instead activated manually f
   the written value, an unwanted bank switch during that probe would derail execution out of bank
   1 while PC is still physically inside `0xE000`-`0xFFFF` — landing back at BASIC via a wrecked PC
   rather than via any intentional mechanism.**
-- **Revised bit-level read, now using this project's OWN already-documented card models (§5)
-  rather than an assumed simple bit-mask** — the earlier pass here compared against a "low N bits
-  masked" model, but this doc's own §5 describes the homebrew/T-102-class card as **raw byte value
-  = bank index directly, index ≥ populated bank count → open bus** (not a masked/wrapped value).
-  Under THAT model, `init_ramdisk`'s probe writes (`1`, then `17`/`0x11`, then `65`/`0x41`) would,
-  if aliased onto the bank register of a 6-bank (T-102-class) card, resolve to index 1 (valid,
-  stays bank 1), then index 17 (OUT OF RANGE — the entire `0xE000`-`0xFFFF` window would go
-  open-bus, typically reading back `0xFF`, i.e. **`RST 38`**, not the `0x00`/NOP-until-wraparound
-  mechanism guessed earlier), then index 65 (also out of range). Landing on open-bus mid-execution
-  and vectoring through `RST 38` (the keyboard-ISR entry, per `Startup.asm`) on a stack that's
-  `cpm_start`'s own dedicated DOS stack (`0x6130`), not BASIC's, would very plausibly cascade into
-  something that LOOKS LIKE "back to BASIC" without literally being the `RST 0` path — consistent
-  with the owner's own report and with the checksum-bypass result above. **This reframes the
-  investigation squarely onto the actual C# implementation, not further disassembly reading:**
-  does this project's own bank-switch device (a) get registered against port `0x94` alone, or
-  against a wider range that also matches `0x95`-`0x97`; and (b) for whichever card model is
-  configured, does it apply the DOCUMENTED masking/range-check behavior (1 bit for the `RAMSW`
-  card; raw-value-with-range-check for a homebrew/T-102-class card) or something looser that would
-  let an out-of-range or unintended value land. **Recommended next step:** have the actual bank-
-  switch device / port-dispatch code read directly (this is now a C# implementation question, not
-  a disassembly one) — see the dedicated investigation-and-fix prompt for this.
-- **Separately, still open regardless of the above:** what populates `ramdisk_tmp_storage+1`..
-  `+4` (the checksum's expected byte-count and seed — now moot for THIS bug since the checksum
-  itself is ruled out, but still an accurate gap in this project's own understanding of the boot
-  sequence) and what actually loads JWSDOS's own binary into bank 1 at `0xE000` in the first
-  place, when booting from a plain BASIC cartridge with no `getdos` auto-boot. Neither
-  `Startup.asm` nor `jwsdos5.0.asm` contains this — a separate boot-loader program, likely on the
-  JWSDOS boot disk itself, hasn't been supplied/disassembled yet.
+- **Revised bit-level read (superseded below) — using this project's OWN already-documented card
+  models (§5) rather than an assumed simple bit-mask** — the earlier pass here compared against a
+  "low N bits masked" model, but this doc's own §5 describes the homebrew/T-102-class card as
+  **raw byte value = bank index directly, index ≥ populated bank count → open bus** (not a
+  masked/wrapped value). Under THAT model, `init_ramdisk`'s probe writes (`1`, then `17`/`0x11`,
+  then `65`/`0x41`) would, if aliased onto the bank register of a 6-bank (T-102-class) card,
+  resolve to index 1 (valid, stays bank 1), then index 17 (OUT OF RANGE — the entire
+  `0xE000`-`0xFFFF` window would go open-bus, typically reading back `0xFF`, i.e. **`RST 38`**),
+  then index 65 (also out of range) — a plausible-sounding mechanical story, which is exactly why
+  it needed checking against the real implementation rather than resting on the disassembly alone.
+- **PORT-ALIASING HYPOTHESIS DISPROVEN (CC, bugfix investigation, 2026-07-30) — checked directly
+  against the C# source, not further disassembly reading. Conclusion: DISPROVEN, not just
+  unconfirmed.** Three independently-confirmed facts settle it: (1) `Io/PortDispatch.cs` is
+  structurally single-port-only — fixed 256-entry arrays indexed by exact port byte,
+  `RegisterWrite(byte port,...)`/`RegisterRead(byte port,...)` take one literal byte with no
+  range/mask overload anywhere; every registration site in the project (`Machine.cs`,
+  `InternalExtensionBoard.cs` — keyboard, CPOUT, CPRIN, sound, bank-select, CTC, FDC) is a single
+  exact byte. An over-wide listener spanning `0x94`-`0x97` is **architecturally impossible** in
+  this codebase, not merely absent. (2) `Machine.cs:163`:
+  `Ports.RegisterWrite(PageTable.BankSelectPort, Memory.SelectBank)` where `BankSelectPort` is the
+  literal `0x94` — exactly one listener on exactly one port. (3) ports `0x95`/`0x96`/`0x97` have
+  **zero** registered listeners (the M2200 RAM-disk device itself is deferred, not yet built) —
+  `PortDispatch.Write` silently no-ops on a null listener, `PortDispatch.Read` returns open-bus
+  (`0xFF`) on a null source. Tracing `init_ramdisk`'s actual execution against this: its writes to
+  `0x95`/`0x96` are genuine no-ops, its read of `0x97` returns open-bus `0xFF`, which matches
+  neither `17` nor `65` — `ret nz` fires immediately, well before the signature-check/directory-erase
+  code ever runs. **No bank-select write, no stray I/O, no PC corruption — the probe is inert by
+  construction, the same "genuine silence" shape as every other presence-probe in this codebase,
+  and no parallel over-wide-listener mechanism exists anywhere else in the I/O dispatch either.**
+  Tests added confirming the inertness (`MachineTests.cs` +7): `OUT` to each of `0x95`/`0x96`/`0x97`
+  leaves the live-active bank untouched on both the atomic floppy+RAM board's 6-bank shape and an
+  explicit homebrew `BankCount` override, and `0x94` still works correctly immediately after those
+  three inert writes. Full `P2000.Machine.Tests`: 600/600 green. This closes out the "Recommended
+  next step" above with a negative result — **the owner's own port-aliasing brainwave, and both
+  refinements of it, are now provably dead**, not just empirically unlucky.
+- **Where this leaves the bug — root cause still fully open, and now narrower:** since neither the
+  checksum (ruled out by direct experiment above) nor the port-aliasing derailment (ruled out by
+  source-level proof above) is the cause, whatever produces the "lands back at BASIC" symptom is
+  NOT in this project's port/bank-select dispatch at all. The most promising remaining thread —
+  unchanged in substance from before, but now the ONLY live one — is still: what actually loads
+  JWSDOS's own binary into bank 1 at `0xE000` in the first place, when booting from a plain BASIC
+  cartridge with no `getdos` auto-boot. This session's own fresh reading of the newly-supplied
+  `Disk.asm` **rules `getdos` itself out as this loader**: it only runs when a cartridge's own
+  header requests DOS (bit 1 of the byte at `0x1000`) — never for a plain BASIC cartridge — and it
+  never touches `ramdisk_tmp_storage` anywhere. Neither `Startup.asm`, `jwsdos5.0.asm`, `Disk.asm`,
+  `Cassette.asm`, `Printer.asm`, nor `Symbols.asm` (the now-complete monitor-ROM disassembly,
+  confirmed byte-identical to the real `p2000.rom` via `P2000ROM.asm`'s own build check) contains
+  this boot-loader or populates `ramdisk_tmp_storage+1`..`+4` — it is a genuinely separate program,
+  most likely living on the JWSDOS boot disk itself rather than in ROM, still unsupplied/
+  undisassembled. **Recommended next step, now that static analysis has run out of leads:** use
+  the newly-built per-bank debugger (§3a, machine milestone 24 / UI milestone 17) to directly
+  inspect bank 1's actual contents at `0xE000`-`0xFFFF` and the live value of
+  `ramdisk_tmp_storage+1`..`+4` at the moment `DEFUSR=5:?USR(0)` is executed — this was always the
+  fallback once the disassembly-only hypotheses ran dry, and it's now a built, working tool rather
+  than a future one.
+- **NEW empirical result (owner, using the just-built per-bank debugger, 2026-07-30) — the
+  recommended next step above, done, and it changes the picture substantially.** Repro used this
+  time: JWSDOS disk mounted in drive 1, an ordinary BASIC cartridge in slot 1, **cold start** (not
+  manual `DEFUSR=5` activation). The debugger's new live bank indicator shows bank 1 selected
+  TWICE during boot, while two tracks are read from disk — i.e. **this cold-start path genuinely
+  does invoke a 2-track disk-boot sequence that lands data in bank 1**, contradicting this doc's
+  own prior claim (just above) that `getdos` "never runs for a plain BASIC cartridge" — that claim
+  needs correcting; either this cartridge's own header does request DOS after all, or the boot gate
+  that calls `getdos` doesn't key off the cartridge header bit the way previously assumed. **Using
+  the per-window bank override, the owner then inspected bank 1 directly: `0xE000`-`0xEFFF`
+  correctly holds JWSDOS's own image (matches `jwsdos5.0.asm` byte-for-byte); `0xF000`-`0xFFFF` is
+  entirely zero** — confirmed as the literal mechanism behind the reboot: falling off the end of
+  real code into a zero-filled page is an unbroken run of `NOP` (`0x00`) until PC wraps from
+  `0xFFFF` to `0x0000`, which is itself `di` / `jp start` in the monitor's own jump table (§ above)
+  — a cold-boot vector, not `RST 0`, but visually indistinguishable from "reboot to BASIC" at the
+  keyboard. **This is a materially different, and more precise, mechanism than the RST-0-checksum
+  or RST-38-open-bus guesses earlier in this entry — no checksum, no bank-switch device, no I/O at
+  all is involved; it's simply that bank 1's second half was never populated.**
+- **Re-reading `Disk.asm`'s `getdos` precisely against this result surfaces a real, disassembly-
+  grounded candidate mechanism (owner-supplied disk-image geometry: this JWSDOS disk is 40-track,
+  double-sided, with the disk owner's own confirmed on-disk layout T1/Side1 → image bytes
+  `0x0000`-`0x0FFF`, T1/Side2 → `0x1000`-`0x1FFF`, T2/Side1 → `0x2000`-`0x2FFF`, T2/Side2 →
+  `0x3000`-`0x3FFF` — cylinder-major, side-minor).** `getdos`'s own `disk_constants` table (copied
+  once via `LDIR` into RAM at the very start, then reused unchanged) encodes the "Disk IO" read
+  command with a drive/head byte (`0x01` → drive 1, head bit **0**) and a *separate* explicit
+  "side #" byte, also **`0x00`**. Across the whole two-track loop, **neither of those two fields is
+  ever touched again** — `read_track` only rewrites the command's sector-number byte (redundant,
+  already `1`); the between-reads step only increments `disk_track_num` (a separate RAM word) and
+  feeds it to `disk_gotrack`, which issues a completely different 4-byte "Goto Track"/Search
+  command (drive#+track# only, no side field at all) to physically seek the head to the next
+  cylinder. **Net effect, read directly from the code, not inferred: both track reads use side 0 —
+  only the CYLINDER advances between them.** So `getdos`, exactly as coded, reads (cylinder 1, side
+  0) into `0xE000`-`0xEFFF`, then (cylinder 2, side 0) into `0xF000`-`0xFFFF` — it **never reads
+  side 2 of any cylinder**. Under the owner's own confirmed disk layout, that's image offset
+  `0x0000` (T1S1 — correct, matches the observed good data) followed by image offset `0x2000`
+  (T2S1), **not** `0x1000` (T1S2). If this JWSDOS boot disk's actual system image occupies BOTH
+  SIDES of cylinder 1 (T1S1+T1S2, contiguous per the owner's layout) rather than two side-0
+  cylinders, `getdos` as literally written would never be able to load it correctly — landing
+  exactly on the observed symptom (T2S1 is a plausible candidate for "blank/unrelated" content on a
+  boot disk, matching the all-zero `0xF000`-`0xFFFF` result) — **not necessarily an emulator bug at
+  all, but a property of this ROM routine's fixed read pattern versus this specific disk's
+  layout.**
+- **Two things need checking before concluding that, both still open (2026-07-30):**
+  1. **Whether the emulator's own disk-image (cylinder, head, sector) → byte-offset mapping
+     actually matches the owner's stated real-disk convention** (cylinder-major, side-minor) —
+     this is the owner's own explicit ask and hasn't been verified against the C# source yet. If it
+     does NOT match, the whole geometry-based read above is moot and the emulation's own offset
+     formula is the bug to fix first, before re-examining `getdos`'s read pattern at all.
+  2. **Whether the emulator's FDC/disk-command handling honors the `getdos` command bytes
+     literally** (side `0` in the read command, cylinder-only advance via the Search command,
+     independent of any other implicit head-tracking state) — i.e. that the analysis above of what
+     `getdos` *asks for* matches what the emulator actually *delivers*.
+  See the dedicated investigation prompt for both checks. **If both check out**, the remaining
+  question shifts from "why is bank 1 half-empty" (answered: `getdos` never asked for the other
+  side) to "was this cold-start auto-boot ever supposed to load JWSDOS this way at all" — plausible
+  candidates: this cartridge unexpectedly sets the DOS-request bit, the boot gate doesn't key off
+  that bit the way assumed, or a real JWSDOS boot disk's system track is authored across two
+  side-0 cylinders rather than two sides of one cylinder (contradicting the assumption used above)
+  — each is a distinct, checkable next step, not yet distinguished.
+- **First check, same day: a false start, worth recording plainly.** CC's first pass concluded the
+  existing disk-image geometry formula (side-major, cylinder-minor) was empirically correct —
+  validated by finding known real directory filenames (`Spel1.dsk`'s "Fraxxon"/"Tralieen") at the
+  exact raw offsets that formula predicts. This was **circular**: it only proved the formula was
+  self-consistent with data already interpreted through it, not that it matched genuine independent
+  ground truth. Under that belief, the FDC command-dispatch check came back clean too (it
+  genuinely is — `Upd765.DispatchDataCommand` does read the head bit fresh from the command every
+  dispatch, and seeking can't affect it), so the conclusion drawn was "no bug anywhere; this
+  specific JWSDOS disk's own track-2/head-0 content is just genuinely blank on the fixtures on
+  hand — `getdos` is faithfully reading real blank content, not malfunctioning."
+- **Overturned the same day by independent ground truth.** The owner supplied a clean, known-good
+  JWSDOS binary reference (`assets/JWS.bin`, not derived from this project's own disk fixtures or
+  formula) and compared it directly against raw bytes in real disk images (`jws-sytem.dsk`,
+  `Spel1.dsk`). The reference's own second-track content matched raw disk offset `0x2000`-`0x213F`
+  byte-for-byte — not `0x1000` as the old formula implied. Combined with the owner's own direct
+  authority on the ROM (`getdos` loads exactly two PHYSICAL CYLINDERS, both head 0 — the monitor
+  ROM has no double-sided support at all), this sealed **cylinder-major, head-minor** as the
+  correct formula.
+- **Fixed:** `DskImage.SectorOffset` (`src/P2000.Machine/Devices/Fdc/DskImage.cs`) changed to
+  `cylinder * Sides * BytesPerTrack + head * BytesPerTrack + (sector-1) * BytesPerSector`;
+  `ImdFormat.Read`/`Write` had independently duplicated the old formula in two separate places
+  (never routed through `DskImage.SectorOffset`) and needed the identical fix. Single-sided images
+  are unaffected (the head term is always 0 when `Sides == 1` — this only ever mattered for
+  double-sided images). 5 existing tests that hardcoded raw offsets under the old formula were
+  updated, not weakened, to the corrected offsets; the real-fixture regression test moved off
+  `Spel1.dsk` (whose own raw `0x2800` region has a separately-flagged, deliberately-deferred
+  "duplicate content" oddity) onto `jws-sytem.dsk`'s clean match at `0x2000`. Full
+  `P2000.Machine.Tests`: 604/604 green.
+- **Confirmed via an actual observed boot (owner, 2026-07-30, same day): "JWS Dos boots perfectly
+  now."** This closes the JWSDOS-activation bug end to end. See `docs/P2000T-disk-formats.md` §2
+  and §7 item 9 for the parallel write-up and the geometry-formula fix's ripple effects on that
+  doc's own CHS interpretations (in particular, the long-standing "why do this disk's active
+  directory entries read `DE_head=1`" tension is now understood much more simply: that data
+  physically IS on head 1 once the correct cylinder-major formula is applied, rather than being a
+  genuine anomaly needing a defragment-reassignment explanation to justify its mere existence).
+- **Follow-up audit (2026-07-31, CC, via direct FDC replay against real `Spel1.dsk`) — corrects
+  the paragraph above and closes most of what it left open.** `dir_side1_prep`'s real target
+  turned out to be raw `0x2800`-`0x2FFF` and `dir_side2_prep`'s raw `0x3000`-`0x37FF` — both
+  genuine, healthy, real per-side JWSDOS directories (20 and 18 files respectively), NOT a
+  "stale cluster" as this doc's own disk-formats companion had theorized for years. The
+  "duplicate content" actually sits at raw `0x1000`-`0x1FFF` (cylinder 0's own flip side, not
+  `0x2800`/`0x3000` as this paragraph previously said) — a near-exact copy of both real
+  directories concatenated, differing by exactly one byte. **Real, confirmed bug found as a
+  direct consequence, not yet fixed:** the Floppy Drives window's `DskImage.ReadDirectory()`
+  only ever reads one fixed offset (`0x1800`, itself part of that duplicate region, not either
+  real directory) — it can never show side 1's files on any double-sided JWSDOS disk. See §3a's
+  UI milestone 15 entry above and `docs/P2000T-disk-formats.md` §2/§7 for the full trace, the
+  corrected on-disk layout, and the fix direction. **Still open, deliberately not chased
+  further:** why the cylinder-0/head-1 duplicate exists at all.
 
 ---
 

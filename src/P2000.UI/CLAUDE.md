@@ -1398,6 +1398,88 @@ builds did. Do not advance while the current milestone is red. Record spec corre
       UI, register-file/status view), machine milestone 24 (`GetBankRaw`, active-bank snapshot
       value, bank-qualified breakpoint store — all consumed here).
 
+18. **Bugfix — Config window's Capacity/Sides fields go stale after a live "Adjust and remount"
+    in the Disk Drives window, and a subsequent Apply silently reverts the live fix** (NEW, owner
+    bug report 2026-07-31, depends on ms.14g/20e already built above — read that block in full
+    first, it explains why Capacity/Sides was deliberately left OUT of the live-delegation
+    treatment ImagePath got).
+    - **Repro (owner):** a `.dsk` doesn't match the drive's configured Capacity/Sides; the Disk
+      Drives window's mismatch dialog offers "Adjust and remount" (`ReconfigureAndRemount`, ms.14e
+      — confirm the exact UI button label matches this if it's since changed), which live-updates
+      the drive's real geometry. The Config window — whether already open, or opened after — does
+      NOT reflect the new Capacity/Sides in its own row fields. Clicking **Apply** then pushes the
+      Config window's own (still-stale, pre-reconfigure) Capacity/Sides back into the machine,
+      silently undoing the live fix the owner just made.
+    - **This is the gap ms.14g's own explicit design choice left open, not a regression in
+      that milestone — surfacing it now that a real user hit it.** Ms.14g gave `ImagePath` live-
+      delegation treatment specifically ("the row's displayed `ImagePath` reflects what's now
+      actually mounted... rather than tracking a separately-authored pending value") but
+      deliberately left Capacity/Sides alone ("still genuine topology, still require Apply").
+      That reasoning holds for topology changes the OPERATOR makes by editing the Config window's
+      own fields — it doesn't hold for topology changes made LIVE, elsewhere, via
+      `ReconfigureAndRemount`, which is exactly what this repro does. The row's own Capacity/Sides
+      state needs to track live reality the same way `ImagePath` already does, at least for this
+      one path.
+    - **Fix direction (verify against the actual current code before committing to it — this
+      project's Config/Disk-Drives-window interaction has had several rounds of refinement since
+      ms.14g, don't assume nothing else has shifted):** when a row's drive already exists in the
+      live topology, its Capacity/Sides display should read back from the live drive's actual
+      current geometry (the same place `CaptureCurrentConfig()` already reads from — machine
+      milestone 20d fixed exactly this staleness class for `CaptureCurrentConfig()` itself,
+      reference doc §3a/§5d) rather than from whatever was set at Config-window-open time or
+      typed into the field since. Two shapes to choose between, pick whichever fits the existing
+      `FloppyDriveRowVm ↔ live DiskDriveVm` relationship ms.14g already built for `ImagePath`:
+      (a) make Capacity/Sides live-reflecting the same way `ImagePath` is (read-only display of
+      live reality when the drive is live; only meaningfully editable for a not-yet-live/offline
+      row, mirroring the `ImagePath` split exactly), or (b) if Capacity/Sides must stay editable
+      even for a live drive (e.g. to stage a config-window-driven, Apply-gated topology change
+      independent of what's live-mounted), then **`Apply` itself must not blindly push a row's
+      current field value if it was never refreshed after a live change** — at minimum, refresh
+      every live row's Capacity/Sides from the actual live drive immediately before computing
+      what Apply needs to change, so Apply only ever pushes deltas the operator actually made in
+      this window, never a stale snapshot from before a live reconfigure. **Whichever shape:
+      don't silently drop the "Adjust and remount" fix** — that's the concrete, user-visible
+      failure to close.
+    - **Tests:** live "Adjust and remount" the Disk Drives window's own way, then open (or bring
+      to front) the Config window — its row shows the NEW geometry, not the pre-mismatch one;
+      clicking Apply immediately after a live reconfigure, with no other edits, is a no-op (does
+      NOT revert the drive to its pre-reconfigure geometry); an actual, deliberate Capacity/Sides
+      edit made in the Config window after a live reconfigure still applies correctly (regression
+      guard that the fix doesn't break ordinary Config-window-driven topology changes). → commit.
+    - **Applies to:** `src/P2000.UI/ViewModels/ConfigWindowVm.cs`, `FloppyDriveRowVm.cs` (or
+      wherever Capacity/Sides is actually bound — verify exact file/class names against the
+      current source), `DiskDriveVm.cs` (`ReconfigureAndRemount`), reference doc §3a (ms.14g
+      block) and §5d (`CaptureCurrentConfig()` staleness-class precedent, machine ms.20d).
+
+19. **Disk topology display in the Floppy Drives window's per-drive tabs** (NEW, owner request
+    2026-07-31). Show each drive's actual current geometry in its own tab — track count and
+    single/double-sided (e.g. "40 Tracks, DD"), sourced from the SAME live drive state ms.14g
+    already reads for `ImagePath`/item 18 above will read for Capacity/Sides — not a separately
+    tracked value, so it can never drift from what the drive is actually configured as.
+    - **Placement — your call, but keep it unobtrusive:** alongside the tab's existing content
+      (drive letter/label, mount status, dirty asterisk — check current `DiskDriveWindow.axaml`
+      for exactly what's already there before adding more). A small subtitle/caption under the
+      tab header, or appended to the existing header text, are both reasonable; don't crowd out
+      the dirty-asterisk indicator (reference doc §3a already flags that as something to keep
+      visible).
+    - **Format:** track count as a plain integer (e.g. "40 Tracks"); sidedness as "SD"/"DD"
+      (single/double-sided) — confirm this abbreviation matches how sidedness is referred to
+      elsewhere in this project's own UI (the geometry-mismatch dialogs, ms.14e/14g) rather than
+      inventing new terminology; if this project already uses "SS"/"DS" somewhere user-facing
+      (the JWSDOS on-disk label itself uses `'D'`/`'S'` for "DS"/"SS", per
+      `docs/P2000T-disk-formats.md` §3), match that instead of introducing a third convention.
+    - **Live-updating:** if a drive's geometry changes live (a "Adjust and remount," or any other
+      live reconfigure path), the tab's topology display updates immediately — same
+      live-reflects-reality principle as item 18 above, not a separately-cached value that could
+      itself go stale the same way Capacity/Sides just did.
+    - **No topology shown for an empty/no-drive slot** — nothing to display.
+    - **Tests:** a mounted drive's tab shows the correct track count/sidedness for its configured
+      geometry; a live "Adjust and remount" updates the displayed topology immediately, without
+      needing the tab to be re-opened or the window refreshed; an empty drive slot shows no
+      topology text (or an explicit placeholder, your call, just not stale/wrong data). → commit.
+    - **Applies to:** `src/P2000.UI/Views/DiskDriveWindow.axaml`(.cs), whatever VM backs each tab's
+      header content (likely `DiskDriveVm` or a per-tab wrapper — verify against current source).
+
 ---
 
 ## 15. Deferred (build the seams now, implement later)
@@ -1455,6 +1537,79 @@ project.
 - **Applies to:** reference doc §3a / <file>
 - **Synced:** yes (YYYY-MM-DD)
 -->
+
+### 2026-07-31 — FIXED (item 18): Config window's Capacity/Sides go stale after a live "Adjust and remount," and Apply reverted it
+- **Trigger:** owner bug report (item 18 above). Investigated per this project's own convention —
+  confirmed the exact relationship against current source, reproduced the bug directly, THEN
+  fixed it.
+- **Confirmed relationship (against actual current source, not assumed names):**
+  `FloppyDriveRowVm.Capacity`/`.Sides` are plain `[ObservableProperty]` fields with no live-
+  refresh mechanism; `DiskDriveVm.Capacity`/`.Sides` (plain, non-observable properties) are
+  mutated directly by `DiskDriveVm.ReconfigureAndRemount(tracks, sides)` — the live "Adjust and
+  remount" action, which requires an actual mounted disk (`fdc is null || current is null` is a
+  no-op early return) and raises `GeometryMismatchDetected` on a real mismatch.
+  `ConfigWindow.axaml.cs`'s `OnOpened` already calls `LoadFromCurrentConfig()` every time the
+  window is shown, but (before this fix) that read `_runner.Machine.Config` — a stale,
+  construction-time snapshot that never reflects a live reconfigure.
+  `Machine.CaptureCurrentConfig()` (machine ms.20c) DOES already reflect live reality for
+  Capacity/Sides (confirmed by reading it directly) — it was simply never called from here.
+- **Reproduced directly, matching the owner's report exactly** (temporary test, deleted after
+  confirming): mount a blank disk on drive 1, `ReconfigureAndRemount(80, DiskSides.Double)`,
+  then construct a `ConfigWindowVm` — its row showed the STALE `Capacity=40`/`Sides=Single`;
+  clicking Apply then pushed that stale pair back into `runner.Machine.Config`, reverting the
+  live 80/Double change back to 40/Single. Confirmed via console output before any fix.
+- **Fixed, combining both directions the bug report's own spec offered, pragmatically:**
+  1. `LoadFromCurrentConfig()` now reads from `_runner.Machine.CaptureCurrentConfig()` instead of
+     `_runner.Machine.Config` — fixes the "open/bring-forward the window after a live reconfigure"
+     case for free, since `OnOpened` already calls this method every time the window is shown.
+  2. `FloppyDriveRowVm` gained `CapacityBaseline`/`SidesBaseline` (internal, set alongside
+     `Capacity`/`Sides` in `LoadFloppyDrivesFrom`) — tracks "value as of the last sync," so a row
+     can distinguish "untouched since sync" (safe to silently refresh from live state) from
+     "operator deliberately edited it" (must never be silently overwritten). A new private
+     `RefreshLiveGeometryFromDrives()` walks every row; for each, if the CURRENT value still
+     equals its baseline, it's replaced with the live drive's actual Capacity/Sides (and the
+     baseline advances to match); if the operator has since changed it, it's left alone.
+     `Apply()` now calls this as the very first line inside its `try` block, before `BuildConfig()`
+     — this is what defensively covers the harder case (a window already open and frontmost,
+     never re-triggering `OnOpened`, with no other edits) that step 1 alone can't reach.
+- **Second trigger path, raised mid-investigation by the owner ("the same pop-up option also
+  appears in the machine configuration window") — confirmed already handled, no separate logic
+  needed.** Traced `ConfigWindow.axaml.cs`'s `OnDataContextChanged`: it only subscribes to
+  `_vm.OfflineMismatchDetected`, not any live-mismatch event. The live mismatch dialog for a
+  Config-window-triggered mount (`ConfigWindowVm.PickImageForRowAsync` → `DiskDriveVm.MountBytes`,
+  ms.14g) is actually shown by the SHARED `DisplayWindow`'s unconditional subscription to
+  `DiskDriveWindowVm.GeometryMismatchDetected` (the same `DiskDriveWindowVm` instance is passed to
+  both `DisplayWindowVm` and `ConfigWindowVm`). Both trigger paths converge on the exact same
+  `DiskDriveVm.ReconfigureAndRemount()` call, and the fix above reads live `DiskDriveVm` state
+  directly, path-agnostically — so both paths are covered by the same fix with no additional code.
+- **Tests (`ConfigWindowVmTests.cs`, +3):**
+  `LiveAdjustAndRemount_ThenOpenConfigWindow_ShowsNewGeometry_AndApplyIsANoOp` — the primary repro,
+  now passing: constructing the window after a live reconfigure shows the new geometry, and Apply
+  immediately afterward (no further edits) leaves `runner.Machine.Config` at the reconfigured
+  values, not reverted.
+  `ApplyAfterLiveReconfigure_WithNoInterveningWindowRefresh_StillHonorsTheLiveChange` — the harder
+  case: window constructed BEFORE the live reconfigure, never reconstructed/reloaded afterward;
+  only `Apply`'s own defensive refresh saves this one.
+  `DeliberateEditAfterLiveReconfigure_StillAppliesCorrectly` — regression guard: after a live
+  reconfigure shows 80/Double, the operator deliberately types 35/Single into the row; Apply must
+  push 35/Single, not silently keep 80/Double.
+  Verified via `runner.Machine.Config.FloppyDrives` after Apply (the CONFIGURED topology, matching
+  the reset-to-apply model), not a live mounted disk's own Tracks/Sides — an earlier draft of the
+  repro threw a `NullReferenceException` trying to read `Fdc.GetDisk(1)` after Apply, since
+  `Reconfigure()` cold-resets and only remounts whatever the pushed `MachineConfig`'s own
+  `ImagePath` says (none, in this repro). Full `ConfigWindowVmTests.cs`: 23/23 green. Full
+  `P2000.UI.Tests`: 237/238 green — the one failure
+  (`DisplayWindowKeyboardNavigationTests.KeyHeldAcrossMenuOpen_StillReleasesCleanly_...`) is
+  confirmed pre-existing and unrelated (reproduced identically on `main` before this change, via
+  `git stash`).
+- **Item 19 (disk topology display in the Floppy Drives window's per-drive tabs) deliberately
+  left completely untouched** — separate owner request, its own future prompt/commit, per this
+  project's own convention of independent changes for independent concerns.
+- **Applies to:** `src/P2000.UI/ViewModels/ConfigWindowVm.cs` (`FloppyDriveRowVm.CapacityBaseline`/
+  `.SidesBaseline`, `LoadFromCurrentConfig`, `LoadFloppyDrivesFrom`,
+  `RefreshLiveGeometryFromDrives`, `Apply`), `tests/P2000.UI.Tests/ViewModels/ConfigWindowVmTests.cs`.
+  Machine ms.20c (`CaptureCurrentConfig`, consumed here, unchanged).
+- **Synced:** no.
 
 ### 2026-07-30 — FIXED: milestone 12/17's Save/Load-to-address in a memory watch window didn't respect the window's own pinned bank
 - **Trigger:** owner question, confirmed and diagnosed correctly against the actual source

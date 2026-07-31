@@ -27,6 +27,17 @@ public sealed partial class FloppyDriveRowVm : ObservableObject
     [ObservableProperty] private int _capacity = 40;
     [ObservableProperty] private DiskSides _sides = DiskSides.Single;
 
+    /// <summary>Capacity/Sides as of the last time they were synced FROM somewhere authoritative
+    /// (a loaded `.cfg`, the live machine's own config, or a live drive's actual geometry) —
+    /// project CLAUDE.md §14 item 18, 2026-07-31 bugfix. Distinguishes "the operator never
+    /// touched this since the last sync" (safe to silently refresh from live reality, e.g. after
+    /// a live "Adjust and remount" elsewhere) from "the operator deliberately edited this" (must
+    /// never be silently overwritten) — see <see cref="ConfigWindowVm.RefreshLiveGeometryFromDrives"/>.
+    /// Initialized to match <see cref="Capacity"/>/<see cref="Sides"/>'s own defaults so a freshly
+    /// constructed, never-loaded row isn't mistaken for "deliberately edited."</summary>
+    internal int CapacityBaseline { get; set; } = 40;
+    internal DiskSides SidesBaseline { get; set; } = DiskSides.Single;
+
     /// <summary>Manually-authored initial image path (project CLAUDE.md milestone 14c) — for
     /// hand-authoring a <c>.cfg</c> (e.g. a "starter kit" for someone else) without a machine
     /// running to capture from. Complementary to, not a substitute for,
@@ -197,7 +208,13 @@ public sealed partial class ConfigWindowVm : ObservableObject
 
     public void LoadFromCurrentConfig()
     {
-        var cfg = _runner.Machine.Config;
+        // CaptureCurrentConfig() (machine ms.20c), not the stale construction-time Machine.Config
+        // — project CLAUDE.md §14 item 18, 2026-07-31 bugfix: a plain Machine.Config read never
+        // reflected a live "Adjust and remount" elsewhere (Disk Drives window ms.14e, or the SAME
+        // dialog reachable via this window's own live image-picking flow, ms.14g), so re-opening
+        // the Config window after one showed the drive's PRE-reconfigure Capacity/Sides, which
+        // Apply then silently pushed back — reverting the fix the operator just made.
+        var cfg = _runner.Machine.CaptureCurrentConfig();
         RamVariant = cfg.RamVariant;
         Board = cfg.Board;
         Slot1CartridgePath = cfg.Slot1CartridgePath ?? "";
@@ -247,6 +264,10 @@ public sealed partial class ConfigWindowVm : ObservableObject
                 row.ImagePath = d.ImagePath ?? "";
                 row.Capacity = d.Capacity;
                 row.Sides = d.Sides;
+                // This IS the fresh baseline — whatever was just loaded, live or from a file
+                // (project CLAUDE.md §14 item 18).
+                row.CapacityBaseline = d.Capacity;
+                row.SidesBaseline = d.Sides;
             }
         }
     }
@@ -268,11 +289,38 @@ public sealed partial class ConfigWindowVm : ObservableObject
 
     // ── Commands ──────────────────────────────────────────────────────────────
 
+    /// <summary>Refreshes every row backed by a LIVE drive to that drive's CURRENT actual
+    /// Capacity/Sides — but only when the row's displayed value still equals its own baseline
+    /// (the value as of the last load/sync), i.e. the operator hasn't deliberately edited it
+    /// since. A genuine edit is never silently overwritten (project CLAUDE.md §14 item 18,
+    /// 2026-07-31 bugfix).
+    ///
+    /// Guards <see cref="Apply"/> against reverting a live "Adjust and remount" REGARDLESS of
+    /// window-focus history — re-showing the Config window already refreshes via
+    /// <see cref="LoadFromCurrentConfig"/>, but a window that stayed visible/frontmost the whole
+    /// time (never re-triggering that path) would otherwise still push a stale pre-reconfigure
+    /// value on Apply.</summary>
+    private void RefreshLiveGeometryFromDrives()
+    {
+        foreach (var row in FloppyDriveRows)
+        {
+            var live = FindLiveDrive(row.DriveIndex);
+            if (live is null) continue;
+
+            if (row.Capacity == row.CapacityBaseline) row.Capacity = live.Capacity;
+            if (row.Sides == row.SidesBaseline) row.Sides = live.Sides;
+
+            row.CapacityBaseline = live.Capacity;
+            row.SidesBaseline = live.Sides;
+        }
+    }
+
     [RelayCommand]
     private void Apply()
     {
         try
         {
+            RefreshLiveGeometryFromDrives();
             var config = BuildConfig();
             _runner.Reconfigure(config);
             // Proactive mismatch surfacing (project CLAUDE.md milestone 14g): force the Disk

@@ -254,6 +254,127 @@ public class ConfigWindowVmTests
         runner.Dispose();
     }
 
+    /// <summary>Bugfix regression (2026-07-31): a live "Adjust and remount" changes a drive's
+    /// REAL geometry (<c>DiskDriveVm.ReconfigureAndRemount</c>) without going through Apply.
+    /// Constructing/opening the Config window AFTER that must show the NEW geometry — not the
+    /// stale pre-reconfigure values — and clicking Apply immediately afterward, with no further
+    /// edits, must be a no-op (it must not revert the live change). Verifies via
+    /// <c>runner.Machine.Config</c> (the CONFIGURED topology after Apply's reset-to-apply), not a
+    /// live mounted disk's own Tracks/Sides, since Reconfigure() cold-resets and only remounts
+    /// whatever the pushed MachineConfig's FloppyDriveConfig.ImagePath says.</summary>
+    [AvaloniaFact]
+    public async Task LiveAdjustAndRemount_ThenOpenConfigWindow_ShowsNewGeometry_AndApplyIsANoOp()
+    {
+        var runner = new EmulationRunner();
+        runner.Start();
+        await Task.Delay(60);
+        runner.Reconfigure(new MachineConfig
+        {
+            Board = InternalBoard.FloppyRam,
+            RamVariant = RamVariant.T102,
+            FloppyDrives = new[] { new FloppyDriveConfig { DriveIndex = 1, Capacity = 40, Sides = DiskSides.Single } },
+        });
+        await Task.Delay(60);
+
+        var diskVm = new DiskDriveWindowVm(runner);
+        var drive = diskVm.Drives.Single(d => d.DriveIndex == 1);
+        drive.NewBlankDiskCommand.Execute(null); // a disk must actually be mounted first
+        drive.ReconfigureAndRemount(80, DiskSides.Double); // the live change under test
+
+        var vm = new ConfigWindowVm(runner, diskVm);
+        Assert.Equal(80, vm.FloppyDriveRows[0].Capacity);
+        Assert.Equal(DiskSides.Double, vm.FloppyDriveRows[0].Sides);
+
+        vm.ApplyCommand.Execute(null);
+        await Task.Delay(60);
+
+        var afterApply = runner.Machine.Config.FloppyDrives.Single(d => d.DriveIndex == 1);
+        Assert.Equal(80, afterApply.Capacity);
+        Assert.Equal(DiskSides.Double, afterApply.Sides);
+
+        runner.Dispose();
+    }
+
+    /// <summary>Bugfix regression (2026-07-31): the harder case — a Config window constructed
+    /// BEFORE a live reconfigure, never reopened/reconstructed afterward (the "already open,
+    /// brought forward, never refocused" case `OnOpened`'s own `LoadFromCurrentConfig()` call
+    /// can't help with). Only `Apply`'s own defensive `RefreshLiveGeometryFromDrives()` can save
+    /// this — Apply must still not revert the live reconfigure.</summary>
+    [AvaloniaFact]
+    public async Task ApplyAfterLiveReconfigure_WithNoInterveningWindowRefresh_StillHonorsTheLiveChange()
+    {
+        var runner = new EmulationRunner();
+        runner.Start();
+        await Task.Delay(60);
+        runner.Reconfigure(new MachineConfig
+        {
+            Board = InternalBoard.FloppyRam,
+            RamVariant = RamVariant.T102,
+            FloppyDrives = new[] { new FloppyDriveConfig { DriveIndex = 1, Capacity = 40, Sides = DiskSides.Single } },
+        });
+        await Task.Delay(60);
+
+        var diskVm = new DiskDriveWindowVm(runner);
+        var drive = diskVm.Drives.Single(d => d.DriveIndex == 1);
+        drive.NewBlankDiskCommand.Execute(null);
+
+        var vm = new ConfigWindowVm(runner, diskVm); // constructed BEFORE the live reconfigure
+        Assert.Equal(40, vm.FloppyDriveRows[0].Capacity);
+
+        drive.ReconfigureAndRemount(80, DiskSides.Double); // live change happens AFTER construction
+        // vm is intentionally never reconstructed/reloaded here.
+
+        vm.ApplyCommand.Execute(null);
+        await Task.Delay(60);
+
+        var afterApply = runner.Machine.Config.FloppyDrives.Single(d => d.DriveIndex == 1);
+        Assert.Equal(80, afterApply.Capacity);
+        Assert.Equal(DiskSides.Double, afterApply.Sides);
+
+        runner.Dispose();
+    }
+
+    /// <summary>Bugfix regression (2026-07-31): a deliberate Capacity/Sides edit made in the
+    /// Config window AFTER a live reconfigure must still win at Apply — the baseline-tracked
+    /// refresh in <c>RefreshLiveGeometryFromDrives()</c> must only silently adopt the live value
+    /// while the row is untouched since its last sync; once the operator has edited it, that
+    /// edit must never be silently overwritten by a live value.</summary>
+    [AvaloniaFact]
+    public async Task DeliberateEditAfterLiveReconfigure_StillAppliesCorrectly()
+    {
+        var runner = new EmulationRunner();
+        runner.Start();
+        await Task.Delay(60);
+        runner.Reconfigure(new MachineConfig
+        {
+            Board = InternalBoard.FloppyRam,
+            RamVariant = RamVariant.T102,
+            FloppyDrives = new[] { new FloppyDriveConfig { DriveIndex = 1, Capacity = 40, Sides = DiskSides.Single } },
+        });
+        await Task.Delay(60);
+
+        var diskVm = new DiskDriveWindowVm(runner);
+        var drive = diskVm.Drives.Single(d => d.DriveIndex == 1);
+        drive.NewBlankDiskCommand.Execute(null);
+        drive.ReconfigureAndRemount(80, DiskSides.Double);
+
+        var vm = new ConfigWindowVm(runner, diskVm);
+        Assert.Equal(80, vm.FloppyDriveRows[0].Capacity); // shows the live value first
+
+        // Operator deliberately overrides it to something else.
+        vm.FloppyDriveRows[0].Capacity = 35;
+        vm.FloppyDriveRows[0].Sides = DiskSides.Single;
+
+        vm.ApplyCommand.Execute(null);
+        await Task.Delay(60);
+
+        var afterApply = runner.Machine.Config.FloppyDrives.Single(d => d.DriveIndex == 1);
+        Assert.Equal(35, afterApply.Capacity); // the deliberate edit wins, not the live 80
+        Assert.Equal(DiskSides.Single, afterApply.Sides);
+
+        runner.Dispose();
+    }
+
     /// <summary>Test (e): a `.cfg` with only index 1 enabled collapses to count 1 — the
     /// regression guard replacing the OLD "index 0 alone → count 1" case, which must no longer be
     /// how count-1 configs are produced or expected.</summary>

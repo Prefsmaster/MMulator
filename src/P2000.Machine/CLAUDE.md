@@ -1624,6 +1624,97 @@ marked synced. Do NOT edit the reference doc from this project.
 - **Synced:** yes (2026-07-05, into P2000T-reference.md + device guides)
 -->
 
+### 2026-07-31 — Audit: JWSDOS directory/geometry conclusions re-derived under the corrected cylinder-major formula, plus a head-selection encoding check — one real prior mislabeling found and corrected, no emulator bug found
+- **Trigger:** owner follow-up to the 2026-07-30 `SectorOffset` fix — several of this project's
+  own conclusions about `Spel1.dsk`'s directory layout (which routine reads what, and where)
+  were derived using the OLD, disproven side-major formula, or from disassembly arithmetic
+  alone. Audit request, not a presumed bug. All four items below were settled by driving the
+  real `Upd765`/`DskImage` code directly against real `Spel1.dsk` bytes (temporary scratch
+  tests, removed after use) — not by more disassembly-only reasoning, per the prompt's own
+  instruction (arithmetic-only reasoning is exactly what produced the geometry bug's own false
+  start the same day).
+- **Item 1 — the drive-byte-bit-2-for-head convention: CHECKED DIRECTLY, no bug.**
+  `jwsdos5.0.asm`'s `execute_disk_IO` sets an explicit head byte (`dsk_transfer_cmd_head`,
+  `0x6076`) AND separately XORs the transfer command's own drive byte
+  (`dsk_transfer_cmd_drive`, `0x6074`) by `0x04` for head 1 — but SEEK/RECALL always use the
+  plain, un-XORed drive number. Traced these RAM addresses against `Symbols.asm` and confirmed
+  they are the EXACT SAME cells the monitor ROM's own `getdos`/`Disk.asm` command template uses
+  (`disk_drive_num=0x6074`, `disk_track_num=0x6075`, `disk_side=0x6076`, `disk_sector_num=
+  0x6077`) — JWSDOS literally reuses the ROM's own command buffer, not a separate one, and
+  routes actual FDC command issuance through the SAME monitor-ROM entry points (`MON_DSK_gotrack`
+  = `0x0F7D` = `Disk.asm`'s `disk_gotrack`, already fully traced in the 2026-07-30 investigation).
+  `Upd765.DispatchDataCommand` (`Devices/Fdc/Upd765.cs:645,658`) reads `drive` from
+  `_commandBuffer[1] & 0x03` (masks bit 2 away entirely) and `head` from the SEPARATE, explicit
+  `_commandBuffer[3] & 0x01` (the real H field) — so JWSDOS's bit-2-of-drive XOR is completely
+  inert for this emulator's dispatch: it gets masked away regardless of whether it was applied,
+  and the real head selection comes from the explicit H byte, which JWSDOS sets correctly and
+  independently of the XOR either way. `DispatchSeek`/`DispatchRecalibrate` mask the same way
+  (`_commandBuffer[1] & 0x03`), so `_cylinder[drive]` is indexed identically by SEEK and by the
+  following transfer regardless of head — no cylinder-tracking mismatch, contrary to the
+  hypothesis raised in the prompt. **No bug, no fix needed.**
+- **Item 2 — `dir_side1_prep`'s real target, traced via direct FDC execution against real
+  `Spel1.dsk`: raw `0x2800`, NOT `0x1800`.** Replayed the exact command bytes `dir_side1_prep`
+  issues (SEEK to cylinder 1 via the shared `disk_gotrack`/1-based-track-minus-1 mechanism
+  already confirmed 2026-07-30; then a TRUE READ DATA transfer — found along the way that
+  JWSDOS's own read opcode is `0x46`/`FDC_mode_read`, confirmed from `jwsdos5.0.asm:136-137`,
+  NOT `0x42`/READ A TRACK the way `getdos` uses — JWSDOS needs `R` honoured to start mid-track at
+  sector 9, which READ A TRACK's "ignore R" behaviour would break) directly against a `DskImage`
+  built from the real file. Result: byte-for-byte identical to raw `0x2800`, the STALE 20-entry
+  cluster ("Fraxxon + scores..."), NOT the active 18-entry directory ("Tralieenspel"/"BABA") at
+  `0x1800`. **This corrects the 2026-07-30 first-pass doc correction, which (done from
+  disassembly alone, explicitly flagged as leaving "which routine" open) had assumed
+  `dir_side1_prep` was the routine landing on the active directory.** It isn't — it's the stale
+  cluster.
+- **Item 3 — `dir_side2_prep` IS the routine that reads the active directory, confirmed at
+  raw `0x3000` (cylinder 1/head 1), and the `Spel1.dsk` "duplicate content" oddity is CONFIRMED
+  real, not coincidental.** Same direct-execution method: `dir_side2_prep`'s exact command
+  (same SEEK target — cylinder selection is head-agnostic — then READ DATA with `H=1`, `R=1`,
+  drive byte `0x05` i.e. drive 1 XOR'd by 4, confirming the XOR really is inert per item 1) landed
+  on raw `0x3000`, matching the active directory byte-for-byte. **This is the first
+  byte-confirmed answer to `docs/P2000T-disk-formats.md` §7 item 2 ("where does side 2's
+  directory live") — cylinder 1/head 1, raw `0x3000`-`0x37FF`** — superseding the arithmetic-only
+  "strong candidate" status it's carried until now.
+  - **The duplicate-content puzzle is now precisely characterized (not solved — the owner is
+    still thinking about the WHY, deliberately not chased further here):** raw `0x1000`-`0x1FFF`
+    (cylinder 0/head 1, "the flip side of the boot track") is NOT a duplicate of one clean 4 KB
+    block — it's a duplicate of TWO DIFFERENT sector ranges stitched together: its first half
+    (`0x1000`-`0x17FF`) is an EXACT byte-for-byte match of `dir_side1_prep`'s real target's full
+    8-sector span (`0x2800`-`0x2FFF`, the stale cluster); its second half (`0x1800`-`0x1FFF`) is
+    a 2047-of-2048-byte match of `dir_side2_prep`'s real target's full 8-sector span
+    (`0x3000`-`0x37FF`, the active directory) — the ONE differing byte sits at directory-entry
+    offset 22 (the transfer-address field, format doc §4) of one specific entry, itself
+    consistent with the doc's own existing "stale RAM snapshot at write time" theory rather than
+    a new anomaly. Also confirmed while tracing this: cylinder 1/head 0's OWN first half
+    (`0x2000`-`0x27FF`, sectors 1-8, never read by any prep routine) is the real DOS-code content
+    already identified 2026-07-30 as matching `getdos`'s second boot-track read target; cylinder
+    1/head 1's own second half (`0x3800`-`0x3FFF`) is genuinely blank (all-zero) — consistent with
+    only 8 of that region's 16 sectors ever being written.
+- **Item 4 — the `JWS Systeem Disk` write-scope claim (format doc §7 item 3): UNVERIFIABLE with
+  what's available in this repo, not re-derived — flagged, not guessed.** Searched
+  `docs/Monitor Documented Disassembly/` (contains `Cassette.asm`/`Disk.asm`/`P2000ROM.asm`/
+  `Printer.asm`/`Startup.asm`/`Symbols.asm` — the monitor ROM only) and grepped the whole `docs/`
+  tree for "systeem" — no disassembly of the `JWS Systeem Disk` PROGRAM itself (as opposed to
+  `jwsdos5.0.asm`, the resident DOS, a different program) exists in this repo. `docs/JWS.pdf`
+  exists (10 pages) but could not be rendered in this environment (`pdftoppm` unavailable); by
+  filename and page count it reads far more likely as a scanned manual than a disassembly
+  listing, consistent with every other disassembly in this project being supplied as plain
+  `.asm` text rather than PDF — but this is not confirmed either way. The §7 item 3 write-scope
+  claim (`JWS Systeem Disk` writes a full track 1 plus only sectors 1-8 of track 2) still rests
+  entirely on the owner's own 2026-07-20 disassembly pass, done before the geometry fix, and
+  remains **not yet re-verified** against the corrected formula.
+- **Summary for the human's sync pass:** items 2 and 3 together mean `docs/P2000T-disk-
+  formats.md` §2's on-disk-layout table and §7 items 2-3 need a real content update (which
+  routine reads which raw range, and cylinder 1/head 1 as side 2's confirmed directory location),
+  not just the "raw offsets unchanged, CHS labels flip" framing the first-pass correction used.
+  Item 4 stays an open item, now explicitly re-flagged as unverified-post-fix rather than
+  silently assumed still valid.
+- **Applies to:** `docs/P2000T-disk-formats.md` §2 (on-disk layout table, `dir_side1_prep`/
+  `dir_side2_prep` identification), §7 items 2 (side 2 directory location — now answered) and 3
+  (write-scope claim — flagged unverified), `docs/P2000T-reference.md` §5d. No source files
+  changed — this is an audit with no code fix; `src/P2000.Machine/Devices/Fdc/Upd765.cs`
+  (`DispatchDataCommand`/`DispatchSeek`/`DispatchRecalibrate`) confirmed correct as-is for item 1.
+- **Synced:** no
+
 ### 2026-07-30 — CORRECTION (supersedes the entry immediately below): disk-image raw layout FIXED to cylinder-major/head-minor — the entry below's "no bug" conclusion was wrong
 - **This entry OVERTURNS the "geometry mapping vs. getdos's fixed-side-0 read" entry immediately
   below.** That entry concluded the side-major formula was correct, based on a same-day, real
@@ -1700,7 +1791,10 @@ marked synced. Do NOT edit the reference doc from this project.
   `tests/P2000.Machine.Tests/Boot/DiskBootTests.cs`. Reference doc §5d's disk-geometry block and
   `docs/P2000T-disk-formats.md` §2's "Generalized raw sector-offset formula" (needs re-deriving
   from cylinder-major, not side-major) and §7 item 9.
-- **Synced:** no
+- **Synced:** yes (2026-07-30, into `docs/P2000T-reference.md` §5d — bug entry re-headered
+  RESOLVED AND FIXED with the full false-start-then-correction narrative appended; into
+  `docs/P2000T-disk-formats.md` §2 — sector-offset formula corrected to cylinder-major/head-minor,
+  with the DE_head tension re-resolved and item 2/item 9 updated to match).
 
 ### 2026-07-30 — SUPERSEDED BY THE CORRECTION ABOVE — Bugfix investigation: disk-image geometry mapping vs. getdos's fixed-side-0 read — mapping and FDC dispatch BOTH confirmed correct; likely non-bug explanation for the observed symptom found instead
 - **Trigger:** a third JWSDOS-activation hypothesis, opened by the owner's own new empirical
@@ -1813,7 +1907,9 @@ marked synced. Do NOT edit the reference doc from this project.
   of that entry's own "still need checking" items with a negative result on the bug hypothesis,
   plus the jws-sytem.dsk/empty-jws.dsk all-zero-track-2 alternative explanation for the human to
   weigh.
-- **Synced:** no
+- **Synced:** yes (2026-07-30, kept as historical record — into `docs/P2000T-reference.md` §5d
+  and `docs/P2000T-disk-formats.md` §7 item 9, as the "false start, same day" paragraph explaining
+  how this conclusion was reached and then overturned by the CORRECTION entry above).
 
 ### 2026-07-30 — Bugfix investigation: does the bank-switch device over-listen on ports 0x94-0x97? NO — hypothesis disproven by direct source read; no fix landed
 - **Trigger:** the JWSDOS-activation bug's "Revised bit-level read" paragraph (reference doc

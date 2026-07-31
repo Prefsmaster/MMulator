@@ -1632,7 +1632,7 @@ project.
   call sites), `tests/P2000.UI.Tests/Views/DisplayWindowKeyboardNavigationTests.cs`
   (`KeyHeldAcrossMenuOpen_StillReleasesCleanly_NoStuckForcedShiftState`, new `AwaitForceGap`
   helper), `tests/P2000.UI.Tests/Input/HostKeyTranslatorTests.cs` (2 new tests).
-- **Synced:** no.
+- **Synced:** yes (2026-08-01, into `docs/P2000T-reference.md` §3a — the "TRACKED, not fixed (2026-07-31)" placeholder replaced with a full "FIXED (2026-08-01, cc-bugfix-prompt-8)" entry describing both root causes).
 
 ### 2026-07-31 — FIXED: cross-test window/thread leak in `MenuBarTests`/`DisplayWindowTests` was the real cause of most of the "environment flakiness" this log has been documenting for weeks
 - **Trigger:** owner observation — the recurring `IFontManagerImpl`-unavailable flakiness this log

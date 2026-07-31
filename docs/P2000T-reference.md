@@ -1063,6 +1063,9 @@ distinction. The fix leans into it rather than working around it:
   separately-authored pending value. **Capacity/Sides fields are unchanged** — still genuine
   topology, still require Apply, exactly as already locked; only `ImagePath` picking gets this
   live-delegation treatment, since only that half was ever mis-modeled as needing Apply.
+  **Refined (2026-07-31) — this held for edits made IN the Config window, but missed a live
+  reconfigure made ELSEWHERE (the Disk Drives window's own "Adjust and remount"); see the FIXED
+  entry below.**
 - **Offline case — a real gap remains here, so it keeps a lightweight, non-blocking preview
   check:** no machine running, or the row's drive doesn't exist in the live topology yet (e.g.
   composing a brand-new `.cfg` from scratch — the actual reason `ImagePath` was added to this
@@ -1281,6 +1284,182 @@ format facts) lives in `docs/P2000T-disk-formats.md` §6a/§7, not duplicated he
   detection, PDOS FCB parsing, raw sector read for the dump view, blank-disk detection),
   `P2000.UI` CLAUDE.md §14 (UI milestones 15/15a/15b/16 — table columns, fallback views,
   blank-disk message), `docs/P2000T-disk-formats.md` §6a/§7.
+
+**FIXED (UI, 2026-07-31) — item 18: the Config window's Capacity/Sides went stale after a live
+"Adjust and remount" in the Disk Drives window, and Apply silently reverted it.** Owner-reported,
+reproduced exactly as described before any fix: mount a blank disk on drive 1, use the Disk
+Drives window's mismatch dialog to `ReconfigureAndRemount(80, DiskSides.Double)` live, then
+open (or bring forward) the Config window — its row still showed the pre-reconfigure `40`/
+`Single`; clicking **Apply** pushed that stale pair back into `runner.Machine.Config`, reverting
+the live 80/Double change back to 40/Single. Root cause was exactly the gap the "Refined" note
+above flags: ms.14g's live-delegation treatment only ever covered `ImagePath`; Capacity/Sides was
+deliberately left "genuine topology, requires Apply" for edits made IN the Config window, but
+nobody accounted for a topology change made LIVE, elsewhere. **Fixed with both halves of the
+owner's own bug report addressed by one mechanism:**
+1. `ConfigWindow.axaml.cs`'s `LoadFromCurrentConfig()` (already called by `OnOpened` on every
+   show) now reads from `Machine.CaptureCurrentConfig()` (machine ms.20c) instead of the stale
+   `_runner.Machine.Config` snapshot — fixes the "open/bring-forward after a live reconfigure"
+   case for free.
+2. For the harder case — window already open/frontmost, never re-triggering `OnOpened`, no other
+   edits — `FloppyDriveRowVm` gained internal `CapacityBaseline`/`SidesBaseline` fields (set
+   alongside `Capacity`/`Sides` whenever rows are loaded), distinguishing "untouched since last
+   sync" (safe to silently refresh from the live drive) from "operator deliberately edited it"
+   (never overwritten). A new `RefreshLiveGeometryFromDrives()` walks every row and applies this
+   rule; `Apply()` now calls it as the very first line of its `try` block, before `BuildConfig()`.
+   A deliberate Capacity/Sides edit made in the Config window (whether or not a live reconfigure
+   also happened) is left alone and still applies correctly (regression-tested).
+- **Second trigger path the owner raised mid-investigation** ("the same pop-up option also
+  appears in the machine configuration window") **needed no separate fix** — traced to the SAME
+  shared `DiskDriveWindowVm.GeometryMismatchDetected` event both windows already funnel through
+  (ms.14g); the fix reads live `DiskDriveVm` state directly, path-agnostically, so both trigger
+  routes are covered by the one change.
+- Tests (`ConfigWindowVmTests.cs`, +3): live-reconfigure-then-reopen shows the new geometry and
+  Apply is a no-op; Apply immediately after a live reconfigure with the window already open (no
+  reopen) still honors the live change via the defensive refresh alone; a deliberate edit made
+  after a live reconfigure still applies what the operator typed, not the live value. Full
+  `ConfigWindowVmTests.cs`: 23/23 green. Full `P2000.UI.Tests`: 237/238 green — the one failure is
+  the separately-tracked `KeyHeldAcrossMenuOpen` bug below (confirmed pre-existing and unrelated,
+  reproduced identically on `main` before this change via `git stash`).
+- **Applies to:** `src/P2000.UI/ViewModels/ConfigWindowVm.cs` (`FloppyDriveRowVm.CapacityBaseline`/
+  `.SidesBaseline`, `LoadFromCurrentConfig`, `LoadFloppyDrivesFrom`, `RefreshLiveGeometryFromDrives`,
+  `Apply`), `tests/P2000.UI.Tests/ViewModels/ConfigWindowVmTests.cs`; machine ms.20c
+  (`CaptureCurrentConfig`, consumed here, unchanged). `P2000.UI` CLAUDE.md, 2026-07-31 entry
+  (Synced: yes, see here).
+
+**IMPLEMENTED (UI, 2026-07-31) — item 19: disk topology (track count, sidedness) now shown in the
+Floppy Drives window's per-drive tabs.** Owner request, format `"{tracks} Tracks, {SS|DS}"` (e.g.
+`"40 Tracks, DS"`) — the sidedness abbreviation deliberately matches this project's own existing
+`DiskSidesDescConverter` ("SS"/"DS", `ConfigConverters.cs`), which already matches the JWSDOS
+on-disk label's own convention (`docs/P2000T-disk-formats.md` §3), rather than inventing a new
+"SD"/"DD" pairing. **Sourced from the mounted `DskImage`'s own live `Tracks`/`Sides`, NOT from
+`DiskDriveVm.Capacity`/`.Sides`** — the drive's *configured* geometry is only used as a fallback
+display when nothing is mounted, since a validated JWSDOS label can legitimately mount at a
+different geometry from the configured one with no mismatch raised (machine ms.20d); this is the
+same live source item 18's fix and `CaptureCurrentConfig()` both read from, so the two features
+can never disagree about what's actually mounted. **Live-updating without a per-frame poll** — an
+owner correction adopted mid-implementation: the first pass computed `TopologyText` inside the
+per-frame `RefreshFromMachine()` tick; since geometry only ever changes at a handful of explicit
+mutation points, it was reworked into a `RecomputeTopologyText()` helper called explicitly at
+exactly those points (constructor's initial sync, `MountBytes`, `ReturnToEmptyState`,
+`ReconfigureAndRemount`, `NewBlankDiskAsync`) and removed from the per-frame path entirely — no
+`Task.Delay` needed in tests as a side benefit. **Placement:** a new `TextBlock` in the tab's
+content area, above the existing Motor/Cyl/Head/Sect status row — deliberately NOT in the tab
+header, to avoid crowding the existing dirty-asterisk indicator rather than having to manage the
+interaction. An empty drive shows no topology text (`TopologyText = ""`, hidden via the existing
+`NonEmptyStringToBoolConverter`). Tests (`DiskDriveVmTests.cs`, +5): single-sided shows `"40
+Tracks, SS"`; double-sided shows `"80 Tracks, DS"`; a live `ReconfigureAndRemount` updates the text
+synchronously; an empty drive and a post-eject drive both report `""`. Full `DiskDriveVmTests.cs`:
+56/56 green; full `P2000.UI.Tests`: 241/244 green — the 3 failures were confirmed pre-existing
+unrelated Avalonia-headless flakiness (this entry predates the test-hygiene fix below
+chronologically within the same day, which is why residual flakiness still shows up here).
+Deliberately independent of item 18 per the owner's own instruction — its own separate commit.
+- **Applies to:** `src/P2000.UI/ViewModels/DiskDriveVm.cs` (`TopologyText`,
+  `RecomputeTopologyText`, 5 call sites), `src/P2000.UI/Views/DiskDriveWindow.axaml`,
+  `tests/P2000.UI.Tests/ViewModels/DiskDriveVmTests.cs`. `P2000.UI` CLAUDE.md, 2026-07-31 entry
+  (Synced: yes, see here).
+
+**FIXED (UI, 2026-07-31) — mounting a mismatched disk image with both the main window and the
+Disk Drives window open raised the geometry-mismatch dialog TWICE.** Owner-reported: mounting a
+mismatched image via the Config window's picker while the Disk Drives window was also open
+raised the dialog in BOTH windows, letting the operator answer two independent copies
+differently; the owner separately noted they hadn't yet tested the reverse direction (mounting
+via the Disk Drives window itself, with the Config window open). **Root cause:** both
+`DisplayWindow.axaml.cs` and `DiskDriveWindow.axaml.cs` subscribe independently to the same
+shared `DiskDriveWindowVm.GeometryMismatchDetected` event (ms.14g), each showing its own dialog.
+`DisplayWindow`'s subscription exists as a fallback for when the Disk Drives satellite window is
+never opened, but was never made conditional on whether that fallback was actually needed.
+**Confirmed trigger-path-agnostic** — every mount route (`ConfigWindowVm.PickImageForRowAsync`,
+and the Disk Drives window's own mount/drag-drop/"Adjust and remount" actions) funnels through
+the identical `DiskDriveVm.MountBytes`/`ReconfigureAndRemount` calls that raise the identical
+shared event, so the owner's untested "other direction" has the same root cause and is fixed by
+the same change — confirmed via a regression test against the shared `MountBytes` trigger point
+directly, reproduced failing with the guard temporarily disabled (`mainWindowDialogCount == 1`,
+expected `0`) before being fixed. **Fixed:** `DisplayWindow.ShowGeometryMismatchDialog` now
+returns immediately if `_diskWindow is { IsVisible: true }` — the same idiom already used
+elsewhere in the file (`ShowDiskDriveWindow`'s activate-vs-recreate check). When the Disk Drives
+window isn't open, `DisplayWindow`'s own dialog still shows exactly as before; `DiskDriveWindow`'s
+own subscription/dialog is unchanged and remains authoritative whenever it's open. Test
+(`DisplayWindowTests.cs`, +1): `MismatchWhileDiskDriveWindowOpen_RaisesOnlyOneDialog_NotTwo` —
+builds a live machine, shows a real `DisplayWindow`, opens a real `DiskDriveWindow`, mounts a
+deliberately mismatched image via `DiskDriveVm.MountBytes` directly, and asserts the main
+window's own dialog count is `0` while the Disk Drives window's is `1`. Full
+`DisplayWindowTests.cs`: 2/2 green across 3 repeated isolated runs.
+- **Applies to:** `src/P2000.UI/Views/DisplayWindow.axaml.cs` (`ShowGeometryMismatchDialog`),
+  `tests/P2000.UI.Tests/Views/DisplayWindowTests.cs`. `P2000.UI` CLAUDE.md, 2026-07-31 entry
+  (Synced: yes, see here).
+
+**FIXED (test infrastructure, 2026-07-31) — weeks of intermittently-reported "Avalonia headless
+environment flakiness" in `P2000.UI.Tests`, previously dismissed repeatedly across many
+findings-log entries as pre-existing environment noise, turned out to be a real cross-test
+window/thread leak.** Root cause: `Dispatcher.ResetForUnitTests()` re-rendering leftover visuals
+from a PRIOR test. `MenuBarTests.cs`'s `CreateShownWindow()` helper constructed a real
+`DisplayWindow` (plus its live `EmulationRunner` thread) and discarded it without ever closing
+it — all 4 tests in that file leaked. `DisplayWindowTests.cs` had two tests leaking un-closed
+modal dialogs (`ShowingMainWindow_WithUnresolvedStartupMismatch_DoesNotThrow`,
+`MismatchWhileDiskDriveWindowOpen_RaisesOnlyOneDialog_NotTwo` — the double-dialog regression test
+above) and, for the second, a leaked child `DiskDriveWindow` too.
+`DisplayWindowKeyboardNavigationTests.cs` was already doing this correctly via its own
+`Fixture`/`IDisposable` cleanup pattern, which is what made the difference obvious once compared.
+**Fixed** by applying that same pattern project-wide: `MenuBarTests.cs` now does
+`using var f = CreateShownWindow();`, and `DisplayWindowTests.cs` now explicitly closes every
+`OwnedWindows` entry it opens. **Measured effect:** before the fix, 3 of 4 full-suite runs showed
+1-4 failures each — a different set of tests each time, the classic signature of cross-test
+pollution rather than genuine per-test flakiness; after the fix, 3 of 4 runs were fully green,
+the 4th showed exactly one failure (the `KeyHeldAcrossMenuOpen` bug immediately below) which
+passed 3/3 when isolated. Also added `[Trait("Category", "Integration")]` to the 3 files that
+construct real `Window`s, and documented a fast-iteration path in a new "Running this project's
+tests" section: `dotnet test tests/P2000.UI.Tests --filter "Category!=Integration"` (233 tests,
+~19s) for day-to-day work, full unfiltered run for final verification.
+- **Applies to:** `tests/P2000.UI.Tests/Views/MenuBarTests.cs`,
+  `tests/P2000.UI.Tests/Views/DisplayWindowTests.cs`,
+  `tests/P2000.UI.Tests/Views/DisplayWindowKeyboardNavigationTests.cs` (`[Trait]` only), a new
+  "Running this project's tests" section in `P2000.UI` CLAUDE.md. `P2000.UI` CLAUDE.md, 2026-07-31
+  entry (Synced: yes, see here). No `docs/` reference-doc claims needed correcting — this is pure
+  test hygiene, not a behavioral finding.
+
+**FIXED (2026-08-01, cc-bugfix-prompt-8) — `KeyHeldAcrossMenuOpen_StillReleasesCleanly_
+NoStuckForcedShiftState` was BOTH a stale test assumption AND a real production race in
+`HostKeyTranslator`, not "flaky."** Follow-up to the TRACKED note above: isolated and re-confirmed
+deterministic first (100% failing alone, `Assert.Single()` finding only the immediate press,
+never the deferred one) before forming any theory, per this project's own convention.
+- **Root cause #1 (test):** `HostKeyTranslator`'s existing "force-ON needs the same
+  field-boundary gap as force-off" behavior defers the target-key press onto a real
+  `Task.Delay(40ms)` rather than firing synchronously inside `KeyDown()`. This test's own final
+  assertion ran immediately after the second `Press()` with no `await` anywhere in the method (it
+  was `void`, not `async Task`) — every other test exercising the same deferred-press mechanism
+  already awaits an `AwaitForceGap()` helper for exactly this reason; this one test alone had
+  never been updated, presumably predating that convention.
+- **Root cause #2 (real, independently confirmed — found only by tracing through root cause #1):**
+  `HostKeyTranslator.PressAfterForceGapAsync` had no check that a key was still held once its 40ms
+  gap elapsed. A release faster than the gap — an ordinary, unremarkable timing for a moderately
+  fast typist, and exactly what "menu opens mid-hold, then releases before the gap" does — let the
+  deferred press land AFTER `KeyUp` had already emitted the release, producing a press that
+  arrives strictly after its own release and leaving that P2000 keyboard-matrix crosspoint stuck
+  logically pressed. Confirmed as a genuine defect independent of the test bug: reverting the fix
+  makes a new, dedicated `HostKeyTranslatorTests` regression test fail with exactly this predicted
+  phantom late press.
+- **Fixed both, kept separate rather than papered over as "just a test issue":**
+  1. **Production:** `PressAfterForceGapAsync` now takes the `Key` alongside the target and, after
+     the delay, only emits if `_activePress[key]` still equals that target (i.e. the key is still
+     the one actively holding it) — race-free since `KeyUp` removes the key from `_activePress`
+     synchronously. `KeyUp`'s own unconditional target-release emission is unchanged (idempotent
+     on an already-false crosspoint; not needed to fix the actual defect).
+  2. **Test:** now `async Task`, awaiting `AwaitForceGap()` (mirroring `HostKeyTranslatorTests`'
+     own helper) both after the release-before-close sequence and after the second press, before
+     asserting.
+- Tests: the original test now passes 5/5 in fully isolated repeated runs (was 0/5). Two new
+  `HostKeyTranslatorTests` regression tests drive the exact fast-release-before-gap sequence
+  directly (force-ON and force-OFF), asserting no phantom press is ever appended after the gap —
+  both confirmed to fail with the production fix reverted. Full `HostKeyTranslatorTests` +
+  `DisplayWindowKeyboardNavigationTests`: 34/34 green. Full unfiltered `P2000.UI.Tests`: green
+  across repeated runs, `KeyHeldAcrossMenuOpen` never failing once; the only residual failures
+  were the already-documented rare `DiskDriveVmTests` flakes above, confirmed to pass reliably in
+  isolation.
+- **Applies to:** `src/P2000.UI/Input/HostKeyTranslator.cs` (`PressAfterForceGapAsync` and its two
+  call sites), `tests/P2000.UI.Tests/Views/DisplayWindowKeyboardNavigationTests.cs`
+  (`KeyHeldAcrossMenuOpen_StillReleasesCleanly_NoStuckForcedShiftState`, new `AwaitForceGap`
+  helper), `tests/P2000.UI.Tests/Input/HostKeyTranslatorTests.cs` (2 new tests). `P2000.UI`
+  CLAUDE.md, 2026-08-01 entry (Synced: yes, see here).
 
 ---
 

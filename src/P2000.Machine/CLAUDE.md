@@ -1624,6 +1624,59 @@ marked synced. Do NOT edit the reference doc from this project.
 - **Synced:** yes (2026-07-05, into P2000T-reference.md + device guides)
 -->
 
+### 2026-07-31 — Follow-up: item 4 (`JWS Systeem Disk` write-scope claim) closed — owner supplied `docs/jwssysdisk.asm`, a real disassembly of the writer program itself
+- **Trigger:** the audit entry immediately below flagged item 4 as unverifiable — no disassembly
+  of `JWS Systeem Disk` (as opposed to `jwsdos5.0.asm`, the resident DOS, a different program)
+  existed in this repo. The owner has since supplied `docs/jwssysdisk.asm` (a partial disassembly
+  of `JWSsysdiskwriter.bin`, per its own header comment), closing this out the same way items 1-3
+  were settled: direct execution against the real `Upd765`/`DskImage` code, not more arithmetic.
+- **The §7 item 3 write-scope CLAIM itself is CONFIRMED CORRECT, straight from source.**
+  `Write_JWSDos`'s `write_track_loop` (`docs/jwssysdisk.asm:62-95`): for track 1 (1-based),
+  `E=16` (all 16 sectors); for track 2, `E=8` (only 8 sectors) — both starting at sector 1
+  (`dsk_transfer_cmd_sec` is unconditionally set to `1` at the top of every loop iteration,
+  never anything else). Confirmed via a replayed write against a real `DskImage`: the resulting
+  image has all 16 sectors of "track 1" written and only the FIRST 8 sectors of "track 2"
+  written — the second 8 sectors are left completely untouched (still zero on the blank test
+  image), exactly matching the original claim.
+- **But the RAW OFFSET this write-scope claim resolves to has changed, exactly as flagged as a
+  possibility — confirmed via direct execution, not arithmetic:** `dsk_transfer_cmd_head`
+  (`0x6076`, the same monitor-ROM `disk_side` cell used everywhere else in this investigation)
+  is NEVER referenced anywhere in `jwssysdisk.asm` — it isn't even in the file's own equates
+  list. It's left exactly as the initial 24-byte `ldir` from the ROM's own `disk_constants`
+  template set it (`0x00`) and never touched again — **this writer program is single-sided in
+  its own behaviour, always head 0, regardless of which SS/DS choice the user makes at its
+  `Get_SideCount` prompt** (that prompt only stores a label byte for later reference, at
+  `0x79EF`, not a different write path). Combined with the same SEEK mechanism already confirmed
+  (`MON_DSK_gotrack`, 1-based track minus 1 = 0-based cylinder): under the corrected
+  cylinder-major formula, "track 2 sectors 1-8" resolves to **raw `0x2000`-`0x27FF`**
+  (cylinder 1/head 0) — NOT raw `0x1000`-`0x17FF`, where the old side-major-based understanding
+  would have placed it.
+  - **This lands EXACTLY on the same physical region already identified 2026-07-30 as `getdos`'s
+    real second-boot-track-read target** (the real DOS code, `3E 0C CD 4A 10 CD E1 1A...`) — a
+    clean, mutually-reinforcing confirmation from a completely independent program (the writer)
+    landing on the same block the reader (`getdos`) targets.
+  - **And it's directly, physically adjacent to — but never overlapping — `dir_side1_prep`'s own
+    real target** (raw `0x2800`-`0x2FFF`, sectors 9-16 of the SAME cylinder/head, confirmed
+    earlier this same day): this writer's own 8-sector limit is exactly why that region holds
+    LEFTOVER/stale directory content instead of anything `JWS Systeem Disk` itself put there —
+    sectors 9-16 of cylinder 1/head 0 are simply outside this program's write path, full stop,
+    confirming (not just repeating) the format doc's own existing "sectors 9-16 are entirely
+    outside this program's write path" framing — now anchored to the correct physical location.
+  - **Verified via direct execution:** replayed `write_track_loop`'s exact command sequence
+    (SEEK cylinder 0 → WRITE 16 sectors head 0; SEEK cylinder 1 → WRITE 8 sectors head 0) against
+    a real blank `DskImage`, with distinguishable markers per track. Confirmed: raw
+    `0x0000`-`0x0FFF` (track 1) and `0x2000`-`0x27FF` (track 2, sectors 1-8) hold the markers;
+    raw `0x1000`-`0x1FFF` (cylinder 0/head 1), `0x2800`-`0x2FFF` (cylinder 1/head 0, sectors
+    9-16), and `0x3000`-`0x3FFF` (cylinder 1/head 1) are all untouched — matching every claim
+    above exactly.
+- **No emulator bug, no fix — this closes item 4 as a documentation-only correction**, same
+  shape as items 2/3 below: the underlying claim was right, its raw-offset interpretation needed
+  updating for the corrected formula.
+- **Applies to:** `docs/P2000T-disk-formats.md` §7 item 3 (write-scope claim — now fully
+  re-verified against real source, raw offset corrected from `0x1000`-`0x17FF` to
+  `0x2000`-`0x27FF`), §2 (on-disk layout table, same correction). No source files changed.
+- **Synced:** no
+
 ### 2026-07-31 — Audit: JWSDOS directory/geometry conclusions re-derived under the corrected cylinder-major formula, plus a head-selection encoding check — one real prior mislabeling found and corrected, no emulator bug found
 - **Trigger:** owner follow-up to the 2026-07-30 `SectorOffset` fix — several of this project's
   own conclusions about `Spel1.dsk`'s directory layout (which routine reads what, and where)

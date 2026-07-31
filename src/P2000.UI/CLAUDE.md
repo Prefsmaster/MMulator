@@ -33,6 +33,31 @@ UI consumes here, and that contract lives in `P2000.Machine`, not here.
 
 ---
 
+## Running this project's tests
+
+`dotnet test tests/P2000.UI.Tests` runs everything. For DAY-TO-DAY iteration on a small UI
+change, prefer excluding the `Integration` category instead — a handful of tests construct and
+`Show()` a REAL `DisplayWindow`/menu (`DisplayWindowTests`, `DisplayWindowKeyboardNavigationTests`,
+`MenuBarTests`; tagged `[Trait("Category", "Integration")]`), which is the heaviest, slowest
+corner of this suite and — even after the cross-test leak fix below — is still the part most
+likely to show a rare, order-dependent Avalonia-headless flake:
+
+```bash
+dotnet test tests/P2000.UI.Tests --filter "Category!=Integration"   # fast path, use while iterating
+dotnet test tests/P2000.UI.Tests                                     # full run, before finalizing
+```
+
+**If a full run shows exactly ONE unexpected failure outside the change you're making, re-run
+that single test in isolation (`--filter "FullyQualifiedName~TheTestName"`) 2-3 times before
+concluding it's a real regression** — this project's Avalonia-headless environment has a
+documented, low-but-nonzero residual flake rate (findings log, 2026-07-31 "FIXED: cross-test
+window/thread leak" entry) that isolation reliably distinguishes from a genuine break. If a
+failure reproduces in isolation every time, it is NOT flaky — treat it as real (see that same
+findings-log entry for how a test previously misfiled as "environment noise" turned out to be a
+genuine, 100%-reproducible bug once actually isolated).
+
+---
+
 ## 2. Locked design decisions (do NOT revisit without being asked)
 
 1. **Avalonia + CommunityToolkit.Mvvm.** Software-rendered display (blit into a
@@ -1537,6 +1562,80 @@ project.
 - **Applies to:** reference doc §3a / <file>
 - **Synced:** yes (YYYY-MM-DD)
 -->
+
+### 2026-07-31 — FIXED: cross-test window/thread leak in `MenuBarTests`/`DisplayWindowTests` was the real cause of most of the "environment flakiness" this log has been documenting for weeks
+- **Trigger:** owner observation — the recurring `IFontManagerImpl`-unavailable flakiness this log
+  has repeatedly waved off as "pre-existing environment noise" (many entries above, going back
+  weeks) was slowing down every small UI feature's verification pass, since a full-suite run's
+  1-4 incidental failures each had to be manually re-verified in isolation every time before
+  trusting the result. Asked to reorganize the suite so flaky tests are isolated from day-to-day
+  runs.
+- **Investigated the actual mechanism instead of only reorganizing around it.** All 3 stack
+  traces this log has on record for this failure mode bottom out in
+  `Dispatcher.ResetForUnitTests()` → `Render()` → laying out a `TextBlock` with no
+  `IFontManagerImpl` registered — i.e. some LEFTOVER visual from a PRIOR test is still attached
+  and gets rendered during a LATER, unrelated test's own `[AvaloniaFact]` dispatcher reset. That
+  pointed at test hygiene, not the Avalonia.Headless platform itself: grepped every test file for
+  real `Window` construction/`.Show()` calls (only 3 files do this at all —
+  `DisplayWindowTests.cs`, `DisplayWindowKeyboardNavigationTests.cs`, `MenuBarTests.cs`) and
+  checked each for proper cleanup.
+- **Found a real, previously-unnoticed bug: `MenuBarTests.cs`'s `CreateShownWindow()` helper
+  returned only `(DisplayWindowVm, Menu)`, discarding the constructed `DisplayWindow` entirely.**
+  Every one of that file's 4 tests leaked a real, NEVER-CLOSED `Window` and a live background
+  `EmulationRunner` thread that was never stopped (`DisplayWindowVm`'s constructor starts it
+  unconditionally) — 4 tests × 1 run each, every single full-suite run, with nothing ever cleaning
+  either up. Also found (smaller) leaks in `DisplayWindowTests.cs`: both its tests trigger a real,
+  un-closed modal "Disk Geometry Mismatch" dialog (`ShowingMainWindow_WithUnresolvedStartupMismatch_
+  DoesNotThrow` via `OnOpened`'s pending-mismatch raise; `MismatchWhileDiskDriveWindowOpen_
+  RaisesOnlyOneDialog_NotTwo`, added earlier the same day, via a direct `MountBytes` mismatch) and
+  never closed them, nor the child `DiskDriveWindow` the second test opens.
+  `DisplayWindowKeyboardNavigationTests.cs` was ALREADY doing correct cleanup (a `Fixture` with
+  `IDisposable.Dispose() { Window.Close(); Vm.Dispose(); }`) — not every file in this trio was at
+  fault, only two of the three.
+- **Fixed both:** `MenuBarTests.cs` now uses the same `Fixture`/`IDisposable` pattern
+  `DisplayWindowKeyboardNavigationTests.cs` already established (`window.Close()` +
+  `Vm.Dispose()` on disposal) instead of discarding the window; all 4 tests now `using var f =
+  CreateShownWindow();`. `DisplayWindowTests.cs`'s two tests now explicitly close every window in
+  `OwnedWindows` (the dangling dialog, and — for the second test — the `DiskDriveWindow` and ITS
+  own dialog too) before closing the top-level window.
+- **Measured effect — this was NOT a placebo fix, confirmed with repeated full-suite runs before
+  and after:** before, 3 of 4 consecutive full runs showed 1-4 failures, always a DIFFERENT
+  unrelated set of tests each time (the hallmark of cross-test pollution). After the fix: 3 of 4
+  consecutive full runs were completely green (0 failures); the 4th showed exactly ONE incidental
+  failure (`DiskDriveVmTests.Eject_AfterSaveClearsDirty_NoConfirmDialog`) that then passed 3/3 in
+  isolation — a genuine, rare residual flake, not a regression. This did not eliminate 100% of the
+  risk (Avalonia.Headless's own internal state across hundreds of sequential `[AvaloniaFact]`
+  invocations in one process is still not perfectly isolated), but it eliminated the vast
+  majority of what this log had been mischaracterizing as unfixable "environment noise" for
+  weeks — it was a real, ordinary test-hygiene bug the whole time.
+- **A genuinely separate finding, NOT part of this fix — flagged, not silently bundled in:**
+  isolating `DisplayWindowKeyboardNavigationTests.KeyHeldAcrossMenuOpen_StillReleasesCleanly_
+  NoStuckForcedShiftState` (previously assumed to be just another instance of the same
+  "environment noise") showed it fails 100% DETERMINISTICALLY, even completely alone with no other
+  tests in the process (`Assert.Single()` failure, same assertion, same result across 4 isolated
+  runs). This is NOT flaky — it's a real, reproducible bug (in the test, or in the
+  `HostKeyTranslator`/`DisplayWindow` key-routing code it exercises) that happened to get
+  mis-filed under the "flaky, don't worry about it" umbrella. Spun off as its own separate
+  investigation (not fixed as part of this entry) rather than either silently ignoring it or
+  scope-creeping this fix to cover it too.
+- **Reorganization, on top of the fix (the originally-requested mechanism, now a smaller,
+  lower-stakes addition given the fix above):** tagged the 3 files that construct real `Window`s
+  — `DisplayWindowTests`, `DisplayWindowKeyboardNavigationTests`, `MenuBarTests` — with
+  `[Trait("Category", "Integration")]` (chosen over a "Flaky" label deliberately: what
+  distinguishes them is that they do real rendering/layout, the heaviest and historically
+  highest-risk corner of this suite, not a confirmed list of specific always-flaky methods, which
+  would silently go stale the next time a different, untagged test happens to be the one hit).
+  `dotnet test tests/P2000.UI.Tests --filter "Category!=Integration"` is now the documented fast
+  path for iterating on a small change (233 tests, ~19s, 3/3 green across repeated runs);
+  `dotnet test tests/P2000.UI.Tests` (no filter) is the full run, for before finalizing. Both
+  documented in a new "Running this project's tests" callout near the top of this file, including
+  the "one unexpected failure → re-run it alone before trusting either way" verification habit
+  this session (and this log's own many prior entries) already relied on informally.
+- **Applies to:** `tests/P2000.UI.Tests/Views/MenuBarTests.cs` (`Fixture`, `CreateShownWindow`,
+  all 4 test methods), `tests/P2000.UI.Tests/Views/DisplayWindowTests.cs` (both tests' cleanup),
+  `tests/P2000.UI.Tests/Views/DisplayWindowKeyboardNavigationTests.cs` (`[Trait]` only — no
+  behavior change, it was already clean), this file's new "Running this project's tests" section.
+- **Synced:** no.
 
 ### 2026-07-31 — IMPLEMENTED (item 19): disk topology display in the Floppy Drives window's per-drive tabs
 - **Trigger:** owner request (item 19 above). Show each drive's actual current geometry — track

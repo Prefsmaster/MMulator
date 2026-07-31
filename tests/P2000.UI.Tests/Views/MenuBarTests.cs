@@ -13,16 +13,40 @@ namespace P2000.UI.Tests.Views;
 /// <see cref="DisplayWindowVm"/> command it did under its old top-level menu, and
 /// <c>Cassette</c>'s existing three items must be untouched.
 /// </summary>
+[Trait("Category", "Integration")]
 public class MenuBarTests
 {
-    private static (DisplayWindowVm Vm, Menu MainMenu) CreateShownWindow()
+    /// <summary>Closes the window and disposes the VM (stops its background <c>EmulationRunner</c>
+    /// thread) on <see cref="Dispose"/> — same cleanup pattern as
+    /// <c>DisplayWindowKeyboardNavigationTests</c>' own <c>Fixture</c>. FIXED (owner-reported
+    /// cross-test flakiness investigation, 2026-07-31): the previous version of this helper
+    /// returned only <c>(Vm, MainMenu)</c>, discarding the constructed <see cref="DisplayWindow"/>
+    /// entirely — every one of this file's four tests leaked a real, never-closed <c>Window</c>
+    /// AND a live background <c>EmulationRunner</c> thread that was never stopped. A dangling
+    /// window/still-ticking runner thread left in the process is a plausible source of the
+    /// intermittent <c>IFontManagerImpl</c> failures observed in unrelated LATER tests elsewhere
+    /// in the suite (a subsequent test's Avalonia-headless dispatcher reset can end up laying out
+    /// this leftover window, or racing against the still-running thread's own dispatcher posts).</summary>
+    private sealed class Fixture(DisplayWindowVm vm, DisplayWindow window, Menu mainMenu) : IDisposable
+    {
+        public DisplayWindowVm Vm { get; } = vm;
+        public Menu MainMenu { get; } = mainMenu;
+
+        public void Dispose()
+        {
+            window.Close();
+            Vm.Dispose();
+        }
+    }
+
+    private static Fixture CreateShownWindow()
     {
         var vm = new DisplayWindowVm();
         var window = new DisplayWindow { DataContext = vm };
         window.Show();
         var menu = window.FindControl<Menu>("MainMenu");
         Assert.NotNull(menu);
-        return (vm, menu!);
+        return new Fixture(vm, window, menu!);
     }
 
     private static List<MenuItem> TopLevelItems(Menu menu) => menu.Items.OfType<MenuItem>().ToList();
@@ -42,7 +66,8 @@ public class MenuBarTests
     [AvaloniaFact]
     public void TopLevel_HasExactlyFourItemsInOrder_MachineCassetteViewWindows()
     {
-        var (_, menu) = CreateShownWindow();
+        using var f = CreateShownWindow();
+        var menu = f.MainMenu;
         var headers = TopLevelItems(menu).Select(i => i.Header as string).ToList();
 
         Assert.Equal(new[] { "_Machine", "_Cassette", "_View", "_Windows" }, headers);
@@ -51,7 +76,9 @@ public class MenuBarTests
     [AvaloniaFact]
     public void WindowsMenu_HoldsTheFourRelocatedCommands_InOrder_SameCommandInstancesAsBefore()
     {
-        var (vm, menu) = CreateShownWindow();
+        using var f = CreateShownWindow();
+        var vm = f.Vm;
+        var menu = f.MainMenu;
         var windowsMenu = TopLevelItems(menu).Single(i => (string?)i.Header == "_Windows");
         var items = SubItems(windowsMenu);
 
@@ -70,7 +97,9 @@ public class MenuBarTests
     [AvaloniaFact]
     public void CassetteMenu_IsUnchanged_ThreeItemsSameCommands()
     {
-        var (vm, menu) = CreateShownWindow();
+        using var f = CreateShownWindow();
+        var vm = f.Vm;
+        var menu = f.MainMenu;
         var cassetteMenu = TopLevelItems(menu).Single(i => (string?)i.Header == "_Cassette");
         var items = SubItems(cassetteMenu);
 
@@ -86,7 +115,8 @@ public class MenuBarTests
     [AvaloniaFact]
     public void Mnemonics_NoCollisionAtTopLevel_OrWithinWindowsSubmenu()
     {
-        var (_, menu) = CreateShownWindow();
+        using var f = CreateShownWindow();
+        var menu = f.MainMenu;
 
         var topLevelMnemonics = TopLevelItems(menu).Select(i => Mnemonic(i.Header as string)).ToList();
         Assert.Equal(topLevelMnemonics.Distinct().Count(), topLevelMnemonics.Count);

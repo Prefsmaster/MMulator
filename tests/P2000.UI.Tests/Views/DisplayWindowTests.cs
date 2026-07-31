@@ -23,6 +23,7 @@ namespace P2000.UI.Tests.Views;
 /// startup <c>.cfg</c> was deleted or hand-edited. Fixed by moving the raise to
 /// <c>OnOpened</c> (fires only once the window is actually visible).
 /// </summary>
+[Trait("Category", "Integration")]
 public class DisplayWindowTests
 {
     /// <summary>Redirects <see cref="AppPreferencesFile.DirectoryOverride"/> to a fresh temp
@@ -88,6 +89,16 @@ public class DisplayWindowTests
 
             Assert.Null(exception);
 
+            // window.Show() (via OnOpened -> RaiseAnyPendingMismatches) leaves a real, un-closed
+            // modal "Disk Geometry Mismatch" dialog owned by this window — close it explicitly
+            // before closing the owner. An un-closed dialog left dangling in the visual tree is a
+            // plausible source of the cross-test Avalonia-headless flakiness this project's other
+            // findings-log entries have repeatedly observed (a LATER, unrelated test's dispatcher
+            // reset can end up laying out/rendering this leftover control against a FontManager
+            // that's no longer fully set up) — close every window a test creates, not just the one
+            // it constructed directly.
+            foreach (var owned in window.OwnedWindows.ToArray())
+                owned.Close();
             window.Close();
         }
         finally
@@ -145,6 +156,13 @@ public class DisplayWindowTests
         Assert.Equal(0, mainWindowDialogCount); // the fix: DisplayWindow must stand down
         Assert.Equal(1, diskDriveWindowDialogCount); // the Disk Drives window's own dialog still shows
 
+        // Close every window this test created — the Disk Drives window's own un-closed dialog,
+        // then the Disk Drives window itself, then the main window — not just the one closed
+        // directly below. See the doc comment on ShowingMainWindow_WithUnresolvedStartupMismatch_
+        // DoesNotThrow above for why a dangling dialog left in the visual tree matters here.
+        foreach (var dialog in diskDriveWindow.OwnedWindows.ToArray())
+            dialog.Close();
+        diskDriveWindow.Close();
         window.Close();
     }
 }

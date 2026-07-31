@@ -35,6 +35,7 @@ namespace P2000.UI.Tests.Views;
 /// <c>DisplayWindow</c>'s own capture swallows the keystroke before Avalonia's menu machinery
 /// ever sees it, which is exactly what <c>KeyTranslator.MatrixEvent</c> firing or not proves.
 /// </summary>
+[Trait("Category", "Integration")]
 public class DisplayWindowKeyboardNavigationTests
 {
     /// <summary>Closes the window and disposes the VM (stops its background <c>EmulationRunner</c>

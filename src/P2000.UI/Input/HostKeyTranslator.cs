@@ -147,7 +147,7 @@ public sealed class HostKeyTranslator
                 if (_forceOnCount++ == 0 && !_hostShiftDown)
                 {
                     Emit((SyntheticShiftRow, SyntheticShiftCol), true);
-                    _ = PressAfterForceGapAsync(target); // needs the gap too — see class doc
+                    _ = PressAfterForceGapAsync(key, target); // needs the gap too — see class doc
                 }
                 else
                 {
@@ -159,7 +159,7 @@ public sealed class HostKeyTranslator
                 if (_forceOffCount++ == 0 && _hostShiftDown)
                 {
                     ReleaseRealShifts();
-                    _ = PressAfterForceGapAsync(target); // needs the gap — see class doc
+                    _ = PressAfterForceGapAsync(key, target); // needs the gap — see class doc
                 }
                 else
                 {
@@ -174,10 +174,22 @@ public sealed class HostKeyTranslator
         return true;
     }
 
-    private async Task PressAfterForceGapAsync((int Row, int Col) target)
+    /// <summary>Fires the deferred target press after <see cref="ForceShiftGapMilliseconds"/> —
+    /// but ONLY if <paramref name="key"/> is still actively held for this exact
+    /// <paramref name="target"/> when the gap elapses (bug found 2026-08-01, isolating a test
+    /// previously mis-filed as "flaky"): a real user (or a menu opening mid-hold and the key
+    /// releasing again before this fires) can release the key faster than the 40 ms gap. Without
+    /// this check, <see cref="KeyUp"/> would already have emitted the RELEASE for this crosspoint
+    /// before this deferred PRESS ever fires — the press then lands strictly after its own
+    /// release, leaving the P2000 matrix crosspoint logically stuck down (a phantom press with no
+    /// following release). <see cref="KeyUp"/> always removes <paramref name="key"/> from
+    /// <see cref="_activePress"/> synchronously, so this check is race-free regardless of how long
+    /// the gap actually takes to elapse.</summary>
+    private async Task PressAfterForceGapAsync(Key key, (int Row, int Col) target)
     {
         await Task.Delay(ForceShiftGapMilliseconds);
-        Emit(target, true);
+        if (_activePress.TryGetValue(key, out var current) && current == target)
+            Emit(target, true);
     }
 
     /// <summary>Releases whatever <see cref="KeyDown"/> pressed for this key. Return value has

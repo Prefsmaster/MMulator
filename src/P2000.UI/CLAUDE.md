@@ -1563,6 +1563,77 @@ project.
 - **Synced:** yes (YYYY-MM-DD)
 -->
 
+### 2026-08-01 — FIXED (spin-off from the 2026-07-31 test-leak investigation): `KeyHeldAcrossMenuOpen_StillReleasesCleanly_NoStuckForcedShiftState` — a real production bug AND a stale test assumption, not "flaky"
+- **Trigger:** the 2026-07-31 window/thread-leak fix (entry above) deliberately did NOT chase this
+  test down — it isolated cleanly as failing 100% deterministically, even completely alone, which
+  ruled out cross-test pollution as the cause and meant it had been silently mis-filed under the
+  "environment noise" umbrella for weeks. Flagged as its own follow-up per that entry's own
+  instruction.
+- **Isolated and confirmed deterministic first, per this project's own convention:** ran
+  `--filter "FullyQualifiedName~KeyHeldAcrossMenuOpen"` alone, repeatedly — failed 100% of the time
+  (`Assert.Single()` found `[(9, 0, True)]` only, missing the expected target-key press entirely),
+  never once passing in isolation, confirming this is a real bug, not noise.
+- **Root cause #1 — a stale synchronous assumption in the TEST itself, not a regression in
+  production code.** `HostKeyTranslator`'s own 2026-07-28 fix ("force-ON needs the same
+  field-boundary gap as force-off," documented in its own class doc comment) made the deferred
+  target-key press fire on a real `Task.Delay(40ms)`, not synchronously inside `KeyDown()` — but
+  this test's final assertion ran immediately after the second `Press()` call with no `await`
+  anywhere in the method (it was `void`, not `async Task`), so the assertion always ran before the
+  delayed press had any chance to fire. Every OTHER test in this codebase that exercises the same
+  deferred-press mechanism (`HostKeyTranslatorTests`' own `StandardHost_ForceOn/Off_
+  TargetPressIsDeferred_NotImmediate`, `StandardHost_Shift2_ForcesP2000ShiftOff_ForAtSign`, etc.)
+  already uses an `AwaitForceGap()` helper (`Task.Delay(200)`, 5x the production gap) for exactly
+  this reason — this test alone never got that treatment, presumably because it predates (or was
+  never revisited after) the 2026-07-28 force-ON gap fix.
+- **Root cause #2 — isolating root cause #1 surfaced a REAL, separate production bug in
+  `HostKeyTranslator.PressAfterForceGapAsync`, found by hand-tracing what the test's own sequence
+  (press, menu opens, RELEASE before the gap elapses, menu closes) actually does to the deferred
+  task:** the scheduled `Emit(target, true)` had no check that the key was still held when its 40ms
+  gap elapsed. A release faster than the gap — exactly what this test's own "menu opens mid-hold,
+  then releases" scenario does, and a real, unremarkable scenario for a moderately fast typist —
+  let the deferred press land AFTER `KeyUp` had already run (and already emitted the target's own
+  release), producing a PRESS that arrives strictly after its own RELEASE. This leaves the P2000
+  emulated matrix crosspoint logically stuck pressed with no press/release ever landing in the
+  correct order again for that crosspoint. This is a real, independently-confirmed defect, not an
+  artifact of the test's own bug — verified by temporarily reverting the fix and confirming a new,
+  dedicated `HostKeyTranslatorTests` regression test then fails with exactly the predicted phantom
+  late press appended.
+- **Fixed both, and states plainly which was which (per the prompt's own explicit request, not
+  retroactively framed as "just a test issue"):**
+  1. **Production fix** (`HostKeyTranslator.cs`): `PressAfterForceGapAsync` now takes the `Key`
+     alongside the target and, after the delay, only emits if `_activePress[key]` still equals
+     that target — i.e. the key is still the one actively holding it. `KeyUp` already removes the
+     key from `_activePress` synchronously (no async involved), so this check is race-free
+     regardless of real wall-clock scheduling. `KeyUp`'s own unconditional `Emit(pos, false)` for
+     whatever target it recorded is UNCHANGED (still fires even if the deferred press never
+     visibly landed) — deliberately left alone: it's idempotent from the machine's perspective (a
+     release on an already-false crosspoint is a no-op) and changing it wasn't needed to fix the
+     actual defect (a press arriving after its own release).
+  2. **Test fix** (`DisplayWindowKeyboardNavigationTests.cs`): the test is now `async Task`, awaits
+     a new `AwaitForceGap()` helper (mirrors `HostKeyTranslatorTests`' own, duplicated per this
+     file's own per-file-helper convention) both after the release-before-close sequence (so the
+     production fix's suppression has resolved) and after the second press (so its own legitimate
+     deferred press has landed) before asserting.
+- **Tests:** `DisplayWindowKeyboardNavigationTests.KeyHeldAcrossMenuOpen_StillReleasesCleanly_
+  NoStuckForcedShiftState` itself — confirmed passing 5/5 in fully isolated repeated runs (was
+  0/5 before the fix). `HostKeyTranslatorTests` (+2, new): `StandardHost_ForceOn_
+  ReleasedBeforeGapElapses_SuppressesThePhantomLatePress` and the force-OFF mirror — drive the
+  exact fast-release-before-gap sequence directly against `HostKeyTranslator` (not just
+  re-asserting the original UI-level scenario), asserting the exact expected event sequence
+  including `KeyUp`'s own unconditional (and unchanged) target-release emission, and that nothing
+  is ever appended after the gap elapses. Verified both fail (a phantom `(target, true)` appended
+  after the gap) with the production fix temporarily reverted, confirming they're true regression
+  guards, not coincidentally-passing tests. Full `HostKeyTranslatorTests` +
+  `DisplayWindowKeyboardNavigationTests`: 34/34 green. Full unfiltered `P2000.UI.Tests`: green
+  across repeated runs, with `KeyHeldAcrossMenuOpen` never failing once — the only residual
+  failures seen were unrelated, already-documented rare flakes in `DiskDriveVmTests` (per the
+  2026-07-31 entry above), confirmed to pass reliably in isolation.
+- **Applies to:** `src/P2000.UI/Input/HostKeyTranslator.cs` (`PressAfterForceGapAsync`, its two
+  call sites), `tests/P2000.UI.Tests/Views/DisplayWindowKeyboardNavigationTests.cs`
+  (`KeyHeldAcrossMenuOpen_StillReleasesCleanly_NoStuckForcedShiftState`, new `AwaitForceGap`
+  helper), `tests/P2000.UI.Tests/Input/HostKeyTranslatorTests.cs` (2 new tests).
+- **Synced:** no.
+
 ### 2026-07-31 — FIXED: cross-test window/thread leak in `MenuBarTests`/`DisplayWindowTests` was the real cause of most of the "environment flakiness" this log has been documenting for weeks
 - **Trigger:** owner observation — the recurring `IFontManagerImpl`-unavailable flakiness this log
   has repeatedly waved off as "pre-existing environment noise" (many entries above, going back
@@ -1635,7 +1706,7 @@ project.
   all 4 test methods), `tests/P2000.UI.Tests/Views/DisplayWindowTests.cs` (both tests' cleanup),
   `tests/P2000.UI.Tests/Views/DisplayWindowKeyboardNavigationTests.cs` (`[Trait]` only — no
   behavior change, it was already clean), this file's new "Running this project's tests" section.
-- **Synced:** no.
+- **Synced:** yes (2026-07-31, into `docs/P2000T-reference.md` §3a — new "FIXED (test infrastructure, 2026-07-31)" entry and the separate "TRACKED, not fixed" KeyHeldAcrossMenuOpen note, both appended after the milestone-22/22a/22b/23 block).
 
 ### 2026-07-31 — IMPLEMENTED (item 19): disk topology display in the Floppy Drives window's per-drive tabs
 - **Trigger:** owner request (item 19 above). Show each drive's actual current geometry — track
@@ -1699,7 +1770,7 @@ project.
 - **Applies to:** `src/P2000.UI/ViewModels/DiskDriveVm.cs` (`TopologyText`,
   `RecomputeTopologyText`, its five call sites), `src/P2000.UI/Views/DiskDriveWindow.axaml`,
   `tests/P2000.UI.Tests/ViewModels/DiskDriveVmTests.cs`.
-- **Synced:** no.
+- **Synced:** yes (2026-07-31, into `docs/P2000T-reference.md` §3a — new "IMPLEMENTED (UI, 2026-07-31) — item 19" entry appended after the milestone-22/22a/22b/23 block).
 
 ### 2026-07-31 — FIXED: mounting a mismatched disk image with both the main window and the Disk Drives window open raised the geometry-mismatch popup TWICE
 - **Trigger:** owner bug report — mounting an incorrect disk image via the Config window's own
@@ -1752,7 +1823,7 @@ project.
 - **Applies to:** `src/P2000.UI/Views/DisplayWindow.axaml.cs` (`ShowGeometryMismatchDialog`),
   `tests/P2000.UI.Tests/Views/DisplayWindowTests.cs`. `src/P2000.UI/Views/DiskDriveWindow.axaml.cs`
   is unchanged — its own subscription/dialog remains the authoritative one whenever it's open.
-- **Synced:** no.
+- **Synced:** yes (2026-07-31, into `docs/P2000T-reference.md` §3a — new "FIXED (UI, 2026-07-31)" double-dialog entry appended after the milestone-22/22a/22b/23 block).
 
 ### 2026-07-31 — FIXED (item 18): Config window's Capacity/Sides go stale after a live "Adjust and remount," and Apply reverted it
 - **Trigger:** owner bug report (item 18 above). Investigated per this project's own convention —
@@ -1825,7 +1896,7 @@ project.
   `.SidesBaseline`, `LoadFromCurrentConfig`, `LoadFloppyDrivesFrom`,
   `RefreshLiveGeometryFromDrives`, `Apply`), `tests/P2000.UI.Tests/ViewModels/ConfigWindowVmTests.cs`.
   Machine ms.20c (`CaptureCurrentConfig`, consumed here, unchanged).
-- **Synced:** no.
+- **Synced:** yes (2026-07-31, into `docs/P2000T-reference.md` §3a — new "FIXED (UI, 2026-07-31) — item 18" entry appended, plus a "Refined" addendum on ms.14g's original "Capacity/Sides fields are unchanged" bullet).
 
 ### 2026-07-30 — FIXED: milestone 12/17's Save/Load-to-address in a memory watch window didn't respect the window's own pinned bank
 - **Trigger:** owner question, confirmed and diagnosed correctly against the actual source

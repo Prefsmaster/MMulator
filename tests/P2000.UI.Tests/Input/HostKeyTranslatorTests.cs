@@ -195,6 +195,69 @@ public class HostKeyTranslatorTests
         Assert.Equal(new[] { (9, 0, true), (5, 5, true) }, events); // '=' has now landed
     }
 
+    /// <summary>Bug found 2026-08-01 while isolating what turned out to be a deterministic (not
+    /// flaky) failure in <c>DisplayWindowKeyboardNavigationTests.KeyHeldAcrossMenuOpen_
+    /// StillReleasesCleanly_NoStuckForcedShiftState</c>: releasing a force-ON key FASTER than the
+    /// force-shift gap used to let the deferred target press fire AFTER its own already-processed
+    /// release had run — landing a phantom press with no following release, leaving the P2000
+    /// matrix crosspoint stuck down. Fixed in <c>PressAfterForceGapAsync</c> by checking the key
+    /// is still actively held (for this exact target) before emitting the deferred press. This
+    /// test drives the exact fast-tap sequence directly against <c>HostKeyTranslator</c> — not
+    /// just re-asserting the original UI-level scenario — so a future refactor of the gap
+    /// mechanism can't silently reintroduce it.</summary>
+    [Fact]
+    public async Task StandardHost_ForceOn_ReleasedBeforeGapElapses_SuppressesThePhantomLatePress()
+    {
+        var (t, events) = NewTranslator(KeyMappingMode.StandardHost);
+
+        t.KeyDown(Key.OemPlus); // needs forced Shift ON — target (5,5), deferred behind the gap
+        t.KeyUp(Key.OemPlus);   // released well before the gap elapses
+
+        Assert.Equal(new[]
+        {
+            (9, 0, true),   // synthetic Shift asserted
+            (5, 5, false),  // KeyUp unconditionally releases whatever target it recorded — '=' was
+                             // never visibly PRESSED (still pending behind the gap at this point),
+                             // only this release fires; not itself the bug under test here
+            (9, 0, false),  // forced-Shift-ON counter back to 0 -> synthetic Shift released
+        }, events);
+
+        await AwaitForceGap();
+
+        // The fix under test: the deferred press must NOT land after the fact — no (5,5,true)
+        // anywhere, and nothing at all appended after the sequence above.
+        Assert.Equal(new[] { (9, 0, true), (5, 5, false), (9, 0, false) }, events);
+    }
+
+    /// <summary>Mirrors <see cref="StandardHost_ForceOn_ReleasedBeforeGapElapses_SuppressesThePhantomLatePress"/>
+    /// for the force-OFF direction (Shift held, but the target needs it forced off — e.g.
+    /// Shift+2 -> '@').</summary>
+    [Fact]
+    public async Task StandardHost_ForceOff_ReleasedBeforeGapElapses_SuppressesThePhantomLatePress()
+    {
+        var (t, events) = NewTranslator(KeyMappingMode.StandardHost);
+
+        t.KeyDown(Key.LeftShift);
+        t.KeyDown(Key.D2); // needs forced Shift OFF for '@' — target (6,7), deferred behind the gap
+        t.KeyUp(Key.D2);   // released well before the gap elapses
+
+        Assert.Equal(new[]
+        {
+            (9, 0, true),   // host Shift pressed
+            (9, 0, false),  // forced OFF for '@'
+            (6, 7, false),  // KeyUp unconditionally releases its recorded target — '@' was never
+                             // visibly PRESSED (still pending behind the gap); not the bug itself
+            (9, 0, true),   // restored to match host Shift, which is still down
+        }, events);
+
+        await AwaitForceGap();
+
+        // The fix under test: no phantom (6,7,true) landed after the fact.
+        Assert.Equal(new[] { (9, 0, true), (9, 0, false), (6, 7, false), (9, 0, true) }, events);
+
+        t.KeyUp(Key.LeftShift);
+    }
+
     [Fact]
     public void StandardHost_ShiftPlus_RedirectsAwayFromOemPlusOwnPosition()
     {

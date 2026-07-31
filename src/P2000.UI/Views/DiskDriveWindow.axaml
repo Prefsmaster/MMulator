@@ -34,6 +34,14 @@
                 <DataTemplate x:DataType="vm:DiskDriveVm">
                     <ScrollViewer>
                         <StackPanel Spacing="6" Margin="4">
+                            <!-- Mounted disk's actual current geometry (project CLAUDE.md §14
+                                 milestone 19) — read live from the mounted DskImage every frame,
+                                 never a separately-tracked value; blank (hidden) when no disk is
+                                 mounted, never stale/wrong data. -->
+                            <TextBlock Text="{Binding TopologyText}"
+                                       FontSize="11" Foreground="#999" FontWeight="SemiBold"
+                                       IsVisible="{Binding TopologyText, Converter={x:Static vm:NonEmptyStringToBoolConverter.Instance}}" />
+
                             <!-- Status row: motor, cylinder, head, sector, activity/direction -->
                             <StackPanel Orientation="Horizontal" Spacing="10">
                                 <StackPanel Orientation="Horizontal" Spacing="4" VerticalAlignment="Center"

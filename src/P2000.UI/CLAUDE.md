@@ -1538,6 +1538,70 @@ project.
 - **Synced:** yes (YYYY-MM-DD)
 -->
 
+### 2026-07-31 — IMPLEMENTED (item 19): disk topology display in the Floppy Drives window's per-drive tabs
+- **Trigger:** owner request (item 19 above). Show each drive's actual current geometry — track
+  count and single/double-sided — sourced live, never a separately-tracked value.
+- **Sidedness abbreviation — checked against existing UI convention before picking one, per the
+  spec's own instruction.** The prompt's own example used "SD"/"DD," but this project already
+  uses "SS"/"DS" user-facing (`DiskSidesDescConverter` in `ConfigConverters.cs`, used by the
+  Config window's own Sides selector — "SS (single-sided)"/"DS (double-sided)"), matching the
+  JWSDOS on-disk label's own `'S'`/`'D'` convention (`docs/P2000T-disk-formats.md` §3). Used
+  "SS"/"DS" instead of inventing a third abbreviation, per the spec's own explicit instruction to
+  match an existing convention when one exists. Format: `"{tracks} Tracks, {SS|DS}"` — e.g.
+  `"40 Tracks, DS"`.
+- **Source — deliberately NOT `DiskDriveVm.Capacity`/`.Sides`, even though they're this VM's own
+  "geometry" fields.** Those are the drive's CONFIGURED geometry (the fallback `DskImage.Mount`
+  uses only when the file has no valid on-disk label) — a validated JWSDOS label can legitimately
+  win and mount at a DIFFERENT geometry with no mismatch ever raised (machine ms.20d), which would
+  make a display sourced from `Capacity`/`Sides` silently wrong in exactly that case. Read live
+  from the mounted `DskImage`'s own `Tracks`/`Sides` instead — the same source
+  `Machine.CaptureCurrentConfig()` and item 18's Config-window fix (immediately above) both
+  already use, so this can never drift from what's actually mounted the way `Capacity`/`Sides`
+  itself already had for Config window rows.
+- **Live-updating, WITHOUT a 50 Hz poll — owner's own mid-implementation correction, adopted.**
+  First pass computed `TopologyText` inside `RefreshFromMachine()` (the existing per-frame
+  `OnFrameReady` callback, same place `IsDirty`/`CylinderText`/etc. already refresh). Owner
+  pointed out this is wasteful — a mounted disk's geometry only ever changes at a handful of
+  explicit points this VM itself controls (mount, remount, eject, new-blank), never mid-frame —
+  and suggested leveraging the SAME sync points already used to keep `HasImage`/`ImageLabel`/
+  `IsWriteProtected` current (the constructor's "sync from an already-mounted disk" block,
+  `MountBytes`, `ReturnToEmptyState`, `ReconfigureAndRemount`, `NewBlankDiskAsync`) instead of a
+  periodic poll. Reworked to a `RecomputeTopologyText()` helper called explicitly at exactly
+  those five points — the same mutation points, not a new mechanism — removing it from
+  `RefreshFromMachine()` entirely. Side benefit: `ReconfigureAndRemount` now updates
+  `TopologyText` synchronously, so tests need no `Task.Delay` to observe it (unlike `IsDirty`,
+  which genuinely does depend on the next frame tick).
+- **Placement:** a new `TextBlock` in the tab's content area (`DiskDriveWindow.axaml`), just
+  above the existing status row (Motor/Cyl/Head/Sect), bound to `TopologyText` with
+  `IsVisible` gated on non-empty (reusing the already-declared `vm:NonEmptyStringToBoolConverter`
+  — no new converter needed). Left the tab HEADER text (`TabHeader`, with its dirty asterisk)
+  completely untouched, per the spec's own "don't crowd out the dirty-asterisk indicator" —
+  placing this in the content area rather than appending to the header text side-steps that
+  concern entirely rather than needing to manage it.
+- **Empty drive:** `TopologyText` is `""` (hidden via `IsVisible`) whenever `GetDisk(DriveIndex)`
+  is null — a configured-but-empty drive shows no topology text at all, never a stale or guessed
+  value from before the eject.
+- **Tests (`DiskDriveVmTests.cs`, +5):** a mounted single-sided drive shows `"40 Tracks, SS"`; a
+  mounted double-sided drive shows `"80 Tracks, DS"`; `ReconfigureAndRemount` updates
+  `TopologyText` immediately with no `Task.Delay`/frame wait (the live-updating requirement,
+  exercised precisely because the refactor above makes this synchronous); a drive with nothing
+  mounted reports `""`; ejecting a mounted disk returns `TopologyText` to `""`. Full
+  `DiskDriveVmTests.cs`: 56/56 green. Full `P2000.UI.Tests`: 241/244 green — the 3 failures
+  (`DiskDriveVmTests.MotorOn_ReflectsTheMachinesSharedMotorLine`,
+  `..HeadAndSector_DuringActiveTransfer_ShowRealValues`,
+  `DisplayWindowKeyboardNavigationTests.KeyHeldAcrossMenuOpen_...`) are confirmed pre-existing,
+  unrelated `IFontManagerImpl`/Avalonia-headless-dispatcher-timing environment flakiness — both
+  `DiskDriveVmTests` failures pass cleanly in isolation, and neither touches the code this change
+  modified (`IsMotorOn`/`HeadText`/`SectorText` are still populated by the unmodified
+  `RefreshFromMachine()` frame poll).
+- **Independent of item 18 (Config window Capacity/Sides staleness), per the owner's own explicit
+  instruction — separate commit, no code shared beyond both reading the same underlying
+  `DskImage.Tracks`/`.Sides` source of truth.**
+- **Applies to:** `src/P2000.UI/ViewModels/DiskDriveVm.cs` (`TopologyText`,
+  `RecomputeTopologyText`, its five call sites), `src/P2000.UI/Views/DiskDriveWindow.axaml`,
+  `tests/P2000.UI.Tests/ViewModels/DiskDriveVmTests.cs`.
+- **Synced:** no.
+
 ### 2026-07-31 — FIXED: mounting a mismatched disk image with both the main window and the Disk Drives window open raised the geometry-mismatch popup TWICE
 - **Trigger:** owner bug report — mounting an incorrect disk image via the Config window's own
   image-picking flow, with the Disk Drives window also open, raised the mismatch dialog in BOTH

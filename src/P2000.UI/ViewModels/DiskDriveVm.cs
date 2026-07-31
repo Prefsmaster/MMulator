@@ -75,6 +75,22 @@ public sealed partial class DiskDriveVm : ObservableObject
     [ObservableProperty] private string _headText = "—";
     [ObservableProperty] private string _sectorText = "—";
 
+    /// <summary>The mounted disk's ACTUAL current geometry (project CLAUDE.md §14 milestone 19)
+    /// — "40 Tracks, DS" — recomputed by <see cref="RecomputeTopologyText"/> at every point this
+    /// VM itself changes what's mounted, straight from the live <see cref="DskImage"/>'s own
+    /// <see cref="DskImage.Tracks"/>/<see cref="DskImage.Sides"/>, NOT from this VM's own
+    /// <see cref="Capacity"/>/<see cref="Sides"/> fields. Deliberately not the same source:
+    /// <see cref="Capacity"/>/<see cref="Sides"/> is the drive's CONFIGURED geometry, passed to
+    /// <see cref="DskImage.Mount"/> only as the fallback a mount uses when the file has no valid
+    /// on-disk label — a validated JWSDOS label can legitimately win and mount at a DIFFERENT
+    /// geometry with no mismatch ever raised (machine ms.20d), which would make a display sourced
+    /// from <see cref="Capacity"/>/<see cref="Sides"/> silently wrong in exactly that case.
+    /// Reading the live <c>DskImage</c> itself (the same source <c>Machine.CaptureCurrentConfig()</c>
+    /// and the Config window's item-18 fix both already use) is the only way this can never drift
+    /// from what's actually mounted. Empty string when no disk is mounted — "no topology shown for
+    /// an empty drive" (the milestone's own explicit requirement).</summary>
+    [ObservableProperty] private string _topologyText = "";
+
     [ObservableProperty] private IReadOnlyList<string> _programs = [];
 
     /// <summary>Short explanatory message shown INSTEAD of the directory table (project CLAUDE.md
@@ -180,6 +196,7 @@ public sealed partial class DiskDriveVm : ObservableObject
             IsWriteProtected = disk.WriteProtected;
             RefreshDirectoryTable(disk);
         }
+        RecomputeTopologyText();
 
         var mismatch = runner.Machine.Fdc?.GetMismatch(driveIndex);
         PendingMismatch = mismatch is { Kind: not DiskGeometryMismatchKind.None } ? mismatch : null;
@@ -199,6 +216,20 @@ public sealed partial class DiskDriveVm : ObservableObject
     }
 
     private int SidesCount => Sides == DiskSides.Double ? 2 : 1;
+
+    /// <summary>Recomputes <see cref="TopologyText"/> from the live mounted <see cref="DskImage"/>
+    /// (or blanks it when nothing is mounted). Deliberately called explicitly, at every point
+    /// this VM itself changes what's mounted (construction, <see cref="MountBytes"/>,
+    /// <see cref="ReconfigureAndRemount"/>, <see cref="ReturnToEmptyState"/>,
+    /// <see cref="NewBlankDiskAsync"/>) — NOT from the 50 Hz <see cref="RefreshFromMachine"/> frame
+    /// poll. A mounted disk's geometry only ever changes at one of those explicit mutation points
+    /// in this build (nothing external re-geometries a drive mid-frame), so polling it every field
+    /// would just be wasted work for a value that's usually unchanged frame-to-frame.</summary>
+    private void RecomputeTopologyText()
+    {
+        var disk = _runner.Machine.Fdc?.GetDisk(DriveIndex);
+        TopologyText = disk is not null ? $"{disk.Tracks} Tracks, {(disk.Sides == 2 ? "DS" : "SS")}" : "";
+    }
 
     // ── Frame callback ────────────────────────────────────────────────────────────────────────
 
@@ -321,6 +352,7 @@ public sealed partial class DiskDriveVm : ObservableObject
         IsWriteProtected = disk.WriteProtected;
         ImageLabel = filename;
         RefreshDirectoryTable(disk);
+        RecomputeTopologyText();
         NotifyCommands();
 
         if (mismatch.Kind != DiskGeometryMismatchKind.None)
@@ -346,6 +378,7 @@ public sealed partial class DiskDriveVm : ObservableObject
         ImageLabel = "No disk";
         IsWriteProtected = false;
         ClearDirectoryTable();
+        RecomputeTopologyText();
         NotifyCommands();
     }
 
@@ -380,6 +413,7 @@ public sealed partial class DiskDriveVm : ObservableObject
 
         IsWriteProtected = disk.WriteProtected;
         RefreshDirectoryTable(disk);
+        RecomputeTopologyText();
 
         if (mismatch.Kind != DiskGeometryMismatchKind.None)
             GeometryMismatchDetected?.Invoke(mismatch);
@@ -437,6 +471,7 @@ public sealed partial class DiskDriveVm : ObservableObject
         IsWriteProtected = false;
         ImageLabel = "(blank disk)";
         RefreshDirectoryTable(disk); // no directory yet — an unformatted blank disk
+        RecomputeTopologyText();
         NotifyCommands();
     }
 

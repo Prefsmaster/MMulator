@@ -954,6 +954,80 @@ public class DiskDriveVmTests
         runner.Dispose();
     }
 
+    // ---- Disk topology display (project CLAUDE.md §14 milestone 19) -----------------------
+    // TopologyText is read live from the mounted DskImage's own Tracks/Sides (RecomputeTopologyText),
+    // NOT from this VM's own Capacity/Sides fields — so these assert against the actually-mounted
+    // disk's real geometry, matching how the property itself is documented to behave.
+
+    [AvaloniaFact]
+    public async Task TopologyText_MountedDrive_ShowsTrackCountAndSidedness()
+    {
+        var runner = await NewFloppyRunnerAsync();
+        var vm = NewVm(runner, capacity: 40, sides: DiskSides.Single);
+
+        vm.NewBlankDiskCommand.Execute(null);
+
+        Assert.Equal("40 Tracks, SS", vm.TopologyText);
+
+        runner.Dispose();
+    }
+
+    [AvaloniaFact]
+    public async Task TopologyText_MountedDoubleSidedDrive_ShowsDS()
+    {
+        var runner = await NewFloppyRunnerAsync();
+        var vm = NewVm(runner, capacity: 80, sides: DiskSides.Double);
+
+        vm.NewBlankDiskCommand.Execute(null);
+
+        Assert.Equal("80 Tracks, DS", vm.TopologyText);
+
+        runner.Dispose();
+    }
+
+    [AvaloniaFact]
+    public async Task TopologyText_LiveAdjustAndRemount_UpdatesImmediately_NoWindowRefreshNeeded()
+    {
+        var runner = await NewFloppyRunnerAsync();
+        var vm = NewVm(runner, capacity: 40, sides: DiskSides.Single);
+        vm.NewBlankDiskCommand.Execute(null);
+        Assert.Equal("40 Tracks, SS", vm.TopologyText);
+
+        vm.ReconfigureAndRemount(80, DiskSides.Double);
+
+        // No await/Task.Delay — this must be synchronous, not dependent on the next 50 Hz frame
+        // tick, per the milestone's own "updates immediately" requirement.
+        Assert.Equal("80 Tracks, DS", vm.TopologyText);
+
+        runner.Dispose();
+    }
+
+    [AvaloniaFact]
+    public async Task TopologyText_EmptyDrive_IsBlank_NotStaleOrGuessedData()
+    {
+        var runner = await NewFloppyRunnerAsync();
+        var vm = NewVm(runner, capacity: 40, sides: DiskSides.Single); // configured, but no disk mounted
+
+        Assert.Equal("", vm.TopologyText);
+
+        runner.Dispose();
+    }
+
+    [AvaloniaFact]
+    public async Task TopologyText_AfterEject_GoesBackToBlank()
+    {
+        var runner = await NewFloppyRunnerAsync();
+        var vm = NewVm(runner);
+        vm.NewBlankDiskCommand.Execute(null);
+        Assert.NotEqual("", vm.TopologyText);
+
+        vm.EjectCommand.Execute(null); // clean, unmodified disk -> no confirm dialog needed
+
+        Assert.Equal("", vm.TopologyText);
+
+        runner.Dispose();
+    }
+
     // ---- Constructor sync from an already-mounted disk (owner-reported bug, 2026-07-28) ----
     // MachineConfig.FloppyDrives[i].ImagePath is mounted directly onto Upd765 at Machine
     // construction (Machine.cs), bypassing DiskDriveVm.MountBytes entirely. These simulate that

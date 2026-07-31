@@ -1624,6 +1624,61 @@ marked synced. Do NOT edit the reference doc from this project.
 - **Synced:** yes (2026-07-05, into P2000T-reference.md + device guides)
 -->
 
+### 2026-07-31 — Follow-up: `DskImage.ReadDirectory()` only ever reads SIDE 2's directory — the "stale 20-entry cluster" was a real mislabeling, not stale data at all; the Floppy Drives window is missing half of `Spel1.dsk`'s real files
+- **Trigger:** owner observation — `Spel1.dsk`'s real menu shows 37 files/options; this
+  project's Floppy Drives window shows only 18, all reported as "Side 2." Asked whether this is
+  a further consequence of the same offset-reinterpretation work. **It is — directly.**
+- **Confirmed by parsing both real directory regions and checking every entry's own embedded
+  `DE_head` byte (offset 24, a property of the STORED entry, independent of which region it's
+  read from):**
+  ```
+  raw 0x2800-0x2FFF (dir_side1_prep's real target, confirmed 2026-07-31 above): 20 real,
+    well-formed entries, EVERY ONE with DE_head=0.
+  raw 0x3000-0x37FF (dir_side2_prep's real target, confirmed 2026-07-31 above): 18 real
+    entries, EVERY ONE with DE_head=1.
+  Combined: 38 files, zero filename overlap between the two lists.
+  ```
+  38 is very close to the owner's reported 37 (off by one — plausibly a boot/loader entry like
+  `AUTORUN` not counted as a "file" by the real on-disk menu, or an off-by-one in either count;
+  not investigated further, doesn't change the conclusion). **This settles it: the region at
+  raw `0x2800`-`0x2FFF` is NOT stale/leftover data from a different disk — every one of its 20
+  entries carries a self-consistent `DE_head=0`, exactly matching a genuine SIDE 1 directory,
+  written by JWSDOS's own ordinary `save_directory`→`dir_side1_prep` path (the SAME routine
+  pair that writes side 2's directory, just for the other side) — not by `JWS Systeem Disk`
+  (confirmed separately today: that program never touches this region at all, per the write-
+  scope entry immediately below). The original "stale cluster, zero overlap = leftover from
+  another disk" theory from BEFORE this session's geometry work was a real mislabeling — it
+  correctly observed the zero-overlap fact but drew the wrong conclusion from it. Zero overlap
+  is exactly what a working double-sided disk's two INDEPENDENT per-side catalogs look like,
+  not evidence of contamination from elsewhere.**
+- **Root cause of the UI symptom, confirmed directly in source:** `DskImage.ReadDirectory()`/
+  `EnumerateDirectorySlots()` (`Devices/Fdc/DskImage.cs`) reads from exactly ONE fixed absolute
+  offset, `DirectoryOffset = 0x1800` — which is `dir_side2_prep`'s real target (side 2 only).
+  There is no second read anywhere in this class for `dir_side1_prep`'s target. This is why
+  every row the Floppy Drives window shows reports `Head=1`/"Side 2" (UI milestone 15's own Side
+  column, `docs/P2000T-disk-formats.md` §4) — it's not that the Side column is wrong, it's that
+  side 1's entire directory is never read at all, so no side-1 row can ever appear.
+  **`DirectoryOffset`'s own value (`0x1800`) needs no change** — it was always a correct, fixed
+  raw position (confirmed independently multiple times this investigation); what's missing is a
+  SECOND fixed read at raw `0x2800`-`0x2FFF` (`dir_side1_prep`'s confirmed real target, same
+  2048 B / 8-sector / 64-slot shape) alongside it.
+- **Not yet fixed — this is the investigation only, per the owner's own "add to report" framing
+  (not "please fix").** If a fix is wanted: add a second fixed-offset region
+  (`DirectoryOffset2 = 0x2800`, same size/slot-count/emptiness rules as the existing one) to
+  `EnumerateDirectorySlots()`/`ReadDirectory()`, and expose both sides' entries — the existing
+  `DiskDirectoryEntry.Head` field already round-trips which side each entry belongs to (per its
+  own embedded byte), so the UI's existing Side column needs no change once both sides are
+  actually read; only the machine-layer read needs extending. Whether side 1's entries should be
+  interleaved with side 2's in on-disk/read order, or listed side-1-then-side-2, is a
+  presentation choice, not something this investigation resolves.
+- **Applies to:** `src/P2000.Machine/Devices/Fdc/DskImage.cs` (`ReadDirectory`,
+  `EnumerateDirectorySlots`, `DirectoryOffset`), `docs/P2000T-disk-formats.md` §2 (the "stale
+  cluster" framing needs replacing with "side 1's own genuine directory") and §4/§7 item 3,
+  `P2000.UI`'s Disk Drives window (milestone 15, consumes `ReadDirectory()` — currently
+  structurally incapable of showing a side-1 row regardless of anything UI-side, since the
+  machine layer never returns one).
+- **Synced:** no
+
 ### 2026-07-31 — Follow-up: item 4 (`JWS Systeem Disk` write-scope claim) closed — owner supplied `docs/jwssysdisk.asm`, a real disassembly of the writer program itself
 - **Trigger:** the audit entry immediately below flagged item 4 as unverifiable — no disassembly
   of `JWS Systeem Disk` (as opposed to `jwsdos5.0.asm`, the resident DOS, a different program)

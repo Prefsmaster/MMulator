@@ -140,6 +140,18 @@ public partial class DisplayWindow : Window
 
     private async void ShowGeometryMismatchDialog(DiskDriveVm drive, DiskGeometryMismatch mismatch)
     {
+        // Avoid a duplicate popup (owner bug report, 2026-07-31): DiskDriveWindow (when open)
+        // subscribes to this SAME shared DiskDriveWindowVm.GeometryMismatchDetected event and
+        // shows its own copy of this dialog for every mismatch, regardless of which window
+        // triggered the mount (Config window's own image-picking flow and the Disk Drives
+        // window's own mount/remount actions both funnel through the same DiskDriveVm, so both
+        // trigger paths raise the identical shared event). This subscription's own purpose (see
+        // OnDataContextChanged's comment) is specifically to be the FALLBACK for when the Disk
+        // Drives satellite window is never opened — once it IS open, its own dialog is
+        // authoritative and this one must stand down rather than show a second, independently
+        // answerable copy of the same prompt.
+        if (_diskWindow is { IsVisible: true }) return;
+
         var dialog = new Window
         {
             Title = "MMulator — Disk Geometry Mismatch",

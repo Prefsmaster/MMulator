@@ -1538,6 +1538,59 @@ project.
 - **Synced:** yes (YYYY-MM-DD)
 -->
 
+### 2026-07-31 — FIXED: mounting a mismatched disk image with both the main window and the Disk Drives window open raised the geometry-mismatch popup TWICE
+- **Trigger:** owner bug report — mounting an incorrect disk image via the Config window's own
+  image-picking flow, with the Disk Drives window also open, raised the mismatch dialog in BOTH
+  windows simultaneously, letting the user answer the two independent copies differently. Owner
+  noted they had not yet tested the reverse (mounting via the Disk Drives window itself, with the
+  Config window open).
+- **Investigated first, per this project's own convention.** Both `DisplayWindow.axaml.cs` and
+  `DiskDriveWindow.axaml.cs` subscribe directly to the SAME shared event —
+  `DiskDriveWindowVm.GeometryMismatchDetected` — each with its own independent
+  `ShowGeometryMismatchDialog` that builds and shows its own dialog `Window`.
+  `DisplayWindow`'s subscription exists specifically as a FALLBACK for when the Disk Drives
+  satellite window is never opened (startup auto-load, a Config-window `Apply` with no Disk
+  Drives window open — see its own pre-existing doc comment, milestone 14g); it was never made
+  conditional on whether that fallback was actually needed, so once the Disk Drives window WAS
+  open, both fired unconditionally for every mismatch.
+- **Confirmed this is trigger-path-agnostic, not specific to the Config window's own image
+  picker** — `ConfigWindowVm.PickImageForRowAsync` and the Disk Drives window's own
+  mount/drag-drop/"Adjust and remount" actions all funnel through the identical
+  `DiskDriveVm.MountBytes`/`ReconfigureAndRemount` calls, which raise the identical shared event
+  regardless of which window's own UI action triggered the mount. So the untested "other way
+  around" case the owner flagged has the exact same root cause and is fixed by the same change —
+  confirmed by writing the regression test against a direct `DiskDriveVm.MountBytes` call (the
+  shared trigger point both UI paths reach), not a Config-window-specific path.
+- **Reproduced directly** (temporarily disabling the fix's own guard, per this project's
+  convention of proving the repro before trusting the fix): the new regression test failed with
+  `mainWindowDialogCount == 1` (expected `0`) exactly as described — a second, independent dialog
+  spawned as an owned window of the main `DisplayWindow`, alongside the Disk Drives window's own.
+- **Fixed:** `DisplayWindow.ShowGeometryMismatchDialog` now returns immediately if the Disk
+  Drives window is currently open (`_diskWindow is { IsVisible: true }`) — the same "is this
+  satellite window currently open" idiom this file already uses everywhere else (e.g.
+  `ShowDiskDriveWindow`'s own activate-vs-recreate check). When the Disk Drives window isn't
+  open, `DisplayWindow`'s dialog still shows exactly as before (the fallback case this
+  subscription exists for is untouched).
+- **Tests (`DisplayWindowTests.cs`, +1):**
+  `MismatchWhileDiskDriveWindowOpen_RaisesOnlyOneDialog_NotTwo` — builds a live FloppyRam machine,
+  shows the real `DisplayWindow`, opens the real `DiskDriveWindow` via
+  `vm.OpenDiskDrivesCommand.Execute(null)`, then mounts a deliberately mismatched-size image
+  directly via `DiskDriveVm.MountBytes`. Counts each window's own `Window.OwnedWindows` (the
+  dialog is shown via `dialog.ShowDialog(this)`, so it's an owned/child window of whichever
+  window's code-behind created it) — asserts the main window's own dialog count is `0` and the
+  Disk Drives window's own dialog count is `1`. Verified failing (`1`/`1`, both fire) with the
+  fix's guard temporarily disabled, and passing (`0`/`1`) with it restored — confirmed a true
+  repro, not a coincidentally-passing test. Full `DisplayWindowTests.cs`: 2/2 green across 3
+  repeated isolated runs. Full-suite runs show 1-4 unrelated, pre-existing, flaky failures
+  spanning completely different files each run (`DisplayWindowKeyboardNavigationTests`,
+  `StartupConfigurationTests`, `DiskDriveVmTests`, `ConfigWindowVmTests`) — the same documented
+  `IFontManagerImpl`/Avalonia-headless-dispatcher-timing environment noise flagged repeatedly
+  elsewhere in this log, not caused by this change.
+- **Applies to:** `src/P2000.UI/Views/DisplayWindow.axaml.cs` (`ShowGeometryMismatchDialog`),
+  `tests/P2000.UI.Tests/Views/DisplayWindowTests.cs`. `src/P2000.UI/Views/DiskDriveWindow.axaml.cs`
+  is unchanged — its own subscription/dialog remains the authoritative one whenever it's open.
+- **Synced:** no.
+
 ### 2026-07-31 — FIXED (item 18): Config window's Capacity/Sides go stale after a live "Adjust and remount," and Apply reverted it
 - **Trigger:** owner bug report (item 18 above). Investigated per this project's own convention —
   confirmed the exact relationship against current source, reproduced the bug directly, THEN

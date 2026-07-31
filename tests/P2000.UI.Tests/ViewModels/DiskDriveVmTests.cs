@@ -519,15 +519,19 @@ public class DiskDriveVmTests
         return image;
     }
 
-    /// <summary>Pokes one 32-byte JWSDOS directory entry into a synthetic image's side-1
-    /// directory region (docs/P2000T-disk-formats.md §4) — same layout as
-    /// <c>DskImageTests.WriteDirectoryEntry</c>, duplicated here so this file doesn't need an
-    /// inter-project test dependency for one helper.</summary>
+    /// <summary>Pokes one 32-byte JWSDOS directory entry into a synthetic image's directory
+    /// region for the given side (docs/P2000T-disk-formats.md §4) — same layout AND same
+    /// CHS-based offset formula as <c>DskImageTests.WriteDirectoryEntry</c>/
+    /// <c>DskImage.DirectoryRawOffset</c> (project CLAUDE.md §17, 2026-07-31 fix), duplicated
+    /// here so this file doesn't need an inter-project test dependency for one helper.</summary>
     private static void WriteDirectoryEntry(byte[] image, int slotIndex, string filename,
         string extension, char fileType, ushort fileLength, ushort transferAddress,
-        byte head, ushort startSector, ushort endSector)
+        byte head, ushort startSector, ushort endSector, int sides = 2)
     {
-        var offset = 0x1800 + slotIndex * 32;
+        const int bytesPerTrack = DskImage.SectorsPerTrack * DskImage.BytesPerSector;
+        var directoryOffset = 1 * sides * bytesPerTrack + head * bytesPerTrack
+            + (head == 0 ? 8 : 0) * DskImage.BytesPerSector;
+        var offset = directoryOffset + slotIndex * 32;
         var nameBytes = System.Text.Encoding.ASCII.GetBytes(filename.PadRight(16));
         var extBytes = System.Text.Encoding.ASCII.GetBytes(extension.PadRight(3));
         nameBytes.CopyTo(image, offset);
@@ -578,9 +582,9 @@ public class DiskDriveVmTests
     [AvaloniaFact]
     public async Task MountBytes_JwsdosImage_MixedSides_ShowsSideAndTrackSectorColumns()
     {
-        // No real fixture mixes side-1 (DE_head=0) and side-2 (DE_head=1) entries in one
-        // directory — Spel1.dsk's real entries are ALL side 2 (see the real-fixture test below).
-        // This synthetic image is what exercises the Side-1-vs-Side-2 label distinction itself.
+        // Spel1.dsk's real directory DOES mix both sides too, as of the 2026-07-31 fix (see the
+        // real-fixture test below) — this synthetic image keeps exercising the Side-1-vs-Side-2
+        // label distinction in isolation, with a minimal, fully-controlled fixture.
         var image = BuildSyntheticImage(tracks: 40, sides: 2);
         WriteDirectoryEntry(image, 0, "ONESIDE", "BAS", 'B', 256, 0x6547, head: 0, startSector: 1, endSector: 1);
         WriteDirectoryEntry(image, 1, "TWOSIDE", "BAS", 'B', 256, 0x6547, head: 1, startSector: 17, endSector: 17);
@@ -602,12 +606,14 @@ public class DiskDriveVmTests
     }
 
     [AvaloniaFact]
-    public async Task MountBytes_RealSpel1Dsk_ShowsSide2AndCorrectTrackSectorRange()
+    public async Task MountBytes_RealSpel1Dsk_ShowsBothSides_38EntriesTotal()
     {
-        // Spel1.dsk's real active-directory entries all carry DE_head=1 (docs/P2000T-disk-formats.md
-        // §4) — confirmed real per-disk data, not a fabricated fixture. AUTORUN's confirmed
-        // start/end sector (622/632, P2000.Machine.Tests' RealFixtureTests) maps via the 16-
-        // sectors/track formula to track 39 sector 14 through track 40 sector 8.
+        // CORRECTED (2026-07-31 fix — supersedes the old "...ShowsSide2AndCorrectTrackSectorRange"
+        // expectation): ReadDirectory() now returns BOTH sides — Spel1.dsk has 20 real side-1
+        // entries (Head=0, previously entirely missed) followed by 18 real side-2 entries
+        // (Head=1, docs/P2000T-disk-formats.md §4). AUTORUN's confirmed start/end sector
+        // (622/632, P2000.Machine.Tests' RealFixtureTests) maps via the 16-sectors/track formula
+        // to track 39 sector 14 through track 40 sector 8.
         var bytes = await File.ReadAllBytesAsync(DiskFixturePath("Spel1.dsk"));
         var runner = await NewFloppyRunnerAsync(); // configured 40-track/single, overridden by the real label
         var vm = NewVm(runner);
@@ -615,8 +621,9 @@ public class DiskDriveVmTests
         vm.MountBytes(bytes, "SPEL1");
 
         Assert.Contains("Side", vm.DirectoryHeader);
-        Assert.Equal(18, vm.Programs.Count);
-        Assert.All(vm.Programs, row => Assert.Contains("Side 2", row));
+        Assert.Equal(38, vm.Programs.Count);
+        Assert.All(vm.Programs.Take(20), row => Assert.Contains("Side 1", row));
+        Assert.All(vm.Programs.Skip(20), row => Assert.Contains("Side 2", row));
         var autorunRow = Assert.Single(vm.Programs, row => row.Contains("AUTORUN"));
         Assert.Contains("T39 S14-T40 S8", autorunRow);
 

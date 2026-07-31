@@ -670,10 +670,11 @@ public sealed partial class DiskDriveVm : ObservableObject
             return;
         }
 
-        // format == DiskDirectoryFormat.Jwsdos — the only value left. Side 2 directory location is
-        // unconfirmed (docs/P2000T-disk-formats.md §7 item 2) — ReadDirectory() itself only ever
-        // reads side 1's confirmed active region regardless of the mounted image's Sides; nothing
-        // extra needed here to enforce that.
+        // format == DiskDirectoryFormat.Jwsdos — the only value left. ReadDirectory() now reads
+        // BOTH sides (machine ms.24 findings-log, 2026-07-31 fix) — side 1 entries first, then
+        // side 2, skipping side 2 entirely when the image is single-sided. Nothing extra needed
+        // here: the loop below already renders whichever entries come back, side reflected via
+        // e.Head.
         var entries = disk.ReadDirectory();
         var rows = new string[entries.Count];
         for (var i = 0; i < entries.Count; i++)

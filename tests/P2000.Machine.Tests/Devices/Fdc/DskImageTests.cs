@@ -135,13 +135,24 @@ public class DskImageTests
         foreach (var b in disk.ReadSector(0, 0, 1)) Assert.Equal(0x00, b);
     }
 
-    // ---- Directory browse (docs/P2000T-disk-formats.md §4; side-1 active directory only) ------------
+    // ---- Directory browse (docs/P2000T-disk-formats.md §4; BOTH sides — project CLAUDE.md §17,
+    // 2026-07-31 fix) -------------------------------------------------------------------------------
+
+    /// <summary>Mirrors <see cref="DskImage"/>'s own (private) CHS-based directory-offset formula
+    /// — cylinder 1 always, sector 9 for head 0 / sector 1 for head 1 — so these tests build their
+    /// synthetic fixtures the same way production code locates them, not against a hardcoded
+    /// magic number.</summary>
+    private static int DirectoryOffsetFor(int sides, int head) =>
+        1 * sides * DskImage.BytesPerTrack + head * DskImage.BytesPerTrack
+        + (head == 0 ? 8 : 0) * DskImage.BytesPerSector;
 
     private static void WriteDirectoryEntry(byte[] image, int slotIndex, string filename,
         string extension, char fileType, ushort fileLength, ushort transferAddress,
-        byte head, ushort startSector, ushort endSector)
+        byte head, ushort startSector, ushort endSector, int sides = 2)
     {
-        var offset = 0x1800 + slotIndex * 32;
+        // head also selects which physical region this entry is written into — every real
+        // fixture confirms an entry's own embedded head byte always matches its physical region.
+        var offset = DirectoryOffsetFor(sides, head) + slotIndex * 32;
         var nameBytes = System.Text.Encoding.ASCII.GetBytes(filename.PadRight(16));
         var extBytes = System.Text.Encoding.ASCII.GetBytes(extension.PadRight(3));
         nameBytes.CopyTo(image, offset);
@@ -164,7 +175,7 @@ public class DskImageTests
         var image = BuildSyntheticImage(tracks: 40, sides: 2);
         WriteDirectoryEntry(image, 0, "TRALIEENSPEL", "BAS", 'B', 12345, 0x6547, 0, 1, 48);
         WriteDirectoryEntry(image, 1, "AUTORUN", "BAS", 'B', 500, 0x7000, 0, 49, 50);
-        // Slots 2..63 are left zero — empty.
+        // Slots 2..63 (of side 1's own region) are left zero — empty; side 2 is untouched.
 
         var disk = new DskImage(image);
         var entries = disk.ReadDirectory();
@@ -182,16 +193,51 @@ public class DskImageTests
     }
 
     [Fact]
-    public void ReadDirectory_NeverReadsTheStaleClusterAt0x1000()
+    public void ReadDirectory_BothSidesPopulated_ReturnsSide1ThenSide2_HeadMatchesRegionRead()
     {
-        // docs/P2000T-disk-formats.md §2/§7 item 3: raw 0x1000-0x17FF holds a real, struct-shaped but
-        // STALE directory cluster from a different disk operation entirely — must never surface.
+        // The core regression case for the 2026-07-31 fix, at the synthetic/fully-controlled
+        // level (mirrors RealFixtureTests' real-Spel1.dsk version of the same scenario).
         var image = BuildSyntheticImage(tracks: 40, sides: 2);
-        // Poke a plausible-looking directory entry into the stale region.
-        var staleOffset = 0x1000;
-        System.Text.Encoding.ASCII.GetBytes("PHANTOM FILE    ").CopyTo(image, staleOffset);
-        System.Text.Encoding.ASCII.GetBytes("BAS").CopyTo(image, staleOffset + 16);
-        image[staleOffset + 19] = (byte)'B';
+        WriteDirectoryEntry(image, 0, "SIDE1FILE", "BAS", 'B', 100, 0x6000, head: 0, 1, 2);
+        WriteDirectoryEntry(image, 0, "SIDE2FILE", "BAS", 'B', 200, 0x7000, head: 1, 3, 4);
+
+        var disk = new DskImage(image);
+        var entries = disk.ReadDirectory();
+
+        Assert.Equal(2, entries.Count);
+        Assert.Equal("SIDE1FILE", entries[0].Filename); // side 1 first
+        Assert.Equal(0, entries[0].Head);
+        Assert.Equal("SIDE2FILE", entries[1].Filename); // side 2 second
+        Assert.Equal(1, entries[1].Head);
+    }
+
+    [Fact]
+    public void ReadDirectory_SingleSided_NeverReadsASide2Region()
+    {
+        // Confirms the fix is a genuine no-op for single-sided images, not just a special case —
+        // side 2 is never even attempted when Sides == 1.
+        var image = BuildSyntheticImage(tracks: 40, sides: 1);
+        WriteDirectoryEntry(image, 0, "ONLYFILE", "BAS", 'B', 100, 0x6000, head: 0, 1, 2, sides: 1);
+
+        var disk = new DskImage(image);
+        var entries = disk.ReadDirectory();
+
+        var entry = Assert.Single(entries);
+        Assert.Equal("ONLYFILE", entry.Filename);
+    }
+
+    [Fact]
+    public void ReadDirectory_NeverReadsCylinder0Head1_TheUnrelatedDuplicateRegion()
+    {
+        // Raw 0x1000-0x1FFF (cylinder 0/head 1) is a separate, unrelated region from either
+        // side's real directory (cylinder 1) — a near-duplicate artifact this project no longer
+        // reads for directory purposes at all (project CLAUDE.md §17, 2026-07-31 fix). Must never
+        // surface, regardless of what's poked there.
+        var image = BuildSyntheticImage(tracks: 40, sides: 2);
+        var unrelatedOffset = 0x1000;
+        System.Text.Encoding.ASCII.GetBytes("PHANTOM FILE    ").CopyTo(image, unrelatedOffset);
+        System.Text.Encoding.ASCII.GetBytes("BAS").CopyTo(image, unrelatedOffset + 16);
+        image[unrelatedOffset + 19] = (byte)'B';
 
         var disk = new DskImage(image);
         var entries = disk.ReadDirectory();
@@ -202,8 +248,8 @@ public class DskImageTests
     [Fact]
     public void ReadDirectory_AllZeroTrack_ReturnsEmptyDirectory()
     {
-        // docs/P2000T-disk-formats.md §2: jwssytem.dsk's entire track 2 is all-zero — an empty
-        // directory must not be treated as an error.
+        // docs/P2000T-disk-formats.md §2: an unwritten disk's directory cylinder is all-zero on
+        // both sides — an empty directory must not be treated as an error.
         var image = BuildSyntheticImage(tracks: 40, sides: 2);
         var disk = new DskImage(image);
         Assert.Empty(disk.ReadDirectory());
@@ -650,7 +696,8 @@ public class DskImageTests
     public void IsDirectoryRegionBlank_NonBlankGarbage_ReturnsFalse()
     {
         var image = BuildSyntheticImage(tracks: 40, sides: 2);
-        for (var i = 0; i < 20; i++) image[0x1800 + i] = 0x01; // non-empty, non-printable garbage
+        var offset = DirectoryOffsetFor(sides: 2, head: 0);
+        for (var i = 0; i < 20; i++) image[offset + i] = 0x01; // non-empty, non-printable garbage
         var disk = new DskImage(image);
 
         Assert.False(disk.IsDirectoryRegionBlank());
@@ -662,7 +709,8 @@ public class DskImageTests
         // A non-JWSDOS image (PDOS, garbage) has arbitrary binary data at the JWSDOS directory
         // offset — "bytes are present" alone must not be mistaken for a plausible filename.
         var image = BuildSyntheticImage(tracks: 40, sides: 2);
-        for (var i = 0; i < 20; i++) image[0x1800 + i] = 0x01; // non-empty, non-printable
+        var offset = DirectoryOffsetFor(sides: 2, head: 0);
+        for (var i = 0; i < 20; i++) image[offset + i] = 0x01; // non-empty, non-printable
 
         var disk = new DskImage(image);
 
@@ -674,11 +722,25 @@ public class DskImageTests
     {
         var image = BuildSyntheticImage(tracks: 40, sides: 2);
         WriteDirectoryEntry(image, 0, "TRALIEENSPEL", "BAS", 'B', 12345, 0x6547, 0, 1, 48);
-        for (var i = 0; i < 20; i++) image[0x1800 + 32 + i] = 0x01; // slot 1: garbage, non-printable
+        var offset = DirectoryOffsetFor(sides: 2, head: 0);
+        for (var i = 0; i < 20; i++) image[offset + 32 + i] = 0x01; // slot 1: garbage, non-printable
 
         var disk = new DskImage(image);
 
         Assert.Equal(DiskDirectoryFormat.Unknown, disk.DetectDirectoryFormat());
+    }
+
+    [Fact]
+    public void DetectDirectoryFormat_PlausibleEntryOnSide2Only_ReturnsJwsdos()
+    {
+        // Side 1 empty, side 2 populated — must still detect correctly (project CLAUDE.md §17,
+        // 2026-07-31 fix: both sides are checked, not just side 1).
+        var image = BuildSyntheticImage(tracks: 40, sides: 2);
+        WriteDirectoryEntry(image, 0, "BABA", "BAS", 'B', 100, 0x6000, head: 1, 1, 2);
+
+        var disk = new DskImage(image);
+
+        Assert.Equal(DiskDirectoryFormat.Jwsdos, disk.DetectDirectoryFormat());
     }
 
     // ---- PDOS FCB directory (project CLAUDE.md §13 milestone 22a; docs/P2000T-disk-formats.md
@@ -687,11 +749,14 @@ public class DskImageTests
     private static byte[] BuildSyntheticPdosImage(int tracks = 35, int sides = 1)
     {
         var image = new byte[tracks * sides * DskImage.SectorsPerTrack * DskImage.BytesPerSector];
-        // Corrupt the JWSDOS directory region (raw 0x1800) so a fresh all-zero image doesn't
-        // false-positive as an "empty but valid" JWSDOS directory (prompt 9's own logic treats an
-        // all-zero directory as a valid, just-empty Jwsdos) — PDOS has nothing meaningful there at
-        // all, so these tests need that region to genuinely fail the JWSDOS check first.
-        for (var i = 0; i < 20; i++) image[0x1800 + i] = 0x01;
+        // Corrupt side 1's JWSDOS directory region so a fresh all-zero image doesn't
+        // false-positive as an "empty but valid" JWSDOS directory (milestone 22's own logic
+        // treats an all-zero directory as a valid, just-empty Jwsdos) — PDOS has nothing
+        // meaningful there at all, so these tests need that region to genuinely fail the JWSDOS
+        // check first. PDOS disks are always single-sided (docs/P2000T-disk-formats.md §6a), so
+        // only side 1 (head 0) is ever in play — no side-2 region to worry about here.
+        var offset = DirectoryOffsetFor(sides, head: 0);
+        for (var i = 0; i < 20; i++) image[offset + i] = 0x01;
         return image;
     }
 

@@ -1624,6 +1624,80 @@ marked synced. Do NOT edit the reference doc from this project.
 - **Synced:** yes (2026-07-05, into P2000T-reference.md + device guides)
 -->
 
+### 2026-07-31 — FIXED: `DskImage.ReadDirectory()` now reads BOTH sides — closes the "missing side 1" gap identified in the entry immediately below
+- **Trigger:** owner bugfix request, direct follow-through on the investigation entry immediately
+  below. Fix, not further audit — the root cause and both confirmed real locations were already
+  established.
+- **Fixed:** `DskImage`'s directory reading now computes each side's raw offset via the SAME CHS
+  formula every other sector read uses (`SectorOffset(cylinder: 1, head, sector: head==0?9:1)`),
+  replacing the old hardcoded `DirectoryOffset = 0x1800` constant entirely — per the prompt's own
+  explicit instruction, `0x1800` is no longer read for directory purposes at all, not kept as a
+  fallback alongside the two new reads. `ReadDirectory()`/`DetectDirectoryFormat()`/
+  `IsPlausibleJwsdosDirectory()`/`IsDirectoryRegionBlank()` all now walk BOTH sides (side 1 first,
+  then side 2 — a presentation-order choice, explicitly left for the UI to reconsider per the
+  prompt); side 2 is skipped entirely when `Sides == 1` (mirrors JWSDOS's own `is_disk_SS` gate).
+- **Single-sided images confirmed a genuine no-op, not just a special case:** for `Sides == 1`,
+  the CHS formula for (cylinder 1, head 0, sector 9) collapses to exactly `0x1800` — the same
+  value the old hardcoded constant always used — so `volorg.dsk`/`diskbasic_1.6uk.dsk` (both
+  single-sided PDOS fixtures) are byte-for-byte unaffected. Confirmed both mathematically and by
+  running the full existing test suite unchanged for these fixtures.
+- **Verified the switch away from `0x1800` is safe across every other real double-sided
+  fixture in this project's asset folder, not just `Spel1.dsk`, before landing it (per the
+  prompt's own explicit caution):**
+  ```
+                        raw 0x1800 (old)         raw 0x2800 (side1, new)     raw 0x3000 (side2, new)
+  Spel1.dsk             "Tralieenspel..."        "Fraxxon..." (20 entries)   "Tralieenspel..." (18)
+  jws-sytem.dsk          all-zero                 REAL 14-entry catalog       all-zero
+  empty-jws.dsk          all-zero                 REAL 2-entry catalog        all-zero
+  hires_demo.dsk         all-zero                 REAL 16-entry catalog       REAL 5-entry catalog
+  ```
+  **This is not a coincidental-duplicate-vs-real-location wash — three of four real double-sided
+  fixtures had GENUINE directory content the old `0x1800` offset was silently missing entirely**
+  (`jws-sytem.dsk`/`empty-jws.dsk`/`hires_demo.dsk` all read as having NO real directory under the
+  old code; all three actually have real, well-formed catalogs). `jws-sytem.dsk`'s newly-surfaced
+  14 entries are exactly what you'd expect on a JWSDOS system/utility disk: "JWS Systeem Disk"
+  (the writer program itself, listed as a file), "Format", "AUTORUN", "Disk-report 2.1",
+  "Disk-duplicator", "Disk Inhoud Spec", "Multi-file Copy", "Back-updata 1.1", "Disk Util.3 in 1",
+  "Diskzoeker", "Edit 40", "Edit 80", "Filecopy 1.4", "Tetris" — all `DE_head=0`, all plausible,
+  well-formed 32-byte entries. `empty-jws.dsk` — despite sharing `jws-sytem.dsk`'s identical
+  track-1 boot code/label (already established) and the identical FIRST two side-1 entries
+  ("JWS Systeem Disk", "Format") — is NOT a byte-identical copy of `jws-sytem.dsk` overall and
+  genuinely has only those 2 entries, not 14; checked directly rather than assumed from the
+  shared boot code alone.
+- **One entry's `TransferAddress` field changes value on `Spel1.dsk` specifically — confirmed
+  correct, not a new bug.** AUTORUN's transfer address moves from `0x7000` (read from the `0x1800`
+  duplicate) to `0x6547` (read from the real `0x3000` location) — this is precisely the ONE byte
+  already identified (2026-07-31 audit, below) as differing between the duplicate and the real
+  content, now empirically confirmed to matter for exactly the field/entry predicted. Every OTHER
+  field of every other entry on `Spel1.dsk` is unaffected, since the duplicate matches the real
+  content everywhere except that single byte.
+- **Tests:** `DskImageTests.cs` (machine layer) — both-sides-populated ordering/head-matching
+  (synthetic), single-sided no-op, the unrelated cylinder-0/head-1 region still never surfaces,
+  a side-2-only synthetic image still detects correctly. `RealFixtureTests.cs` — `Spel1.dsk`
+  returns all 38 real entries (20 side-1 + 18 side-2) in side-1-then-side-2 order with correct
+  per-entry `Head` values; `jws-sytem.dsk` returns its real 14-entry side-1 catalog instead of
+  reporting empty; `DetectDirectoryFormat` correctly flips from `Unknown` to `Jwsdos` for
+  `jws-sytem.dsk` now that its real content is found. `DiskDriveVmTests.cs` (UI layer, machine
+  ms.24's own duplicated test helper) — the same both-sides/no-op cases at the
+  `DiskDriveVm.ReadDirectory()`-consumption level; `Spel1.dsk` now shows all 38 rows split
+  correctly across the Side 1/Side 2 groups. Full `P2000.Machine.Tests`: 605/605 green (was 603);
+  `P2000.UI.Tests`' `DiskDriveVmTests` (the directly-relevant subset): 51/51 green across 3
+  repeated runs — the handful of intermittent failures elsewhere in that project's own full-suite
+  run are the SAME pre-existing Avalonia headless `IFontManagerImpl`/dispatcher-timing environment
+  flakiness already documented earlier this session (different tests fail each run, never in code
+  this fix touches).
+- **Applies to:** `src/P2000.Machine/Devices/Fdc/DskImage.cs` (`DirectoryCylinder`,
+  `DirectoryRawOffset`, `ReadDirectory`, `EnumerateAllDirectorySlots`, `EnumerateDirectorySlots`,
+  `IsPlausibleJwsdosDirectory`, `IsDirectoryRegionBlank`), `src/P2000.UI/ViewModels/DiskDriveVm.cs`
+  (stale comment only — the rendering loop itself needed no change),
+  `tests/P2000.Machine.Tests/Devices/Fdc/DskImageTests.cs`,
+  `tests/P2000.Machine.Tests/Devices/Fdc/RealFixtureTests.cs`,
+  `tests/P2000.UI.Tests/ViewModels/DiskDriveVmTests.cs`. `docs/P2000T-disk-formats.md` §2 (on-disk
+  layout table) and §7 items 2/2a (side-2 location — now answered — and the ex-"stale cluster,"
+  now understood as side 1's genuine directory), `docs/P2000T-reference.md` §3a (UI milestone 15
+  note, needs its "side 1 only" framing corrected).
+- **Synced:** no
+
 ### 2026-07-31 — Follow-up: `DskImage.ReadDirectory()` only ever reads SIDE 2's directory — the "stale 20-entry cluster" was a real mislabeling, not stale data at all; the Floppy Drives window is missing half of `Spel1.dsk`'s real files
 - **Trigger:** owner observation — `Spel1.dsk`'s real menu shows 37 files/options; this
   project's Floppy Drives window shows only 18, all reported as "Side 2." Asked whether this is
@@ -1677,7 +1751,9 @@ marked synced. Do NOT edit the reference doc from this project.
   `P2000.UI`'s Disk Drives window (milestone 15, consumes `ReadDirectory()` — currently
   structurally incapable of showing a side-1 row regardless of anything UI-side, since the
   machine layer never returns one).
-- **Synced:** no
+- **Synced:** yes (2026-07-31, into `docs/P2000T-reference.md` §3a -- new bullet under UI
+  milestone 15 flagging the missing side-1 read; into `docs/P2000T-disk-formats.md` §2 (new
+  "FINAL CORRECTED PICTURE" block, "duplicate content" characterization) and §7 item 2a (new)).
 
 ### 2026-07-31 — Follow-up: item 4 (`JWS Systeem Disk` write-scope claim) closed — owner supplied `docs/jwssysdisk.asm`, a real disassembly of the writer program itself
 - **Trigger:** the audit entry immediately below flagged item 4 as unverifiable — no disassembly
@@ -1730,7 +1806,9 @@ marked synced. Do NOT edit the reference doc from this project.
 - **Applies to:** `docs/P2000T-disk-formats.md` §7 item 3 (write-scope claim — now fully
   re-verified against real source, raw offset corrected from `0x1000`-`0x17FF` to
   `0x2000`-`0x27FF`), §2 (on-disk layout table, same correction). No source files changed.
-- **Synced:** no
+- **Synced:** yes (2026-07-31, into `docs/P2000T-disk-formats.md` §2 (on-disk layout table
+  corrected, write-scope raw offset corrected to 0x2000-0x27FF) and §7 item 3 (rewritten,
+  "stale cluster" theory retired)).
 
 ### 2026-07-31 — Audit: JWSDOS directory/geometry conclusions re-derived under the corrected cylinder-major formula, plus a head-selection encoding check — one real prior mislabeling found and corrected, no emulator bug found
 - **Trigger:** owner follow-up to the 2026-07-30 `SectorOffset` fix — several of this project's
@@ -1821,7 +1899,10 @@ marked synced. Do NOT edit the reference doc from this project.
   (write-scope claim — flagged unverified), `docs/P2000T-reference.md` §5d. No source files
   changed — this is an audit with no code fix; `src/P2000.Machine/Devices/Fdc/Upd765.cs`
   (`DispatchDataCommand`/`DispatchSeek`/`DispatchRecalibrate`) confirmed correct as-is for item 1.
-- **Synced:** no
+- **Synced:** yes (2026-07-31, into `docs/P2000T-disk-formats.md` §2 (FINAL CORRECTED
+  PICTURE block, DE_head tension fully resolved) and §7 items 2/2a/3 (rewritten); into
+  `docs/P2000T-reference.md` §3a (UI milestone 15 bug note) and §5d (follow-up audit
+  paragraph correcting the prior "duplicate content at 0x2800/0x3000" mislocation)).
 
 ### 2026-07-30 — CORRECTION (supersedes the entry immediately below): disk-image raw layout FIXED to cylinder-major/head-minor — the entry below's "no bug" conclusion was wrong
 - **This entry OVERTURNS the "geometry mapping vs. getdos's fixed-side-0 read" entry immediately

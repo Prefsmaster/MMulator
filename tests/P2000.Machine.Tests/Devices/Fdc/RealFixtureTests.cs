@@ -71,11 +71,14 @@ public class RealFixtureTests
         Assert.False(actual.All(b => b == 0x00));
     }
 
-    // ---- Directory browse: exact real content, stale cluster excluded ---------------------------
+    // ---- Directory browse: exact real content, BOTH sides (project CLAUDE.md §17, 2026-07-31
+    // fix — ReadDirectory() previously only ever surfaced side 2, reading a hardcoded 0x1800
+    // offset that was neither side's real location) -----------------------------------------------
 
-    /// <summary>The confirmed 18 real filenames on <c>Spel1.dsk</c>'s active side-1 directory
-    /// (raw 0x1800-0x1FFF), in on-disk order (<c>docs/P2000T-disk-formats.md</c> §2/§4).</summary>
-    private static readonly string[] ExpectedActiveFilenames =
+    /// <summary>The confirmed 18 real filenames on <c>Spel1.dsk</c>'s side-2 directory (raw
+    /// <c>0x3000</c>-<c>0x37FF</c>, <c>dir_side2_prep</c>'s confirmed real target), in on-disk
+    /// order (<c>docs/P2000T-disk-formats.md</c> §2/§4).</summary>
+    private static readonly string[] Side2RealFilenames =
     {
         "Tralieenspel", "klemvast", "Elevatie", "Risk", "Space Misson", "Cijferdans",
         "Info Bat.S.", "Battle star", "Toernooi", "Doolhofspel", "rij sim",
@@ -83,9 +86,13 @@ public class RealFixtureTests
         "Grotvliergers", "BABA",
     };
 
-    /// <summary>The confirmed 20 stale filenames at raw 0x1000-0x17FF (format doc §2/§7 item 3)
-    /// — real, struct-shaped data, but NOT this disk's active catalog; must never surface.</summary>
-    private static readonly string[] StaleClusterFilenames =
+    /// <summary>The confirmed 20 real filenames on <c>Spel1.dsk</c>'s side-1 directory (raw
+    /// <c>0x2800</c>-<c>0x2FFF</c>, <c>dir_side1_prep</c>'s confirmed real target) — previously
+    /// mislabeled a "stale cluster from another disk" (a real mislabeling this project carried
+    /// for a long time, corrected 2026-07-31): every entry here carries a self-consistent
+    /// <c>DE_head=0</c>, exactly matching a genuine side-1 catalog written by JWSDOS's own
+    /// ordinary <c>save_directory</c> path, same as side 2's.</summary>
+    private static readonly string[] Side1RealFilenames =
     {
         "Fraxxon + scores", "Centipede", "Androide-nim", "Race-track", "Car Race",
         "racen 2.1", "Lady Bug", "Space Atack", "Brick-Wall", "brick-Wall II",
@@ -94,39 +101,46 @@ public class RealFixtureTests
     };
 
     [Fact]
-    public void Spel1Dsk_Directory_ReturnsExactly18RealEntries_InOrder()
+    public void Spel1Dsk_Directory_ReturnsBothSides_Side1ThenSide2_38EntriesTotal()
     {
+        // The core regression case for the 2026-07-31 fix — the first time this specific "both
+        // sides on one real disk" scenario has ever been exercised end to end (the old code only
+        // ever surfaced one side, so this combination was structurally untestable before).
         var disk = new DskImage(DiskPath("Spel1.dsk"));
         var entries = disk.ReadDirectory();
 
-        Assert.Equal(ExpectedActiveFilenames.Length, entries.Count);
-        for (var i = 0; i < ExpectedActiveFilenames.Length; i++)
+        Assert.Equal(Side1RealFilenames.Length + Side2RealFilenames.Length, entries.Count);
+
+        for (var i = 0; i < Side1RealFilenames.Length; i++)
         {
-            Assert.Equal(ExpectedActiveFilenames[i], entries[i].Filename);
+            Assert.Equal(Side1RealFilenames[i], entries[i].Filename);
             Assert.Equal("BAS", entries[i].Extension);
-            Assert.Equal((byte)'B', entries[i].FileType);
+            Assert.Equal(0, entries[i].Head); // read from the head-0 region — must match
+        }
+
+        var side2Start = Side1RealFilenames.Length;
+        for (var i = 0; i < Side2RealFilenames.Length; i++)
+        {
+            var e = entries[side2Start + i];
+            Assert.Equal(Side2RealFilenames[i], e.Filename);
+            Assert.Equal("BAS", e.Extension);
+            Assert.Equal((byte)'B', e.FileType);
+            Assert.Equal(1, e.Head); // read from the head-1 region — must match
         }
     }
 
     [Fact]
     public void Spel1Dsk_Directory_AutorunEntry_HasConfirmedTransferAddress()
     {
+        // CORRECTED (2026-07-31 fix): the previously-"confirmed" 0x7000 came from reading the
+        // 0x1800 duplicate/near-match region, not AUTORUN's own real location (raw 0x3000). The
+        // duplicate differs from the real content by exactly one byte (project CLAUDE.md §17,
+        // 2026-07-31 audit) — AUTORUN's own transfer-address LOW byte is precisely that one byte,
+        // which is why this is the only field this fix changes for this specific entry.
         var disk = new DskImage(DiskPath("Spel1.dsk"));
         var autorun = disk.ReadDirectory().Single(e => e.Filename == "AUTORUN");
-        Assert.Equal(0x7000, autorun.TransferAddress);
+        Assert.Equal(0x6547, autorun.TransferAddress);
         Assert.Equal(2744, autorun.FileLength);
-    }
-
-    [Fact]
-    public void Spel1Dsk_Directory_NeverIncludesTheStaleClusterEntries()
-    {
-        var disk = new DskImage(DiskPath("Spel1.dsk"));
-        var entries = disk.ReadDirectory();
-
-        foreach (var staleName in StaleClusterFilenames)
-        {
-            Assert.DoesNotContain(entries, e => e.Filename == staleName);
-        }
     }
 
     /// <summary>Validation identity confirmed in the format doc (§4): for every real entry,
@@ -153,18 +167,16 @@ public class RealFixtureTests
     }
 
     [Fact]
-    public void JwsSytemDsk_DetectDirectoryFormat_ReturnsUnknown()
+    public void JwsSytemDsk_DetectDirectoryFormat_ReturnsJwsdos()
     {
-        // CHANGED (machine milestone 23): jws-sytem.dsk's real JWSDOS directory region (raw
-        // 0x1800) is legitimately empty (see the test just below) — that's now equally consistent
-        // with a blank PDOS working disk, so it no longer defaults to Jwsdos. Falls through to
-        // Unknown, same as any other all-empty directory region.
-        // NOT IsDirectoryRegionBlank(), though — track 1 (PDOS's own FCB region, raw 0x0000) holds
-        // this real disk's genuine JWSDOS boot code, not all-zero data, so only the JWSDOS
-        // directory offset is empty here, not both formats' regions.
+        // CORRECTED (2026-07-31 fix, supersedes the old "...ReturnsUnknown" expectation): the
+        // old hardcoded 0x1800 offset was genuinely empty on this disk, but that was never
+        // jws-sytem.dsk's real directory location — its actual side-1 directory (raw 0x2800,
+        // dir_side1_prep's confirmed target) holds a real, well-formed 14-entry catalog (the
+        // disk's own utility programs — "JWS Systeem Disk", "Format", "AUTORUN", "Tetris", etc.).
+        // Side 2 (raw 0x3000) is genuinely empty on this disk — not investigated further.
         var disk = new DskImage(DiskPath("jws-sytem.dsk"));
-        Assert.Equal(DiskDirectoryFormat.Unknown, disk.DetectDirectoryFormat());
-        Assert.False(disk.IsDirectoryRegionBlank());
+        Assert.Equal(DiskDirectoryFormat.Jwsdos, disk.DetectDirectoryFormat());
     }
 
     [Fact]
@@ -244,14 +256,16 @@ public class RealFixtureTests
     [Fact]
     public void Spel1Dsk_Directory_AllEntries_HaveConfirmedSideValue()
     {
-        // docs/P2000T-disk-formats.md §4: every one of Spel1.dsk's real active-directory entries
-        // reads DE_head=1 (side 2) — a confirmed real per-disk value, not the 0 originally
-        // (mis)reported in an earlier pass of that doc.
+        // docs/P2000T-disk-formats.md §4: EVERY entry's own embedded Head byte is self-consistent
+        // with the physical region it was actually read from (project CLAUDE.md §17, 2026-07-31
+        // fix's own test requirement — no cross-wiring between the two reads) — side 1's 20 real
+        // entries all read Head=0, side 2's 18 real entries all read Head=1.
         var disk = new DskImage(DiskPath("Spel1.dsk"));
         var entries = disk.ReadDirectory();
 
-        Assert.Equal(18, entries.Count);
-        Assert.All(entries, e => Assert.Equal(1, e.Head));
+        Assert.Equal(38, entries.Count);
+        Assert.All(entries.Take(Side1RealFilenames.Length), e => Assert.Equal(0, e.Head));
+        Assert.All(entries.Skip(Side1RealFilenames.Length), e => Assert.Equal(1, e.Head));
     }
 
     [Fact]
@@ -295,13 +309,35 @@ public class RealFixtureTests
         Assert.Equal(expected, sector1);
     }
 
-    // ---- Empty-track fixture ----------------------------------------------------------------
+    // ---- jws-sytem.dsk's real directory (project CLAUDE.md §17, 2026-07-31 fix) -------------
+
+    /// <summary>The confirmed 14 real filenames on <c>jws-sytem.dsk</c>'s side-1 directory (raw
+    /// <c>0x2800</c>-<c>0x2FFF</c>) — this system disk's own utility programs, previously
+    /// entirely missed since the old hardcoded 0x1800 offset was genuinely empty for THIS disk.
+    /// Side 2 (raw <c>0x3000</c>) is genuinely empty on this disk.</summary>
+    private static readonly string[] JwsSytemSide1RealFilenames =
+    {
+        "JWS Systeem Disk", "Format", "AUTORUN", "Disk-report 2.1", "Disk-duplicator",
+        "Disk Inhoud Spec", "Multi-file Copy", "Back-updata 1.1", "Disk Util.3 in 1",
+        "Diskzoeker", "Edit 40", "Edit 80", "Filecopy 1.4", "Tetris",
+    };
 
     [Fact]
-    public void JwsSytemDsk_AllZeroTrack2_DirectoryIsEmpty_NotAnError()
+    public void JwsSytemDsk_Directory_ReturnsSide1sRealCatalog_NotEmpty()
     {
+        // CORRECTED (2026-07-31 fix, supersedes the old "...DirectoryIsEmpty..." expectation):
+        // this disk's real directory was never empty — the old hardcoded 0x1800 offset just
+        // happened to be empty for this specific disk, which is a genuinely different byte
+        // range than side 1's actual location (raw 0x2800).
         var disk = new DskImage(DiskPath("jws-sytem.dsk"));
-        Assert.Empty(disk.ReadDirectory());
+        var entries = disk.ReadDirectory();
+
+        Assert.Equal(JwsSytemSide1RealFilenames.Length, entries.Count); // side 2 is genuinely empty
+        for (var i = 0; i < JwsSytemSide1RealFilenames.Length; i++)
+        {
+            Assert.Equal(JwsSytemSide1RealFilenames[i], entries[i].Filename);
+            Assert.Equal(0, entries[i].Head);
+        }
     }
 
     [Fact]

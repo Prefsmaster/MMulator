@@ -38,21 +38,39 @@ public sealed class DskImage
     /// <c>$FFF</c>): binary track count <b>+1</b> (e.g. <c>0x29</c> = 41 → 40 tracks).</summary>
     private const int TrackCountOffset = 0x0FFF;
 
-    /// <summary>Active directory region (<c>docs/P2000T-disk-formats.md</c> §2): raw
-    /// <c>0x1800</c>-<c>0x1FFF</c>, NOT <c>0x1000</c>-<c>0x17FF</c> (a stale/unrelated cluster —
-    /// see the format doc's §2/§7 item 3 caution). This raw offset itself is unaffected by the
-    /// 2026-07-30 cylinder-major layout correction (project CLAUDE.md §17) — it's a fixed byte
-    /// position, not derived via <see cref="SectorOffset"/>. <b>Its CHS identity DOES change
-    /// under the correction, though</b>: under cylinder-major it's (cylinder 0, head 1, sector
-    /// 9), not (cylinder 1, head 0, sector 9) as previously assumed — which is also the more
-    /// consistent reading, since every real entry here carries a confirmed <c>DE_head=1</c> byte
-    /// (this doc's own earlier "CORRECTED" paragraph flagged that as an unexplained tension under
-    /// the old layout; it isn't one anymore). Which JWSDOS routine (<c>dir_side1_prep</c> vs.
-    /// <c>dir_side2_prep</c>) actually targets this region is a separate, still-open question —
-    /// not re-verified as part of this fix.</summary>
-    private const int DirectoryOffset = 0x1800;
+    /// <summary>JWSDOS's own directory cylinder — CONFIRMED FIXED at cylinder 1 regardless of
+    /// disk size (project CLAUDE.md §17, 2026-07-31, direct FDC replay against real disk
+    /// fixtures): both <c>dir_side1_prep</c> and <c>dir_side2_prep</c> always target physical
+    /// cylinder 1 (<c>getdos</c>'s "track 2"), derived from a fixed linear-sector constant
+    /// (<c>0x19</c>/<c>0x11</c>), never from <see cref="Tracks"/>.</summary>
+    private const int DirectoryCylinder = 1;
     private const int DirectorySize = 0x0800; // 2048 B = 8 sectors = 64 × 32-byte entries
     private const int DirectoryEntrySize = 32;
+
+    /// <summary>Raw offset of one side's directory region, computed via the same CHS formula
+    /// every other sector read uses — REPLACES the earlier hardcoded <c>0x1800</c> constant
+    /// (project CLAUDE.md §17, 2026-07-31 fix). <c>dir_side1_prep</c> (head 0) starts at
+    /// sector 9 (linear sector <c>0x19</c>=25, "sector 9 track 2"); <c>dir_side2_prep</c>
+    /// (head 1) starts at sector 1 (linear sector <c>0x11</c>=17, "sector 1 track 2") — both
+    /// confirmed via direct FDC replay against real <c>Spel1.dsk</c> bytes (2026-07-31): head 0
+    /// lands on raw <c>0x2800</c> (a real, well-formed side-1 directory — NOT the "stale
+    /// cluster" this project previously believed it to be, see the dated findings-log entry),
+    /// head 1 on raw <c>0x3000</c> (the already-known active/side-2 directory). The OLD fixed
+    /// <c>0x1800</c> offset was neither of these real locations — it was a near-duplicate
+    /// artifact (cylinder 0's own "flip side," still not fully explained) that happened to
+    /// closely match side 2's real content on <c>Spel1.dsk</c> specifically, not a structural
+    /// guarantee on every disk (confirmed wrong on <c>jws-sytem.dsk</c>/<c>hires_demo.dsk</c>,
+    /// both of which have real directory content at the CORRECT offsets that <c>0x1800</c>
+    /// completely missed).
+    ///
+    /// <b>Single-sided images are unaffected (mathematically, not just as a special case):</b>
+    /// when <see cref="Sides"/> is 1, only <paramref name="head"/>=0 is ever read (side 2
+    /// doesn't physically exist — mirrors JWSDOS's own <c>is_disk_SS</c> gate), and the CHS
+    /// formula for (cylinder 1, head 0, sector 9) under <c>Sides=1</c> collapses to exactly
+    /// <c>0x1800</c> — the same value the old hardcoded constant always used. So the fix is a
+    /// verified no-op for every single-sided fixture in this project's own test suite.</summary>
+    private int DirectoryRawOffset(int head) =>
+        SectorOffset(DirectoryCylinder, head, head == 0 ? 9 : 1);
 
     /// <summary>PDOS's own FCB directory region — track 1 (raw <c>0x0000</c>-<c>0x0FFF</c>,
     /// <c>getdos</c>'s own name for cylinder 0), 128 fixed 32-byte slots
@@ -376,10 +394,13 @@ public sealed class DskImage
     /// serialization (config/`.state` concern, unaffected by host container format).</summary>
     public byte[] GetImdBytes() => ImdFormat.Write(_data, Tracks, Sides, SectorOrderMaps);
 
-    /// <summary>Browses side 1's confirmed active directory only (raw <c>0x1800</c>-<c>0x1FFF</c>
-    /// — <c>docs/P2000T-disk-formats.md</c> §2/§4). Side 2's directory location in a raw image is not
-    /// yet confirmed (format doc §7 item 2) — deliberately NOT modeled here, per the milestone's
-    /// own "don't guess an offset" instruction. Empty (zero-padded) slots are omitted.
+    /// <summary>Browses BOTH sides' real directories (project CLAUDE.md §17, 2026-07-31 fix —
+    /// previously only ever read one hardcoded region, <c>0x1800</c>, which was neither side's
+    /// real location; see <see cref="DirectoryRawOffset"/>). Side 1 (head 0) entries come first,
+    /// then side 2 (head 1) — a presentation-order choice the UI is free to re-order using each
+    /// entry's own <see cref="DiskDirectoryEntry.Head"/>. Side 2 is skipped entirely when
+    /// <see cref="Sides"/> is 1 (there is no physical side 2 to read — mirrors JWSDOS's own
+    /// <c>is_disk_SS</c> gate in <c>read_directory</c>). Empty (zero-padded) slots are omitted.
     ///
     /// <b>An unpadded short mount's directory region reads as all-zero (project CLAUDE.md
     /// milestone 20d)</b> — same out-of-range convention <see cref="ReadSector"/> uses, applied
@@ -389,7 +410,7 @@ public sealed class DskImage
     public IReadOnlyList<DiskDirectoryEntry> ReadDirectory()
     {
         var entries = new List<DiskDirectoryEntry>();
-        foreach (var (_, entry) in EnumerateDirectorySlots())
+        foreach (var (_, _, entry) in EnumerateAllDirectorySlots())
         {
             var filename = System.Text.Encoding.ASCII.GetString(entry[..16]).TrimEnd();
             var extension = System.Text.Encoding.ASCII.GetString(entry[16..19]).TrimEnd();
@@ -407,17 +428,33 @@ public sealed class DskImage
         return entries;
     }
 
-    /// <summary>Walks side 1's directory region (same offsets/empty-slot rule as
-    /// <see cref="ReadDirectory"/>) and yields only the non-empty 32-byte slots, each still
-    /// backed by the same underlying buffer copy — shared by <see cref="ReadDirectory"/> and
-    /// <see cref="DetectDirectoryFormat"/> so the two never drift on what counts as "empty."</summary>
-    private IEnumerable<(int Index, byte[] Entry)> EnumerateDirectorySlots()
+    /// <summary>Walks BOTH sides' directory regions in turn (side 1 then side 2, side 2 skipped
+    /// when <see cref="Sides"/> is 1) and yields only the non-empty 32-byte slots — shared by
+    /// <see cref="ReadDirectory"/> and <see cref="DetectDirectoryFormat"/> so the two never drift
+    /// on what counts as "empty."</summary>
+    private IEnumerable<(int Head, int Index, byte[] Entry)> EnumerateAllDirectorySlots()
+    {
+        foreach (var (index, entry) in EnumerateDirectorySlots(head: 0))
+            yield return (0, index, entry);
+
+        if (Sides == 2)
+        {
+            foreach (var (index, entry) in EnumerateDirectorySlots(head: 1))
+                yield return (1, index, entry);
+        }
+    }
+
+    /// <summary>Walks one side's directory region (raw offset from
+    /// <see cref="DirectoryRawOffset"/>) and yields only its non-empty 32-byte slots, each still
+    /// backed by the same underlying buffer copy.</summary>
+    private IEnumerable<(int Index, byte[] Entry)> EnumerateDirectorySlots(int head)
     {
         var regionBuffer = new byte[DirectorySize]; // defaults to 0x00 — an empty directory
-        if (DirectoryOffset < _data.Length)
+        var offset = DirectoryRawOffset(head);
+        if (offset < _data.Length)
         {
-            var available = Math.Min(DirectorySize, _data.Length - DirectoryOffset);
-            _data.AsSpan(DirectoryOffset, available).CopyTo(regionBuffer);
+            var available = Math.Min(DirectorySize, _data.Length - offset);
+            _data.AsSpan(offset, available).CopyTo(regionBuffer);
         }
         var count = DirectorySize / DirectoryEntrySize;
 
@@ -440,9 +477,9 @@ public sealed class DskImage
 
     /// <summary>Auto-detects which directory format this image holds (project CLAUDE.md §13
     /// milestones 22/22a; reference doc §3a "RESOLVED — the Disk Drives window's directory browse
-    /// table gets format auto-detection..."). Tries JWSDOS first (side-1 directory, raw
-    /// <c>0x1800</c>); then PDOS's own FCB directory (track 1, raw <c>0x0000</c>,
-    /// <c>docs/P2000T-disk-formats.md</c> §6a).
+    /// table gets format auto-detection..."). Tries JWSDOS first (BOTH sides' directories, see
+    /// <see cref="DirectoryRawOffset"/>); then PDOS's own FCB directory (track 1, raw
+    /// <c>0x0000</c>, <c>docs/P2000T-disk-formats.md</c> §6a).
     ///
     /// <b>JWSDOS check:</b> reuses the same "non-empty slot" rule as <see cref="ReadDirectory"/>,
     /// then additionally requires every non-empty slot's filename+extension+filetype bytes
@@ -486,11 +523,12 @@ public sealed class DskImage
     private bool IsPlausibleJwsdosDirectory()
     {
         var sawNonEmptySlot = false;
-        foreach (var (_, entry) in EnumerateDirectorySlots())
+        foreach (var (_, _, entry) in EnumerateAllDirectorySlots())
         {
             sawNonEmptySlot = true;
             // Filename (0-15) + extension (16-18) + filetype (19) — the fields real JWSDOS
-            // filenames/extensions occupy — must all be printable ASCII or space.
+            // filenames/extensions occupy — must all be printable ASCII or space. Checked across
+            // BOTH sides — a non-JWSDOS image with garbage on either side must not pass.
             for (var i = 0; i < 20; i++)
             {
                 var b = entry[i];
@@ -502,15 +540,15 @@ public sealed class DskImage
         return sawNonEmptySlot;
     }
 
-    /// <summary>True when NEITHER a JWSDOS directory slot (raw <c>0x1800</c>-<c>0x1FFF</c>) NOR a
-    /// PDOS FCB slot (track 1, raw <c>0x0000</c>) has any non-empty entry — i.e. this image is
-    /// genuinely blank at both formats' directory regions, not just unrecognized (machine
-    /// milestone 23). Meaningful only when <see cref="DetectDirectoryFormat"/> has already
-    /// returned <see cref="DiskDirectoryFormat.Unknown"/> — a caller (the UI fallback view) uses
-    /// this to show a distinct "clean disk" message instead of the generic "unknown disk
+    /// <summary>True when NEITHER side's JWSDOS directory slots NOR a PDOS FCB slot (track 1, raw
+    /// <c>0x0000</c>) has any non-empty entry — i.e. this image is genuinely blank at both
+    /// formats' directory regions, not just unrecognized (machine milestone 23). Meaningful only
+    /// when <see cref="DetectDirectoryFormat"/> has already returned
+    /// <see cref="DiskDirectoryFormat.Unknown"/> — a caller (the UI fallback view) uses this to
+    /// show a distinct "clean disk" message instead of the generic "unknown disk
     /// contents/structure" wording for genuine garbage.</summary>
     public bool IsDirectoryRegionBlank() =>
-        !EnumerateDirectorySlots().Any() && !EnumeratePdosFcbSlots().Any();
+        !EnumerateAllDirectorySlots().Any() && !EnumeratePdosFcbSlots().Any();
 
     /// <summary>Reads one raw 32-byte PDOS FCB slot (1-based positions in
     /// <c>docs/P2000T-disk-formats.md</c> §6a map to 0-based <paramref name="index"/>*32 + (position-1)

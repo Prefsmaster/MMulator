@@ -1624,6 +1624,441 @@ marked synced. Do NOT edit the reference doc from this project.
 - **Synced:** yes (2026-07-05, into P2000T-reference.md + device guides)
 -->
 
+### 2026-08-03 — Part E (cc-bugfix-prompt-12 + addendum): LIKELY RESOLVES THE ORIGINAL "Disk I/O error" INVESTIGATION — RUN"VOLORG" is NOT stuck on a directory scan that never finds a match. PDOS's function codes are a direct CP/M 2.2 BDOS clone; VOLORG's own file DATA is already being read correctly, record by record, via genuine F_READ/F_DMAOFF calls. The read simply stops 2 sectors short of a full track — the SAME "14-of-16 sectors" limitation already flagged as an unrelated loose end in Part B — long before CP/M's own EOF condition would ever fire. Neither of the prompt's own theories (a)/(b) is correct; a third, better-supported explanation is confirmed instead.
+- **Trigger:** cc-bugfix-prompt-12, disassembling the three `sub_f2fdh` handler bodies Part D
+  pinned down (`0x0F`→`0xF370`, `0x14`→`0xF3A0`, `0x1A`→`0xF3CA`), to determine whether PDOS's own
+  FCB-name compare (a) legitimately never matches VOLORG's real FCB content, or (b) matches
+  correctly but nothing acts on it. **A user-supplied addendum arrived mid-investigation** with a
+  decisive piece of outside context: PDOS's function codes `0x0F`/`0x14`/`0x1A` match standard
+  CP/M 2.2 BDOS exactly — F_OPEN/F_READ/F_DMAOFF (source:
+  [seasip.info/Cpm/bdos.html](https://www.seasip.info/Cpm/bdos.html)) — and the dispatcher was
+  already labeled `CPM_entry_point` in the existing disassembly. This reframed the whole
+  investigation: the 14-15 physical reads Parts B/C/D all labeled "the directory scan" were never
+  actually confirmed against the documented directory track/sector location — `0x1A`/`0x14`
+  alternating is the textbook CP/M idiom for reading a file's DATA sequentially (DMAOFF then
+  READ), not how directories are searched (that's F_SFIRST/F_SNEXT, `0x11`/`0x12` — confirmed
+  never called, Part C/D's own trace). The addendum asked for one cheap check FIRST, before more
+  disassembly: confirm what physical track these reads actually target.
+- **Static disassembly of the three handler bodies** (`docs/PDOS_wip.asm`, read but not edited —
+  no owner annotations exist yet around these three addresses):
+  - `0x0F`→`0xF370`: `call sub_f2d4h; call sub_f068h; jr lf388h`. `sub_f2d4h` extracts the low 5
+    bits of the current FCB's flag byte (offset+0), treats values ≥0x1E as out-of-range (early
+    return), otherwise clears those bits in-place and calls `sub_f2c2h` (drive-select bookkeeping,
+    compares `lf583h` against `Active_drive`). `sub_f068h` copies bytes out of the current FCB
+    into a working buffer (guarded by `sub_f032h`, which aborts if `(lf585h)==0xFF`) — consistent
+    with F_OPEN's job of locating/opening a file and priming its working state.
+  - `0x14`→`0xF3A0`: `call sub_f2d4h; call sub_f137h; jr lf3fah`. `sub_f137h` reads standard CP/M
+    FCB fields directly — `sub_ec39h` reads FCB offset `+0x20` (CP/M's `CR`, current record) into
+    `lf665h` and offset `+0x0F` (CP/M's `RC`, record count) into `0xf664h` — compares them
+    (`CR < RC` → issue the next physical read via `Seek_to_track`/`sub_e8b3h`, the same confirmed
+    real-FDC-command source from Part B/C; `CR >= RC` → set `lf582h=1`, the EOF-equivalent result
+    that flows into the actual return value through `sub_f2fdh`'s own `lf3fah` epilogue, and return
+    immediately). This is a byte-for-byte match to F_READ's own textbook CP/M shape.
+  - `0x1A`→`0xF3CA`: a different shape entirely — `ld a,(lf58bh); rra; jr nc,lf3d8h`. If bit 0 of
+    `lf58bh` is set, copies the current FCB pointer (`0xF579`) directly into `lf589h` — the exact
+    cell `le229h`'s function-`0x39` handler reads to know which file's data to read; if clear,
+    falls to mere bookkeeping (`lf2f3h`, copies the FCB pointer into `lf587h`/`lf52eh`, no I/O).
+    Matches F_DMAOFF exactly: a pure buffer-address-priming operation with no disk I/O of its own.
+- **Live-trace results — four new regression tests, all decisive:**
+  1. **`FcbCompareHandlerTraceDiag.cs`** (`RunVolorg_VolorgIsAlreadyTheActiveFcb_MatchBranchAlwaysTaken`):
+     `lf58bh` bit 0 is SET on all 15 real `0x1A` entries, and the "prep `lf589h` for a real read"
+     branch is taken every single time — never once does it fail. VOLORG's own FCB (independently
+     confirmed via raw bytes at `assets/Disks/volorg.dsk` track-1 slot 0: byte0=`0xF3`,
+     name=`"VOLORG  "`, ext=`"BAS"`, sector-count=`0x2C`=44, allocation map records
+     `{4,5,6,7,12,13,14,15,16,17,18}`) is the "current" FCB pointer at all 27 `sub_f137h` entries
+     too. **A real gotcha found and fixed along the way, same class as the RET-fetch artifact from
+     Part C:** the test's own raw "no-match branch (0xF3D8) taken" count matched the match-branch
+     count 1:1 — a dead giveaway it's a PC-fetch-increment artifact from the 2-byte `jr lf3dbh` at
+     `0xF3D6` transiently showing PC at `0xF3D8` before the jump completes, not a genuine second
+     execution path. Kept as a raw diagnostic count, not asserted as a real branch outcome.
+  2. **`ReadDataPhysicalTrackDiag.cs`** (`RunVolorg_ReadDataCommands_TargetTrackOneNotVolorgsOwnDataTracks`):
+     watches every real FDC transfer completion's physical cylinder/head/sector. **CONFIRMED:
+     exactly ONE initial read on cylinder 0 (1-based track 1, the directory — presumably F_OPEN
+     locating VOLORG's FCB), then ALL 14 remaining reads target cylinder 1 (1-based track 2) —
+     VOLORG's OWN real data track**, independently computed from its allocation map (records
+     4-7 → track 2 under the confirmed `1-based-track = record/4 + 1` formula). **A second real
+     gotcha found and fixed:** `Upd765.CurrentTransfer.Sector`, sampled at the `COMPLETE` trace
+     event, reports one sector PAST the one that just finished (`_transferIndex` has already
+     advanced to the full transferred byte count — 256 bytes, one whole sector — by the time the
+     trace fires, so `_transferStartSector + _transferIndex/_transferSectorSize` is off by exactly
+     +1). Corrected by subtracting 1. **The corrected track-2 sector sequence is
+     `1,7,13,3,9,15,5,11,2,8,14,4,10,16` — EXACTLY the documented full 16-sector interleave
+     (`docs/P2000T-disk-formats.md` §6a), missing only 6 and 12** — the identical "14-of-16"
+     pattern already flagged as an unrelated loose end in Part B (2026-07-28 entry, there
+     attributed to directory reads). This is not a coincidence: it's the SAME underlying
+     sector-advancement mechanism, now confirmed to also govern real file-data reads.
+  3. **`FReadEofHandlingDiag.cs`** (`RunVolorg_CrNeverReachesRc_StandardCpmEofIsNeverTriggered`):
+     tracks CR/RC directly off VOLORG's own FCB at every `sub_f137h` entry. **CONFIRMED: RC stays
+     constant at 44 throughout (VOLORG's genuine record count, never corrupted); CR only ever
+     reaches 13 across the whole attempt — nowhere near RC.** CP/M's own EOF condition (`CR>=RC`)
+     is NEVER triggered for this repro. The eventual busy-wait/"Disk I/O error" is confirmed NOT to
+     be an EOF-handling bug — there is no EOF condition here at all to mishandle.
+  4. **`SubF2fdhJumpTableDiag.cs`** (Part D's own test, unchanged) still confirms the underlying
+     30-vs-29-entry `sub_e706h` discrepancy remains open and unexplained — per the prompt's own
+     "only if genuinely cheap" scoping, not chased further this pass (a quick recheck found no
+     additional cheap signal beyond what Part D already reported).
+- **What this means for the prompt's own theory (a) vs (b) framing: NEITHER is correct.** (a) is
+  directly disproven — there is no FCB-compare failure of any kind; VOLORG's FCB is the active FCB
+  from the very first relevant read and stays so throughout. (b) is also not quite right as
+  framed — it's not that a successful compare's result gets dropped somewhere else (e.g. on the
+  BASIC side); PDOS's own F_READ machinery IS correctly acting on VOLORG's FCB, repeatedly and
+  successfully, for as long as it runs. **The real, confirmed mechanism is a third explanation:**
+  the physical-sector-read-advancement machinery underlying BOTH directory reads (sub_e774h) and
+  file-data reads (`sub_f137h`/`lf170h`) shares a genuine limitation that stops exactly 2 sectors
+  short of a complete 16-sector track, every time, regardless of context — and this happens long
+  before any CP/M-level EOF condition would legitimately end the read. Once that limit is hit, no
+  further FDC command is ever issued (Part B/C/D's own confirmed observation), and the hardcoded
+  busy-wait/timeout eventually fires, reporting "Disk I/O error" — not because of a disk-content
+  problem with `volorg.dsk`, and not because of a dropped BASIC-side decision, but because of this
+  shared sector-advancement limitation. **This directly un-flags the "14-of-16 sectors" loose end
+  from Part B's own 2026-07-28 entry** — it was never a separate, unrelated curiosity; it is very
+  likely the actual root cause of the entire "Disk I/O error" symptom chain investigated across
+  Parts A-E. Confirming the EXACT mechanism inside the shared sector-advancement code that causes
+  the 2-sector shortfall (a genuinely different, much narrower disassembly task — likely in
+  `leb9eh`/`sub_f447h`/the `lf555h` interleave-lookup table, per this pass's brief look at
+  `sub_ec19h`/`leb9eh`) is the natural next, tightly-scoped step, not attempted in this pass.
+- **`volorg.dsk` is very likely NOT a damaged/bad fixture** — the read pipeline (FCB location,
+  F_READ dispatch, physical track targeting, CR/RC bookkeeping) all work correctly right up to the
+  sector-advancement limit; nothing about VOLORG's own FCB or file content is implicated.
+- **Tests:** `tests/P2000.Machine.Tests/Boot/FcbCompareHandlerTraceDiag.cs`,
+  `ReadDataPhysicalTrackDiag.cs`, `FReadEofHandlingDiag.cs` (all new permanent regression guards,
+  finalized with assertions matching the confirmed results above).
+- **Applies to:** the three new test files above, `docs/PDOS_wip.asm` (owner's own
+  work-in-progress disassembly, read but not edited — `sub_f2d4h`/`sub_f068h`/`sub_f137h`/the
+  `0x1A` handler's `lf58bh`-gated branch are this investigation's own raw disassembly, not yet
+  owner-annotated), reference doc §5d's 2026-08-03 entry (Eighth owner follow-up), and directly
+  supersedes/resolves the "14-of-16 sectors" open item from Part B's own 2026-08-03 entry above.
+- **Synced:** no
+
+### 2026-08-03 — Part D (cc-bugfix-prompt-11): LIVE-CONFIRMED that `RUN"VOLORG"` really does reach `sub_f2fdh` — and this CORRECTS Part C's own speculative account. Not one shared handler: THREE distinct function codes reach here, each landing on its own distinct jump-table target. Sizes the next disassembly pass at exactly 3 targets, not "a dozen candidates" or "zero, unreached."
+- **Trigger:** cc-bugfix-prompt-11, the owner's own sharp follow-up to Part C: Part C's account of
+  `le12dh` → `le149h` → `sub_e705h` → `sub_f2fdh` as "the path 0x1A/0x14 take," and `sub_f2fdh`
+  itself as "a second, internal jump table... confirmed structurally (not yet functionally)," was
+  read purely from `docs/PDOS_wip.asm`'s static byte patterns — never confirmed by watching PC
+  actually walk that path during a real repro. This prompt: answer with the same live-trace rigor
+  already used for the dispatcher and `sub_e943h`, before investing in disassembling a dozen
+  candidate subroutines that might not even be the ones (or reached at all) for this repro.
+- **New regression test:** `tests/P2000.Machine.Tests/Boot/SubF2fdhJumpTableDiag.cs`
+  (`RunVolorg_ReachesSubF2fdh_WithThreeDistinctCodesEachLandingOnItsOwnTarget`). Watches every
+  entry to `sub_f2fdh` (0xF2FD), verified via the SAME genuine-CALL-bytes discipline
+  `Sube943hCallerDiag.cs`'s own RET-fetch-artifact gotcha already established (checking the actual
+  3 bytes at `returnAddr-3` decode to `CD FD F2` — the one real call site, `sub_e705h`'s own
+  `call sub_f2fdh` at 0xE712 — rather than trusting a bare `PC == 0xF2FD` match). For each genuine
+  entry, reads the routing code PDOS itself stores at `0xF578` (the same cell `sub_e705h` writes
+  before calling), computes the jump-table slot as `lf307h + 2*code` (0xF307-based, per Part C's
+  own structural read), reads the STORED little-endian target from that memory address, and
+  independently reconfirms by watching for the CPU's own PC to actually reach that computed target
+  within the following ~2000 T-states.
+- **Result 1 — CONFIRMED: execution DOES reach `sub_f2fdh`.** 30 genuine calls observed across the
+  whole `RUN"VOLORG"` attempt (verified via the real `CD FD F2` bytes, not a bare PC hit). This
+  answers the prompt's own three-way framing decisively: it is neither "zero, unreached" nor
+  "reaches a wholly different, undocumented path" — Part C's citation of the dispatch chain into
+  `sub_e705h`/`sub_f2fdh` was directionally correct.
+- **Result 2 — CORRECTS Part C's own speculative account: 0x14 and 0x1A do NOT share a single
+  handler.** Three distinct routing codes reach `sub_f2fdh` in this repro — `0x0F` (×1), `0x14`
+  (×14), `0x1A` (×15) — and **each lands on its own distinct jump-table target**, not a shared one:
+  `0x0F` → `0xF370`, `0x14` → `0xF3A0`, `0x1A` → `0xF3CA`. Every one of the 30 computed targets was
+  independently reconfirmed by directly observing the CPU's own PC actually arrive there (30/30) —
+  this isn't inferred from the static table alone. **This sizes the next disassembly pass exactly:
+  3 distinct handler addresses (`0xF370`, `0xF3A0`, `0xF3CA`), not "a dozen unread subroutines"**
+  as Part C's own raw-byte read of the surrounding region suggested (that dozen-plus subroutine
+  list — `sub_f068h`, `sub_f09bh`, etc. — remains unconfirmed as to which, if any, of those
+  addresses these three targets actually correspond to; the exact targets are now known precisely,
+  their own bodies are still undisassembled).
+- **A genuine, flagged discrepancy, not explained away per the prompt's own instruction: 30
+  `sub_f2fdh` entries vs. Part C's own 29 `CPM_entry_point`-level entries.** One more call reaches
+  `sub_f2fdh` here than Part C's own dispatcher-level trace counted at the top-level entry point
+  (0xE000) — meaning at least one call to `sub_e705h`/`sub_f2fdh` in this repro does NOT originate
+  from BASIC's own top-level `CALL &H6205` PDOS invocation. `sub_e705h` has a second, alternate
+  entry point (`sub_e706h`, immediately following it in `docs/PDOS_wip.asm`, which skips the
+  `ld c,a` step and assumes C is already set) — the most likely explanation is that PDOS's own
+  internal code calls into `sub_e706h` directly at least once, reusing the same numeric code space
+  for an internal purpose, bypassing BASIC's dispatch entirely. **Not confirmed — flagged as an
+  open, secondary thread, not chased further in this pass** (explicitly out of scope per the
+  prompt: this pass is about sizing the jump-table targets, not tracing every caller).
+- **Also worth noting (not a new finding, corroborates Part C):** the single `0x0F` call seen here
+  does NOT come from the SAME `0x0F` handling Part C traced at the top-level dispatcher (that
+  branch — `le0b4h`'s "FCB extension == 'BAS'?" check, `docs/PDOS_wip.asm` lines 172-205 — never
+  calls `sub_e705h` anywhere in its own body, confirmed by re-reading it during this pass). So this
+  repro's `0x0F` arrival at `sub_f2fdh` is itself part of the same "bypasses the top dispatcher"
+  discrepancy above, not a contradiction of Part C's own separate `0x0F`-dispatch account.
+- **Tests:** `tests/P2000.Machine.Tests/Boot/SubF2fdhJumpTableDiag.cs` (new permanent regression
+  guard) — asserts execution reaches `sub_f2fdh` at least once; every routing code observed is one
+  of the three actually confirmed here; exactly 3 distinct codes and exactly 3 distinct jump
+  targets (not 1, not a dozen); and every genuine entry's computed target is independently
+  reconfirmed via live PC observation (not just a static memory read).
+- **Applies to:** `tests/P2000.Machine.Tests/Boot/SubF2fdhJumpTableDiag.cs` (new),
+  `docs/PDOS_wip.asm` (owner's own work-in-progress disassembly, read but not edited — the three
+  target addresses `0xF370`/`0xF3A0`/`0xF3CA` are newly pinned down by this investigation, not yet
+  named/annotated in the owner's file), reference doc §5d's 2026-08-03 entry (Sixth owner
+  follow-up).
+- **Synced:** yes (P2000T-reference.md §5d, “Seventh owner follow-up (2026-08-03, cc-bugfix-prompt-11 dispatched to CC...)” entry; also corrected the Sixth follow-up's “identical handler” claim in place)
+
+### 2026-08-03 — Part C NARROWED FURTHER, STILL NOT RESOLVED (cc-bugfix-prompt-10): PDOS's dispatcher is CONFIRMED to never receive any function code beyond the directory-scan set (0x0F/0x1A/0x14) during `RUN"VOLORG"` — the decision to skip the real file-data read is NOT a PDOS-dispatch-level branch failing, it's that PDOS is never even asked. The actual decision point is narrowed to one specific, not-yet-disassembled internal jump table.
+- **Trigger:** cc-bugfix-prompt-10, continuing directly from Part B's confirmed mechanism (entry
+  immediately below): after the directory scan's last real sector completes, execution falls into
+  a hardcoded busy-wait that times out with no operation ever having been issued. This prompt's
+  question: WHY does PDOS never proceed from "FCB found" to "read the file's data"?
+- **Step 1 — precisely identified WHICH of the four `sub_e943h` (0xE943) call sites fires, at the
+  instruction level, via live execution tracing (not T-state-pattern inference as Part B used).**
+  New regression test `tests/P2000.Machine.Tests/Boot/Sube943hCallerDiag.cs`
+  (`RunVolorg_ReachesSubE943hExactlyOnce_ViaChannelTimeOutOnly`) watches every entry to 0xE943 and
+  reads the return address off the stack to identify the real caller.
+  - **Gotcha found and fixed along the way, worth flagging for any future PC-address-based
+    tracing in this codebase:** a naive `PC == 0xE943` check alone produces 30 FALSE POSITIVES for
+    every 1 real call in this exact repro. `sub_e937h`'s own `ret` instruction sits at 0xE942,
+    immediately before `sub_e943h`'s label with no intervening jump — Z80 cores bump PC past a
+    fetched single-byte opcode before that opcode's own semantics (here, the stack pop a `RET`
+    performs) complete, so PC transiently reads 0xE943 for several T-states on every return from
+    `sub_e937h`, with SP still pointing at the not-yet-popped return address. The first pass at
+    this trace misread these artifacts as two brand-new, previously-uncatalogued call sites
+    (`0xE8F7`/`0xE96F`) — both are real, legitimate call sites, but for
+    `Get_7_disk_status_bytes`/`sub_e937h`, entirely unrelated to `sub_e943h`. Fixed by verifying
+    the actual 3 bytes at `returnAddr-3` decode to `CD 43 E9` (a genuine `CALL 0xE943`) before
+    counting a hit.
+  - **Result, CONFIRMED: exactly one genuine call, from `channel_time_out` (0xE978).** This
+    precisely reconfirms Part B's own conclusion (busy-wait timeout) with call-site-level ground
+    truth, and rules out the other two hypotheses that were still open at Part B's end: the
+    function-0x0F "FCB extension == 'BAS'?" inline call (0xE0EE) and the `lea6ah` third
+    interrupt-vector-payload path (0xEA6B) — NEITHER ever fires for this repro.
+- **Step 2 — traced every function code PDOS's own dispatcher (`CPM_entry_point`, 0xE000) ever
+  receives during the whole `RUN"VOLORG"` attempt.** New regression test
+  `tests/P2000.Machine.Tests/Boot/DispatchFunctionCodeTraceDiag.cs`
+  (`RunVolorg_DispatcherNeverReceivesAnyCodeOutsideTheDirectoryScanSet`).
+  - **Gotcha found and fixed along the way:** the first pass read register A at the exact moment
+    PC==0xE000, which is BEFORE the dispatcher's own `ld a,c` (the real calling convention passes
+    the function code in **C**, not A) — every entry showed the same stale leftover A value. Fixed
+    by reading C instead.
+  - **Result, CONFIRMED: only codes 0x0F, 0x1A, and 0x14 are EVER dispatched, across all 29
+    dispatcher entries observed for the whole attempt — no other code, including the candidate
+    0x39, ever appears.** 0x39 (`docs/PDOS_wip.asm`'s own `le229h`/0xE229 handler — reads a value
+    via `(ix_pointer)`, converts it via `sub_eb23h`, stores the result into `RW_cmd_track`; this
+    investigation's own working hypothesis for "the real file-data-read trigger," based on its
+    shape looking like "convert an FCB allocation-map record into a track") is never sent. The
+    scan simply cycles 0x1A (read next directory sector, dispatches into `sub_e774h`→`sub_e7abh`
+    per Part B)/0x14 through all 14 real sectors and then stops entirely — no further dispatcher
+    entry of ANY kind follows the last one, straight into the busy-wait.
+- **Both 0x1A and 0x14 route to the exact SAME PDOS-side handler**, confirmed directly in
+  `docs/PDOS_wip.asm`: `le12dh`'s dispatch chain sends both (along with 0x12/0x18/0x19/0x1B-0x1E)
+  to `le149h` → `call sub_e705h` (0xE705). `sub_e705h` stores the function code (in C) into a byte
+  at `0xF578` and the FCB pointer (from `lf52ch`) at `0xF579`-`0xF57A`, then calls `sub_f2fdh`
+  (0xF2FD) — **this is where the real per-code behavior must live**, since PDOS's own top-level
+  dispatcher treats 0x1A and 0x14 identically.
+- **`sub_f2fdh` (0xF2FD) is a SECOND, internal jump table, indexed by the SAME function code —
+  this is PDOS's actual FCB-compare/decision engine, and it is the concrete, narrowed location of
+  whatever decides "keep scanning" vs. "found it, transition to a real read."** Confirmed
+  structurally (not yet functionally): computes `lf307h + 2*code` and jumps to the 2-byte address
+  stored there — a genuine jump table, whose raw table-entry bytes the current disassembly
+  mis-renders as garbage instructions (visible around `0xF321`-`0xF344` in `docs/PDOS_wip.asm`'s
+  raw dump) because nothing yet marks that region as data, not code. Beyond the table, roughly a
+  dozen distinct case-handler blocks are visible in the raw disassembly (calling `sub_f068h`,
+  `sub_f09bh`, `sub_f137h`, `sub_f186h`, `sub_f0adh`, `sub_f045h`, `sub_ef3dh`, `sub_eeadh`,
+  `sub_ef57h`, `sub_ecd5h`, `sub_f24ch`, `sub_f2c2h`, `sub_f2d4h`) — **none of these addresses or
+  routines are from the owner's own `docs/PDOS_wip.asm` annotations; they are this
+  investigation's own raw disassembly, read only far enough to identify the jump-table shape and
+  the existence of these call targets, NOT their individual behavior.**
+- **What's still open, narrower than at the start of Part C:** two live possibilities, NOT yet
+  distinguished — (a) `sub_f2fdh`'s own C=0x14/C=0x1A case handlers run a real FCB-name-compare
+  and, for THIS fixture's FCB content, never signal "match found, transition to read" (a fixture-
+  or FCB-validation-content question, per the prompt's own framing); or (b) the handlers DO signal
+  a match correctly, but whatever should happen next (issue function code 0x39 or equivalent) is a
+  decision made entirely on the BASIC side (the disk-loaded LOAD/RUN token driver — a DIFFERENT
+  code region from PDOS's own bank-1 driver, per Part A's `&H698D`-`&H69D5` wrapper finding) that
+  never gets there. **Disambiguating these needs disassembling `sub_f2fdh`'s C=0x14/C=0x1A jump
+  targets and their sub-handlers** — a substantial follow-on task (a dozen-plus unread
+  subroutines), not completed in this pass. Per the prompt's own instruction not to guess: this is
+  reported as the confirmed narrowing achieved, not resolved further.
+- **Tests:** `tests/P2000.Machine.Tests/Boot/Sube943hCallerDiag.cs` (rewritten from a pure
+  diagnostic into a permanent regression guard — asserts exactly one genuine call to `sub_e943h`,
+  from call site 0xE978) and `tests/P2000.Machine.Tests/Boot/DispatchFunctionCodeTraceDiag.cs`
+  (new permanent regression guard — asserts every dispatched function code during the attempt is
+  one of {0x0F, 0x1A, 0x14} and that 0x39 never appears).
+- **Applies to:** `tests/P2000.Machine.Tests/Boot/Sube943hCallerDiag.cs`,
+  `tests/P2000.Machine.Tests/Boot/DispatchFunctionCodeTraceDiag.cs` (both new/rewritten),
+  `docs/PDOS_wip.asm` (owner's own work-in-progress disassembly — NOT edited by this
+  investigation; `sub_f2fdh`'s jump table and its case handlers are this investigation's own raw
+  disassembly, explicitly flagged above as not from the owner's file), reference doc §5d's
+  2026-08-03 entry.
+- **Synced:** yes (P2000T-reference.md §5d, “Sixth owner follow-up (2026-08-03, cc-bugfix-prompt-10 dispatched to CC...)” entry)
+
+### 2026-08-03 — Part B NARROWED, NOT YET RESOLVED (cc-bugfix-prompt-9): `RUN`/`LOAD`'s persistent "Disk I/O error" is CONFIRMED not an FDC/CTC/interrupt-emulation bug — the real gap is that PDOS never issues the file-data read at all after a successful directory scan. Root cause of THAT still open; not guessed at.
+- **Trigger:** cc-bugfix-prompt-9's Part B, continuing directly from Part A's confirmed
+  `&H698D`-`&H69D5` wrapper mechanism (see that entry, immediately below) — and from a live,
+  collaborative disassembly session with the owner, who is independently hand-annotating PDOS
+  (`docs/PDOS_wip.asm`, work-in-progress) and spotted a CTC channel-1 timer/interrupt-counting
+  mechanism ("ignore 1024 interrupts, ~20s, then time out") that looked like a promising lead for
+  the original "genuinely stuck" LOAD/RUN symptom (project CLAUDE.md's own 2026-07-28 entry).
+- **The CTC-timeout chase — a real, confirmed mechanism, but ultimately a RED HERRING for this
+  specific symptom.** Traced `exit_and_set_disk_off_timer` (the common exit path for nearly every
+  PDOS command) live: it DOES arm CTC ch1 fresh (prescaler 256, TC 0xFF, matching a real
+  ~65,280-T-state period, confirmed via live reflection into `CtcChannel`'s own internal
+  `_control`/`_timeConstant`/`_downCounter`/`_started`/`_softReset` fields) on every single
+  command exit — and ch1 also gets reprogrammed into a SEPARATE counter-mode/TC=1 shape
+  (`sub_e8c3h`) during active transfers, confirming the owner's own "set up in different ways"
+  observation. Chasing this down (multiple live traces, described in full in this entry's earlier
+  drafts, since trimmed) found the loop-counter math didn't add up at first (flag flipping after
+  ~15 interrupts, not the expected ~1020) — but this turned out to be because the software
+  loop-counters DO get freshly reset every time (confirmed via a corrected-offset direct RAM read:
+  real addresses `&H6165`/`&H6166`, not the initially-hand-counted `&H6164`/`&H6165` — an earlier
+  off-by-one in this same investigation), and the actual firing trigger for THIS symptom isn't the
+  CTC path at all — see below.
+- **The real mechanism, CONFIRMED via `tests/P2000.Machine.Tests/Boot/Channel0InterruptDuringGapDiag.cs`
+  (new, kept as a permanent regression guard):** traced the REAL FDC command stream (`Upd765.Trace`)
+  together with CTC channel 0's own `IntPending`/`InService` state (channel 0 = the FDC completion
+  interrupt, wired `Fdc.ResultReady += () => Ctc.ClkTrg(0)`) across a full, real
+  `RUN"VOLORG"` attempt.
+  - **Channel 0 fires and delivers CORRECTLY, every single time, for all 15 real `READ DATA`
+    completions** in the directory scan, in the confirmed interleave order
+    (1,7,13,3,9,15,5,11,2,8,14,4,10,16 — `docs/P2000T-disk-formats.md` §6a). No missed interrupt,
+    no delivery bug — our FDC/CTC/interrupt-daisy-chain emulation is proven correct for every
+    disk operation this repro actually performs.
+  - **After the LAST directory sector actually read (16) completes at t≈2.5M, the FDC trace goes
+    completely silent — no further command is EVER issued.** `RUN"VOLORG"` never attempts to read
+    VOLORG's actual file DATA at all, despite its FCB being confirmed present and correctly
+    located (project CLAUDE.md's own 2026-07-28 entry). Execution instead falls into a hardcoded
+    65536-iteration busy-wait loop (`le95fh`/`le962h` in `docs/PDOS_wip.asm`, ~3.8M T-states —
+    confirmed via a PC-visit-frequency scan showing >2 MILLION visits concentrated in a 12-address
+    range starting IMMEDIATELY when the gap begins) that exists to be interrupted EARLY by a real
+    disk operation's own completion signal — a stack-manipulation redirect installed at `&H6135`
+    by `sub_e8c3h` (POPs the busy-wait's own return address off the stack and pushes a real
+    continuation address instead, so a genuine completion interrupt jumps OUT of the wait loop
+    entirely rather than returning into it). Since no operation was ever started here, nothing
+    ever redirects it, and the loop burns through its full duration pointlessly.
+  - Once the loop naturally expires, `channel_time_out`/`sub_e943h` fires (confirmed via the
+    trace's own final `CTRL 00` entry, matching that routine's `xor a; out (DSKCTRL),a` — motor/FDC
+    off entirely): writes the confirmed "always error" class `0x02` into the wrapper's own result
+    byte at `&H6165`/`lf51eh` (see the entry below — this is the SAME byte the `&H698D`-`&H69D5`
+    wrapper reads at `&H60BB` to decide whether to print "Disk I/O error"), and sets `FDOS_flags`
+    bit 6. This is what actually prints the error — confirmed to be entirely independent of
+    whatever result the directory scan itself found.
+  - **Small, separate loose end noticed while reading this trace back (owner question,
+    2026-08-03): the directory scan only ever reads 14 of the 16 sectors the documented physical
+    interleave defines for a track.** `docs/P2000T-disk-formats.md` §6a's own confirmed pattern is
+    four groups of 4 — `{1,7,13,3}/{9,15,5,11}/{2,8,14,4}/{10,16,6,12}` — but the REAL resident
+    driver, in every trace across this investigation (and independently already in the project's
+    own 2026-07-28 entry, which recorded the identical sequence without remarking on it), issues
+    exactly `1,7,13,3,9,15,5,11,2,8,14,4,10,16` and STOPS — three full groups plus only the first
+    half of the fourth, never touching sectors 6 or 12 at all. Sector 16 is NOT a failure point —
+    it completes as cleanly as every other sector in the scan (confirmed RESULT bytes, no errors);
+    the scan simply never continues past it. Given the identical partial pattern shows up in
+    OTHERWISE-successful operations too (`FILES`'s own listing, which correctly shows both real
+    files), this does not look like the cause of the "Disk I/O error" itself — flagged as its own
+    small, independent open question (by design, needing only 14 sectors' worth of FCB slots for
+    whatever the search logic checks? or a genuine, harmless quirk?) for whoever disassembles the
+    directory-scan loop next, not conflated with the main finding above.
+- **What's now open, narrower than "genuinely stuck, FDC trace shows everything correct" (the
+  2026-07-28 entry's own conclusion):** WHY does PDOS's own logic, immediately after successfully
+  finding VOLORG's FCB in the directory scan, decide NOT to proceed to reading the file's data —
+  falling instead into a busy-wait/timeout path clearly designed for "wait for an ACTUAL disk
+  operation," not "there's nothing to wait for"? That decision sits between the directory-scan
+  dispatch (PDOS function codes `0x0F`/`0x1A`/`0x14`, already traced call-by-call in this
+  investigation) and `sub_e7abh`/`le7b0h` (the real file-data-read entry point,
+  `docs/PDOS_wip.asm`) — most likely a real FCB validation/allocation-map check the `volorg.dsk`
+  fixture's FCB doesn't satisfy (a format/fixture-content question, not necessarily an emulator
+  bug at all), but this has NOT been confirmed — flagged, not guessed, per this project's own
+  convention. Needs a disassembly of that SPECIFIC narrow code region to resolve further; the
+  owner's own in-progress `docs/PDOS_wip.asm` annotation is the natural next place to look.
+- **A related data point, owner-observed, worth connecting rather than treating as a separate
+  mystery:** `FILES` (a genuinely different PDOS command from `RUN`) correctly lists both real
+  files on `volorg.dsk` — its OWN directory-reading job visibly succeeds — and STILL prints a
+  trailing "Disk I/O error" afterward (already noted in the Part A entry above, and reproduced in
+  `DiskIoErrorFlagTrace.cs`'s own regression assertions). This is NOT a contradiction of this
+  entry's finding — it's corroborating evidence for the SAME class of bug: directory/FCB data
+  transfers correctly (confirmed, repeatedly, across `SYSTEM B`/`FILES`/`RUN`'s own initial scan);
+  something DOWNSTREAM of a successful directory operation still trips the error path. `FILES` may
+  be hitting a structurally similar "expected to be interrupted by something that never arrives"
+  gap for its own, not-yet-traced reason (e.g. its own end-of-listing step entering a similar
+  busy-wait/redirect pattern) — flagged as the most promising related thread for whoever
+  disassembles the `sub_e7abh`/`le7b0h` decision point above, not confirmed to be the identical
+  code path.
+- **Tests:** `tests/P2000.Machine.Tests/Boot/Channel0InterruptDuringGapDiag.cs` (new) — the
+  conclusive trace above, kept as a permanent regression guard: asserts the full 16-sector
+  directory scan completes in the confirmed interleave order, that NO FDC command is EVER issued
+  after the last completion (the direct evidence that the failure is not FDC-related), and that
+  the machine settles back to a clean ready state afterward. `DiskBasicDisasmDiag.cs` (extended,
+  Part B additions) — LOAD's full token handler disassembled end to end (no direct PDOS calls of
+  its own — it delegates to shared subroutines) and a whole-cartridge scan for every PDOS call
+  site, mapping which function codes (`0x0D`-`0x1A`) this ROM actually uses.
+- **Applies to:** `tests/P2000.Machine.Tests/Boot/Channel0InterruptDuringGapDiag.cs` (new),
+  `DiskBasicDisasmDiag.cs` (extended), `docs/PDOS_wip.asm` (owner's own work-in-progress
+  disassembly, referenced throughout — NOT edited by this investigation), reference doc §5d's
+  2026-08-02/03 entries.
+- **Synced:** yes (P2000T-reference.md §5d, “Fifth owner follow-up (2026-08-02/03, cc-bugfix-prompt-9 dispatched to CC)” entry, Part B paragraph)
+
+### 2026-08-02 — Part A RESOLVED (cc-bugfix-prompt-9): `SYSTEM B`'s "stale-retry" behavior is real, correct PDOS behavior — NOT a bug, no fix needed. Also found and fixed a real bug in the test harness itself (wrong VRAM row stride).
+- **Trigger:** cc-bugfix-prompt-9's Part A, following Step 0's instrumentation instruction — trace
+  `&H6091` (the Adresboekje's own named "Flag for Disk I/O error") live across the owner's exact
+  manual repro (`RESET` → `SYSTEM B` ×2 → `FILES` → `RUN"VOLORG"` ×2 → `FILES`) BEFORE any
+  disassembly, per the prompt's own "instrument first" instruction.
+- **Step 0 instrumentation** (`tests/P2000.Machine.Tests/Boot/DiskIoErrorFlagTrace.cs`, new):
+  reproduces the FULL owner-observed symptom pattern exactly, byte-for-byte: `RESET` → "Disk I/O
+  error"+"Ok" (flag 0x00→0x02, expected — a system disk's track 1 legitimately has no FCB index);
+  `SYSTEM B` (1st) → "Disk I/O error"+"Ok", flag stays 0x02; `SYSTEM B` (2nd, identical command) →
+  "Ok" alone, flag clears to 0x00; `FILES` lists both real files correctly AND ALSO prints a
+  trailing "Disk I/O error" (the owner's own "newest data point" — a command whose own core logic
+  visibly succeeds can still report the error); both `RUN"VOLORG"` attempts fail identically, fresh,
+  every time (rules out a stale flag for THAT symptom specifically — see Part B).
+- **Real mechanism found by disassembly** (`tests/P2000.Machine.Tests/Boot/DiskBasicDiskLoadedDisasmDiag.cs`,
+  new): every PDOS call returns through a wrapper at `&H698D`-`&H69D5`. This code is NOT in
+  `Basic-24.bin` (the 16K cartridge ROM, confirmed exactly 16384 bytes, mapped linearly at
+  0x1000-0x4FFF by `Slot1Cartridge.cs` with no bank tricks) — it's in the ~8K "missing interpreter
+  chunk" the Adresboekje says loads from the boot floppy's tracks 3-5 into RAM at `&H6200`.
+  Reconstructed that exact chunk directly from `diskbasic_1.6uk.dsk` (cylinders 2-4, 0-based =
+  tracks 3-5 1-based, 16 sectors/cylinder, plain sequential read — the same "READ A TRACK" shape
+  the boot loader itself uses, no logical/interleaved reordering) and confirmed the reconstruction
+  is correct by finding the literal text "PHILIPS DISK BASIC" at exactly the offset the Adresboekje
+  predicts (`&H693D`) before trusting anything disassembled from it.
+  - The wrapper reads a result/class byte PDOS's own driver leaves at `&H60BB` after each call and:
+    classes `{0x02, 0x0A, 0x0B, 0x0C}` → **unconditionally** set `&H6091=2` and jump to the error
+    print path (`&H69BB`, matching the Adresboekje's own naming exactly), regardless of whether the
+    underlying disk operation itself succeeded; class `0x1A` → **leave `&H6091` completely
+    untouched** (a real, legitimate no-op path — the actual "stale flag persists" mechanism);
+    otherwise → clear `&H6091=0` (success).
+  - Confirmed via an instruction-level trace (register dump at every PC inside the wrapper) that
+    `SYSTEM B`'s own drive-select call (`C=0x0E` at the BASIC-token level, `&H34D2`-`&H34F8` in the
+    ROM — also disassembled, confirms the token handler itself does nothing but `CALL 0x6205` then
+    `RET`, no flag logic of its own) returns through this wrapper with the result byte reading
+    `0x02` on the FIRST call — one of the unconditional-error classes — which is exactly why the
+    flag gets set and "Disk I/O error" prints, with NO fault in the FDC-level scan itself (the
+    directory read that runs as part of it is fully correct, all 16 sectors, right interleave, no
+    retries). *Why* the second call reports a different class is decided inside PDOS's own driver
+    (loaded from the boot floppy's tracks 1-2 into bank 1 at boot — a third, separate code region,
+    not yet disassembled) — genuinely out of scope for this pass, flagged rather than guessed.
+- **A real, separate bug found and fixed along the way — in this investigation's OWN test tooling,
+  not the emulator:** an earlier pass concluded "`SYSTEM B` hangs forever, prints nothing" — wrong.
+  `SnapshotScreenText` (this file, and the identical pre-existing helper in `PdosLoadSaveRepro.cs`)
+  read video memory with a 40-byte row stride. The real layout is 80 bytes/row with
+  `Video.PanX`-based windowing (`src/P2000.Machine/Devices/Video.cs`'s own confirmed
+  `BufferColumns=80`/`OnColumnFetch`) — verified directly with a raw VRAM hex dump
+  (`tests/P2000.Machine.Tests/Boot/VramLayoutDiag.cs`, new), which shows every real line starting
+  exactly on an 80-byte boundary (0x5000, 0x5050, 0x50A0, …). The 40-stride version only ever
+  exposed the FIRST 12 of 24 real screen rows, and coincidentally still looked "readable" for any
+  message under 40 characters (real content lands on every other logical line, blank padding on
+  the rest) — exactly enough to fool a human or an assertion checking the first few lines, while
+  silently hiding anything printed further down. `SYSTEM B`'s own error message landed at real rows
+  12-13, one row past where the broken reader could see. Fixed in this file's `SnapshotScreenText`
+  (now `row*80 + (PanX+col)%80`); **`PdosLoadSaveRepro.cs`'s identical helper still has the bug,
+  not fixed here** (out of this prompt's scope; flagged for whoever next touches that file — it
+  could equally be hiding output in ANY of that file's own repros, not just this one).
+- **Conclusion: no code fix for Part A.** The wrapper logic is disk-loaded PDOS data this project
+  faithfully executes, not emulator code to change — and it now demonstrably reproduces the exact
+  documented/owner-observed behavior. "SYSTEM B needs a retry" is real, correct, by-design PDOS
+  behavior (consistent with the manual's own "after DISK I/O ERROR the statement RESET has to be
+  given"), not a bug.
+- **Tests:** `DiskIoErrorFlagTrace.cs` (new) — the Step 0 repro, now a proper regression guard for
+  the confirmed pattern (RESET/SYSTEM B set-then-clear, FILES' trailing error, RUN's fresh
+  double-failure). `DiskBasicDisasmDiag.cs` (new, diagnostic) — disassembles SYSTEM/RESET/
+  FILES/LOAD token entry points straight from `Basic-24.bin` via `Z80.Disassembler` (added as a
+  test-only `ProjectReference` in `P2000.Machine.Tests.csproj`). `DiskBasicDiskLoadedDisasmDiag.cs`
+  (new, diagnostic) — reconstructs and disassembles the disk-loaded PDOS wrapper.
+  `VramLayoutDiag.cs` (new, diagnostic) — the raw VRAM dump that found the stride bug.
+- **Applies to:** `tests/P2000.Machine.Tests/Boot/DiskIoErrorFlagTrace.cs`,
+  `DiskBasicDisasmDiag.cs`, `DiskBasicDiskLoadedDisasmDiag.cs`, `VramLayoutDiag.cs` (all new),
+  `tests/P2000.Machine.Tests/P2000.Machine.Tests.csproj` (new `Z80.Disassembler` reference),
+  `docs/Adresboekje-DiskBASIC-parsed.md` (ground truth used throughout), reference doc §5d's
+  2026-08-02 entry.
+- **Synced:** yes (P2000T-reference.md §5d, “Fifth owner follow-up (2026-08-02/03, cc-bugfix-prompt-9 dispatched to CC)” entry, Part A paragraph)
+
 ### 2026-07-31 — FIXED: `DskImage.ReadDirectory()` now reads BOTH sides — closes the "missing side 1" gap identified in the entry immediately below
 - **Trigger:** owner bugfix request, direct follow-through on the investigation entry immediately
   below. Fix, not further audit — the root cause and both confirmed real locations were already

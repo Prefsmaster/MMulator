@@ -3688,7 +3688,11 @@ disassembled two narrow, specific regions to explain what the trace showed.
     ever reads 14 of the 16 sectors the confirmed interleave defines per track
     (`1,7,13,3,9,15,5,11,2,8,14,4,10,16`, stopping just before sectors 6/12) — true in both
     failing (`RUN`) and succeeding (`FILES`) cases alike, so it doesn't look like the cause of
-    the error itself. Left as its own small open question.
+    the error itself. Left as its own small open question. **UN-FLAGGED (Eighth owner follow-up
+    below) — this was never a separate, unrelated curiosity. It is very likely the actual root
+    cause of the entire investigation:** the same 14-of-16 sector-advancement limitation governs
+    real file-data reads too, and is what actually stops `RUN"VOLORG"` short, long before any
+    CP/M-level EOF condition would legitimately end the read.
 
 **Sixth owner follow-up (2026-08-03, cc-bugfix-prompt-10 dispatched to CC, leaning on the owner's
 own growing `docs/PDOS_wip.asm` annotations as primary ground truth) — the "why does PDOS skip
@@ -3781,22 +3785,237 @@ claim and re-sizes the remaining work precisely.**
   that something downstream fails to act on (theory (b)) — plus, if convenient, chasing the
   `sub_e706h` direct-entry discrepancy as a secondary thread.
 
+**Eighth owner follow-up (2026-08-03, cc-bugfix-prompt-12 + a decisive mid-investigation
+addendum) — LIKELY RESOLVES the original "Disk I/O error" investigation. Neither of the
+Seventh follow-up's two theories was correct; a third, better-supported explanation is confirmed
+instead.**
+- **The decisive new input: PDOS's function codes are a direct CP/M 2.2 BDOS clone, not an
+  independent design.** `0x0F`/`0x14`/`0x1A` match standard CP/M 2.2 BDOS exactly — F_OPEN
+  (Open File), F_READ (Read next sequential 128-byte record), F_DMAOFF (Set DMA address)
+  ([seasip.info/Cpm/bdos.html](https://www.seasip.info/Cpm/bdos.html)) — consistent with the
+  dispatcher already being labeled `CPM_entry_point` in the existing disassembly. Real CP/M's own
+  directory-search functions (F_SFIRST/F_SNEXT, `0x11`/`0x12`) are confirmed never called here
+  (Part C/D). This reframed everything: the 14-15 physical reads every prior entry here labeled
+  "the directory scan" were never actually checked against the documented directory track/sector
+  location — `0x1A`/`0x14` alternating is the textbook CP/M idiom for reading a file's DATA, not
+  for searching a directory.
+- **Disassembly of the three handler bodies confirms this directly.** `0x0F`→`0xF370` matches
+  F_OPEN's job (locates/primes a file's working state via `sub_f2d4h`/`sub_f068h`).
+  `0x14`→`0xF3A0` is a byte-for-byte match to F_READ's own textbook shape: it reads the FCB's real
+  CP/M `CR` (current record, FCB offset `+0x20`) and `RC` (record count, offset `+0x0F`) fields
+  directly, comparing `CR < RC` (issue the next physical read) vs. `CR >= RC` (real CP/M EOF,
+  return immediately). `0x1A`→`0xF3CA` matches F_DMAOFF exactly: a pure buffer-priming operation
+  with no disk I/O of its own.
+- **Live trace confirms all three theories from the Seventh follow-up are wrong, and pins down
+  what's actually happening:**
+  - VOLORG's own FCB (confirmed real bytes on `volorg.dsk`: name `"VOLORG  "`, ext `"BAS"`,
+    record count `0x2C`=44, allocation records `{4,5,6,7,12,13,14,15,16,17,18}`) is the active FCB
+    from the very first relevant read and stays so throughout — **theory (a) (a failing FCB
+    compare) is directly disproven.**
+  - The physical FDC reads: one initial read on track 1 (the directory — F_OPEN locating
+    VOLORG's FCB), then **all 14 remaining reads target track 2 — VOLORG's OWN real data track**,
+    independently confirmed from its allocation map. The read pipeline is doing exactly the right
+    thing. **Theory (b) (a correct match nothing acts on) is also not right** — PDOS's F_READ
+    machinery is genuinely, repeatedly, successfully acting on VOLORG's real data.
+  - Tracked directly off VOLORG's FCB: **`RC` stays constant at 44 throughout (never corrupted);
+    `CR` only ever reaches 13 — nowhere near 44.** CP/M's own EOF condition (`CR>=RC`) is
+    confirmed to NEVER fire in this repro — there is no EOF condition here to mishandle at all.
+  - **The real, confirmed mechanism:** the physical-sector-read-advancement machinery underlying
+    BOTH directory reads and file-data reads shares a genuine limitation that stops exactly 2
+    sectors short of a complete 16-sector track, every time, regardless of context — and this
+    happens long before any CP/M-level EOF condition would legitimately end the read. Once that
+    limit is hit, no further FDC command is ever issued (consistent with every prior part's own
+    observation), and the hardcoded busy-wait/timeout eventually fires, producing "Disk I/O
+    error" — not a disk-content problem with `volorg.dsk`, not a dropped BASIC-side decision, but
+    this shared sector-advancement limitation.
+- **This directly UN-FLAGS the "14-of-16 sectors" loose end from the Fifth follow-up above (Part
+  B, 2026-07-28's own original observation) — it was never a separate, unrelated curiosity; it is
+  very likely the actual root cause of the entire "Disk I/O error" symptom chain across this whole
+  investigation.**
+- **`volorg.dsk` is very likely NOT a damaged/bad fixture** — the read pipeline (FCB location,
+  F_READ dispatch, physical track targeting, `CR`/`RC` bookkeeping) all work correctly right up to
+  the sector-advancement limit; nothing about VOLORG's own FCB or file content is implicated. Worth
+  telling the owner directly: the P2500/CP/M image search that prompted this whole reframing may no
+  longer be needed to rule out fixture damage — though independent confirmation is still welcome.
+  A related, real bug was also found and fixed in the investigation's OWN test tooling along the
+  way: `Upd765.CurrentTransfer.Sector`, sampled at a transfer's `COMPLETE` event, was reporting one
+  sector past the one that actually just finished (an off-by-one in how the sample point relates
+  to the already-advanced transfer-byte-count) — corrected in the new trace, not a change to
+  `Upd765` itself.
+- **What's NOT yet resolved:** the EXACT mechanism inside the shared sector-advancement code that
+  causes the 2-sector shortfall (candidate location: `leb9eh`/`sub_f447h`/the `lf555h`
+  interleave-lookup table, per a brief look this pass) — a genuinely different, much narrower
+  disassembly task than anything attempted so far, not started this pass. Also still open,
+  unchanged: the 30-vs-29 `sub_e706h` direct-entry discrepancy from the Seventh follow-up (a quick
+  recheck this pass found no additional cheap signal).
+
+**Ninth owner follow-up (2026-08-04, cc-bugfix-prompt-13) — the three candidate "2-sectors-short"
+mechanisms are ALL EXONERATED; the investigation re-narrows rather than closes.**
+- **The `lf555h` interleave table is confirmed COMPLETE, not short** — its raw bytes (read
+  correctly this time, not mis-rendered as garbage instructions) are the full 16-entry sequence
+  `1,7,13,3,9,15,5,11,2,8,14,4,10,16,6,12`; indices 14/15 genuinely hold the "missing" sectors 6
+  and 12.
+- **The table-index computation (`sub_f447h`, called from `lebe5h`/`0xEBF0` — NOT `leb9eh`'s own
+  internal check at `0xEB9E`, which is an unrelated subtraction) is a clean, UNCAPPED linear
+  counter in both the `SYSTEM B` and `RUN"VOLORG"` contexts.** Live-traced: it cleanly advances
+  `0,1,2,...,13`, carry is FALSE on every call (no boundary/underflow condition ever fires), and
+  every table byte read matches the confirmed interleave. Called 1-2 more times, this exact code
+  would correctly compute indices 14/15 and read the real sectors 6/12. **None of the three named
+  candidates contain any cap at all — this disproves Part E's own working hypothesis for where
+  the limit lives.**
+- **What this means: the "stop after 14" decision is made entirely OUTSIDE PDOS's own bank-1
+  driver code.** Combined with Part D's dispatcher trace (nothing beyond the 14th `0x14`/F_READ
+  call ever reaches PDOS — not a 15th read, not F_CLOSE, nothing) and Part E's CR/RC tracking
+  (CR stops at 13, RC stays at VOLORG's genuine 44, EOF never triggers): PDOS's driver is a
+  passive, correctly-functioning component that would read further if asked. Whatever decides to
+  stop asking lives in BASIC's own record-reading loop — a different, disk-loaded code region
+  from PDOS's own bank-1 driver (`docs/PDOS_wip.asm`) — not yet disassembled as of this entry.
+- **Owner follow-up experiment, same day: directly disproves a "VOLINFO's FCB byte 15" coincidence
+  theory.** The owner patched VOLINFO's own FCB byte 15 from `0x0E`(14) to `0x2C`(44, matching
+  VOLORG's) on a real disk image and re-ran the repro — same stop-at-14 effect, unchanged. The "14"
+  is not read from or influenced by VOLINFO's FCB at all. Also confirmed: **BASIC issues 14
+  discrete, per-record `0x1A`/`0x14` call PAIRS through the top-level dispatcher — not one bulk
+  "load the file" call that lets PDOS loop internally.** The stop decision is made on BASIC's own
+  side, between individual calls, reinforcing the "external to PDOS" conclusion via a second,
+  independent line of evidence.
+- **Does NOT resolve whether this is correct, faithful P2000 behavior or a genuine bug — still
+  open in either direction as of this entry.** VOLINFO's own real FCB byte 15 = 14 (a different
+  file that genuinely only needs 14 of its 16 allocated sectors) vs. VOLORG's own byte 15 = 44
+  (needs far more) makes an intentional 14-sector stop implausible for VOLORG specifically, but
+  why BASIC's loop would stop early regardless is not yet identified.
+- **A real instrumentation bug found and fixed along the way, not an emulator bug:** the new
+  trace's first pass read the wrong memory cell for `sub_f447h`'s subtrahend (missing a double
+  pointer indirection — `(0xF662)` holds a pointer, not the value itself), producing nonsensical
+  index values that briefly looked like a genuine out-of-bounds bug before the fix revealed it was
+  a test artifact.
+
+**Owner real-hardware corroboration (2026-08-04) — a genuine P2000M, real floppies, no errors.**
+The owner booted an actual P2000M into Disk BASIC and ran `FILES` and `LOAD "VOLORG"` from real
+floppy disks (not the `.dsk` image fixtures — content parity between the two is NOT confirmed).
+**Both completed with no errors, as expected on working hardware.** This doesn't settle the
+open question above on its own (the physical floppy's actual byte content may differ from
+`volorg.dsk`), but it's a real, independent data point weighing against "this 14-sector stop is
+correct, faithful P2000 behavior" — genuine hardware running the equivalent operation is not
+observed to fail the same way. **Owner-observed follow-up detail: watching the real drive LED
+during `FILES`, it flashes repeatedly rather than staying lit continuously** — consistent with,
+and independent physical corroboration of, Part G's own disassembly-derived conclusion that
+BASIC issues discrete, separate per-sector operations rather than one bulk multi-sector transfer.
+Real hardware genuinely behaves the discrete way the ROM disassembly says it should; this isn't
+an artifact of how the emulator's own trace tooling observes things.
+
+**Tenth owner follow-up (2026-08-04) — found and disassembled BASIC's own read loop (cartridge
+ROM, not PDOS); corrects a mid-investigation working hypothesis; re-narrows the open question
+further and pauses there at the owner's request.**
+- **The three fixed call sites in `Basic-24.bin` that issue every PDOS call for this repro are now
+  pinned down precisely:** `0x3487` (F_OPEN, once), `0x32A8` (F_READ, 14×), `0x32D0` (F_DMAOFF,
+  14×) — matching Part D's dispatcher-level counts exactly, now at real ROM addresses.
+  Disassembled directly from `Basic-24.bin` via the project's own `Z80.Disassembler` (this is
+  cartridge ROM content, fully available — unlike PDOS's disk-loaded driver).
+- **The loop structure around the two repeated call sites:** `0x323A` loads a pointer from fixed
+  cell `0x63A3`, checks a 2-byte counter at `[pointer+0x26..0x27]` — if nonzero, decrements it and
+  returns ONE BYTE from a computed position in a 256-byte buffer (a byte-by-byte program scanner,
+  not a per-sector operation). Once that counter hits zero, falls through to check a SECOND,
+  separate 2-byte counter at `[pointer+0x24..0x25]` — if that is also zero, the loop exits
+  (`0x3279`); otherwise it calls `0x327F`, which issues one real DMAOFF+READ pair to refill the
+  256-byte buffer. `0x63A3` itself is set once, inside LOAD's own setup code (`0x376F`-`0x3830`,
+  previously documented in Part B).
+- **Live-tracing the first counter CORRECTS a working hypothesis formed while reading the code
+  cold.** It is NOT "records remaining, decremented once per sector" as first assumed — it's a
+  byte-level scan counter, entered ~3300 times for the whole attempt (far more than 14). Confirmed
+  precisely: **exactly 13 full 256-byte scan cycles occur (3328 bytes total) before the loop stops
+  — not 14 —** and the last cycle ends exactly at 0, not cut short mid-buffer. Reconstructing
+  VOLORG's own real byte stream from `volorg.dsk` found no plausible "end of program" marker (no
+  null link-pointer, the usual tokenized-BASIC convention) anywhere near that 3328-byte boundary —
+  so this isn't simply "BASIC correctly found the program's real end."
+- **What's now precisely un-explained, narrower than before:** the loop's real exit condition is
+  governed by the SECOND counter (`[pointer+0x24..0x25]`), checked only once the byte-scan counter
+  empties — its live value, initial value, and update rule have not yet been traced. The exact
+  relationship between "13 full byte-scan cycles," "14 real disk sector reads" (the 14th disk read
+  fetches a sector never actually consumed by the byte-scanner before the loop exits), and this
+  second counter's own threshold is not yet reconciled.
+- **Investigation deliberately paused here, at the owner's own explicit request, to decide how to
+  continue** — not because a natural stopping point was reached.
+
+**Eleventh owner follow-up (2026-08-04, cc-bugfix-prompt-14) — LIKELY CLOSES the root-cause
+question, though not the investigation itself: this is not BASIC's loop gracefully deciding to
+stop after 14. It's a genuine hang on the 14th operation.**
+- **All three candidate exit mechanisms inside BASIC's own loop are directly disproven by live
+  trace:** the second counter (`[pointer+0x24..0x25]`, Part G's own leading candidate) is set
+  once, to 256, and never changes for the whole loop — it cannot be what triggers the exit.
+  F_READ's own EOF return value (`A=1`) never occurs — A is confirmed always `0` (success) — and
+  working through the actual branch polarity shows `A=0` makes the loop continue, not exit, so
+  this path could never have been the mechanism even if EOF had fired. A third,
+  previously-unexamined leading check inside `0x323A` itself (`[pointer+0]==3`, jumping to a
+  different ROM address) also never fires — that byte stays `1` throughout.
+- **The real reconciling fact: only 13 genuine F_READ returns are ever observed, even though 14
+  real physical disk completions were already confirmed (Part E).** Precisely timed: the last
+  genuine byte-scan loop entry happens BEFORE the 14th physical disk completion — meaning the
+  13th cycle's own completion is what triggers the 14th real disk read (genuinely issued,
+  genuinely completes at the FDC level), but that 14th call's own `CALL 6205h` never returns to
+  BASIC, ever, within any reasonable trace window.
+- **Conclusion: BASIC's own loop logic is correct — none of its three exit checks are broken.**
+  BASIC is correctly, faithfully waiting for its 14th F_READ call to return; it never does. This
+  is the SAME busy-wait/timeout mechanism already fully diagnosed at the PDOS/bank-1 level in
+  Parts B/C (`busy_wait_for_interrupt` → `channel_time_out` → `sub_e943h`) — now understood to be
+  triggered from a REAL, physically-completing 14th disk operation, not "no further command ever
+  issued" as Part E's framing suggested (accurate for the T-state window it examined, incomplete
+  for the full picture). "Disk I/O error" is a genuine hang on one specific real operation, not an
+  early, deliberate stop.
+- **Still open, now narrowed to a specific kind of question:** WHY does the 14th disk operation's
+  own completion (confirmed physically real at the FDC level) fail to deliver its
+  interrupt/redirect back into a normal return from the `CALL 6205h` that issued it, when the
+  identical mechanism worked correctly for the prior 13? This is now about the specific
+  interrupt-redirect/completion-signaling path for exactly one call, not about counters, EOF
+  checks, or loop logic. Not yet reconciled with the real-P2000M no-error result — floppy-content
+  parity with the `.dsk` fixtures is unconfirmed, so this could point to a fixture/content
+  difference, an emulator timing/interrupt bug specific to a 14th same-track sequential operation,
+  or something else entirely.
+
+**Owner follow-up (2026-08-04) — CORRECTION to this entry's own first draft (twice over: which
+disk was tested, AND how far the conclusion reaches). The second disk tested is the SYSTEM/boot
+disk itself (the one whose tracks 3-5 get loaded as PDOS's disk-loaded driver chunk, and whose
+track 1 is scanned at `RESET`/boot) — NOT a `volorg.dsk`-equivalent data disk. A second,
+independently-sourced boot disk (`.imd` format, QWERTZ keymap, evidently a different
+regional/market system-disk variant/pressing from `diskbasic_1.6uk.dsk`, the fixture this whole
+investigation's PDOS disassembly was reconstructed from since Part A) reproduces the IDENTICAL
+"Disk I/O error" symptom pattern.** **What this rules out, precisely, per the owner's own
+correction: that the BOOT/system disk specifically is a faulty/corrupted fixture** — two boot
+disks from evidently different origins (a different keyboard-layout variant implies a different
+regional pressing, not just a copy of the same file) both trigger the same failure pattern,
+meaningful corroboration that the driver code disassembled from `diskbasic_1.6uk.dsk` in Parts
+A/E/F isn't an artifact of one damaged system-disk copy. **What it does NOT rule out: `volorg.dsk`
+itself (the data disk holding VOLORG.BAS, the actual file `RUN`/`LOAD` targets throughout this
+investigation) being a bad or unrepresentative fixture — that remains exactly as open as before.**
+The two disks play different roles in the repro (one supplies the driver code that runs, the
+other supplies the file data that code reads) and testing one says nothing about the other. Also
+doesn't by itself distinguish "genuine emulator bug" from "a characteristic shared by how these
+system disks are formatted that the emulator mishandles regardless of which specific disk" —
+consistent with the eleventh follow-up's own finding that PDOS's read pipeline and BASIC's loop
+logic are both independently confirmed correct.
+
 **Confirmed (owner, 2026-07-28):** the monitor ROM is only supportive during this phase (its
 role is the initial boot/presence-probe, §5b/§5d) — Disk BASIC's own resident driver (cartridge
 + the two system tracks loaded at boot) is what actually owns LOAD/SAVE I/O once BASIC is
-running. **Update (2026-08-03): CC has since disassembled several narrow, specific regions of the
-disk-loaded PDOS chunk (the return wrapper; the FDC/timeout path around the directory scan; the
-dispatcher's own call-site behavior; and now, live-confirmed rather than just structurally read,
-the exact 3-way split of the `sub_f2fdh` jump table) across the fifth through seventh follow-ups
-above — a from-scratch full driver disassembly is still not planned, but targeted, live-trace-
-verified disassembly of specific mechanisms continues to be productive alongside the owner's own
-hand-annotated `docs/PDOS_wip.asm`, which is now the primary ground truth for newly-dispatched
-investigation prompts rather than a secondary cross-check.** The three real bugs above were found
-entirely from trace evidence, without a driver disassembly — the remaining mystery needed, and
-continues to need, targeted disassembly; the part that's still open (what the three handler
-bodies at `0xF370`/`0xF3A0`/`0xF3CA` actually do) is now localized to exactly those three
-addresses rather than "a dozen-subroutine region" or "somewhere between directory scan and file
-read."
+running. **Update (2026-08-04): CC has since disassembled several narrow, specific regions across
+both the disk-loaded PDOS chunk AND the cartridge ROM itself (`Basic-24.bin`) — a from-scratch
+full disassembly of either is still not planned, but targeted, live-trace-verified disassembly of
+specific mechanisms has moved the investigation from "apparently resolved" (ninth follow-up's own
+predecessor, since corrected) through "pinned to BASIC's cartridge-ROM read loop" (tenth
+follow-up) to what the eleventh follow-up above confirms is LIKELY THE ACTUAL ROOT CAUSE.**
+BASIC's own loop logic is now confirmed correct in full — all three of its candidate exit checks
+are disproven as the mechanism. **The real finding: BASIC's 14th `F_READ` call genuinely triggers
+a real, physically-completing 14th disk operation (confirmed at the FDC level) whose own
+completion signal never makes it back to that call's own `CALL 6205h` — the call simply never
+returns, and the SAME busy-wait/timeout mechanism already diagnosed in the second follow-up above
+(`channel_time_out`/`sub_e943h`) eventually fires and reports "Disk I/O error."** This is a
+genuine hang on one specific real operation, not an early or deliberate stop, and not a bug in
+PDOS's CP/M-clone F_OPEN/F_READ/F_DMAOFF handlers, sector-advancement code, or CR/RC bookkeeping
+— all of which are now confirmed correct and uncapped. **What's still open, narrowed to a
+specific kind of question: why does the 14th operation's completion signal fail to redirect back
+into a normal return, when the identical mechanism works for the prior 13?** Not yet reconciled
+with the real P2000M's no-error result from real floppies (tested during the tenth follow-up) —
+floppy-content parity with the `.dsk` fixtures used throughout this investigation remains
+unconfirmed.
 
 **RESOLVED AND FIXED (2026-07-30) — root cause found and confirmed via an actual observed boot:
 "JWS Dos boots perfectly now."** Three hypotheses were investigated in sequence (checksum failure;

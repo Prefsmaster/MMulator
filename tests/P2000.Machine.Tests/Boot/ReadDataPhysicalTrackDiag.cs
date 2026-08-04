@@ -134,7 +134,12 @@ public class ReadDataPhysicalTrackDiag
         }
     }
 
-    [Fact]
+    [Fact(Skip = "SUPERSEDED (2026-08-04, Part I): this test's own exact sector sequence " +
+        "(stopping at 14 of 16 sectors) was pinned against the CONFIRMED BUG's behavior. Part I " +
+        "fixed the root cause (Upd765.DeferNaturalCompletion) -- VOLORG.BAS now reads all 16 " +
+        "sectors of every track it needs, and many more tracks besides, loading and running " +
+        "successfully. See CLAUDE.md's Part I entry and FourteenthOperationRedirectDiag.cs. " +
+        "Retained, skipped, for historical/investigative record only.")]
     public void RunVolorg_ReadDataCommands_TargetTrackOneNotVolorgsOwnDataTracks()
     {
         var repoRoot = FindRepoRoot();

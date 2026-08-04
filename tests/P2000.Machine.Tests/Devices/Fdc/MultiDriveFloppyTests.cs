@@ -322,6 +322,10 @@ public class MultiDriveFloppyTests
             fdc.WriteData(0x00);
             fdc.WriteData(0x00);
             for (var i = 0; i < 256; i++) fdc.WriteData(0xAA);
+            // Part I (2026-08-04): the transfer's own natural end-of-buffer completion is now
+            // deferred by MinimumLostWakeupGuardTStates, same as the TC-forced path already was —
+            // needs draining before the result phase is reachable.
+            for (var i = 0; i < 300; i++) fdc.Tick();
             // Milestone 19a backfilled a real 7-byte result phase for every command — drain it
             // back to Idle before the next command, exactly as the real ROM's completion ISR
             // does (Disk.asm read_IO_status -> read_status_bytes with B=7).

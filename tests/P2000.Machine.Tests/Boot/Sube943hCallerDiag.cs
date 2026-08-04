@@ -126,7 +126,12 @@ public class Sube943hCallerDiag
         }
     }
 
-    [Fact]
+    [Fact(Skip = "SUPERSEDED (2026-08-04, Part I): this test pinned the CONFIRMED BUG's own " +
+        "symptom (busy_wait_for_interrupt's natural timeout calling sub_e943h exactly once, via " +
+        "channel_time_out). Part I fixed the root cause (Upd765.DeferNaturalCompletion) -- " +
+        "RUN\"VOLORG\" now loads and runs VOLORG.BAS successfully, with no timeout and no call to " +
+        "sub_e943h at all. See CLAUDE.md's Part I entry and FourteenthOperationRedirectDiag.cs. " +
+        "Retained, skipped, for historical/investigative record only.")]
     public void RunVolorg_ReachesSubE943hExactlyOnce_ViaChannelTimeOutOnly()
     {
         var repoRoot = FindRepoRoot();

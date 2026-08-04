@@ -7,38 +7,29 @@ using Xunit.Abstractions;
 namespace P2000.Machine.Tests.Boot;
 
 /// <summary>
-/// Part E addendum (cc-bugfix-prompt-12 addendum), item 2: capture CP/M's CR (current record,
-/// FCB offset+0x20) and RC (record count, FCB offset+0x0F) at every real <c>sub_f137h</c>
-/// (0x14/F_READ) entry, plus the actual EOF-equivalent result (<c>lf582h</c>) at return, to
-/// determine whether F_READ ever legitimately signals EOF for VOLORG's own FCB, and if so what
-/// happens immediately afterward -- clean EOF handling, or a fall-through into the busy-wait.
+/// Part H (cc-bugfix-prompt-14) — decisive check: the second loop counter
+/// (<c>[pointer+0x24..25]</c>) never changes during the whole <c>RUN"VOLORG"</c> attempt (stays
+/// at 256 throughout, confirmed via <c>SecondLoopCounterLiveTraceDiag.cs</c>'s corrected trace),
+/// so it cannot be what triggers <c>0x326C</c>'s own zero-check exit path.
 ///
-/// Static disassembly of <c>sub_f137h</c> (<c>docs/PDOS_wip.asm</c>, read but not edited):
-/// compares CR against RC (<c>sub_ec39h</c> reads both); if CR &lt; RC, jumps straight to issuing
-/// the next physical read (<c>lf15fh</c> -&gt; ... -&gt; <c>lf170h</c> -&gt; <c>Seek_to_track</c>/
-/// <c>sub_e8b3h</c>); if CR &gt;= RC, unconditionally sets <c>lf582h = 1</c> (the EOF-equivalent
-/// result that flows into the actual return value via <c>sub_f2fdh</c>'s own <c>lf3fah</c>
-/// epilogue) and returns immediately without reading anything further.
-///
-/// CONFIRMED, decisively: CR advances from 0 to only 13 across the entire attempt (27 sub_f137h
-/// entries observed, RC constant at 0x2C=44 the whole time) -- CR NEVER reaches RC. CP/M's own
-/// standard EOF condition is NEVER triggered for this repro. The busy-wait/"Disk I/O error" that
-/// eventually fires is NOT a consequence of end-of-file being mishandled -- there IS no EOF here.
-/// The real stopping point is confirmed elsewhere (<c>ReadDataPhysicalTrackDiag.cs</c>) to be the
-/// same "14-of-16 sectors" physical-sector-advancement limit already flagged as an unrelated loose
-/// end in Part B (2026-07-28 entry) for directory reads -- now confirmed to also govern real
-/// file-data reads. Once that limit is hit, no further FDC command is ever issued (regardless of
-/// CR/RC), and execution falls into the busy-wait exactly as Parts B/C/D established.
+/// This checks the other plausible source of a graceful exit: register A, F_READ's own return
+/// value, right after <c>CALL 6205h</c> returns at 0x32A8 (landing at 0x32AB). Working through
+/// the actual branch polarity at 0x32B0-0x3276 (not just "A==1 causes some exit" as a first
+/// glance might suggest): <c>32B0: DEC A</c> only sets Z if A WAS exactly 1; since A is confirmed
+/// ALWAYS 0 here, <c>DEC A</c> gives 0xFF (Z clear), so the jump to 32BA is NOT taken -- it falls
+/// through to <c>LD DE,0100h</c>, and the resulting <c>OR</c> at 32C2-32C3 leaves A nonzero (NZ),
+/// meaning <c>3276: JP NZ,323Ch</c> IS taken -- i.e., A=0 makes the loop CONTINUE, not exit. So
+/// even if this were the real exit check, A=0 (confirmed here on every real return) could never
+/// trigger it; only A=1 (never observed) would.
 /// </summary>
-public class FReadEofHandlingDiag
+public class FReadReturnValueDiag
 {
     private readonly ITestOutputHelper _output;
-    public FReadEofHandlingDiag(ITestOutputHelper output) => _output = output;
+    public FReadReturnValueDiag(ITestOutputHelper output) => _output = output;
 
     private const ushort DiskIoErrorFlag = 0x6091;
-    private const ushort Handler_0x14_Entry_SubF137h = 0xF137;
-    private const ushort CurrentFcbPointerCell_0xf579 = 0xF579;
-    private const ushort ResultFlag_lf582h = 0xF582;
+    private const ushort FReadCallSite_0x32A8 = 0x32A8;
+    private const ushort FReadReturnAddr_0x32AB = 0x32AB;
 
     private static string FindRepoRoot()
     {
@@ -129,21 +120,13 @@ public class FReadEofHandlingDiag
         }
     }
 
-    private static ushort ReadFcbAddr(Machine machine, ushort fcbPointerCell)
-    {
-        var lo = machine.Memory.Read(fcbPointerCell);
-        var hi = machine.Memory.Read((ushort)(fcbPointerCell + 1));
-        return (ushort)((hi << 8) | lo);
-    }
-
-    [Fact(Skip = "SUPERSEDED (2026-08-04, Part I): this test's own premise (\"CR never reaches " +
-        "RC=44\") pinned the CONFIRMED BUG's own symptom -- RUN\"VOLORG\" hanging at CR=13, well " +
-        "short of VOLORG.BAS's genuine 44-record length. Part I fixed the root cause " +
-        "(Upd765.DeferNaturalCompletion) -- CR now correctly reaches RC=44, the LEGITIMATE CP/M " +
-        "EOF condition, confirming the whole file now reads to completion. See CLAUDE.md's Part I " +
-        "entry and FourteenthOperationRedirectDiag.cs. Retained, skipped, for historical/" +
-        "investigative record only.")]
-    public void RunVolorg_CrNeverReachesRc_StandardCpmEofIsNeverTriggered()
+    [Fact(Skip = "SUPERSEDED (2026-08-04, Part I): this test's own name/count (\"only 13 of 14 " +
+        "returns observed\") pinned the CONFIRMED BUG's own symptom -- the 14th F_READ call's own " +
+        "CALL 6205h never returning. Part I fixed the root cause (Upd765.DeferNaturalCompletion) " +
+        "-- every F_READ call now returns normally, and VOLORG.BAS loads and runs successfully. " +
+        "See CLAUDE.md's Part I entry and FourteenthOperationRedirectDiag.cs. Retained, skipped, " +
+        "for historical/investigative record only.")]
+    public void RunVolorg_FReadAlwaysReturnsZero_Never1_AndOnly13Of14ReturnsAreObserved()
     {
         var repoRoot = FindRepoRoot();
         var cartridgePath = Path.Combine(repoRoot, "assets", "Basic-24.bin");
@@ -187,58 +170,45 @@ public class FReadEofHandlingDiag
         TypeString(machine, "RUN\"VOLORG\"");
         PressEnter(machine);
 
-        _output.WriteLine("=== Watching every sub_f137h (0x14/F_READ) entry: CR, RC, and the return-flag lf582h ===");
+        _output.WriteLine("=== Watching register A at every return from CALL 6205h (F_READ) at 0x32A8 ===");
         ushort? lastPc = null;
-        var entryCount = 0;
-        var maxCr = 0;
-        var rcValuesSeen = new HashSet<int>();
-        var eofFlagEverSetDuringScan = false;
+        var results = new List<(long T, byte A)>();
 
-        for (long t = 0; t < 20_000_000L; t++)
+        for (long t = 0; t < 10_000_000L; t++)
         {
             machine.Tick();
             var pc = machine.Cpu.Reg.PC;
-
-            if (pc == Handler_0x14_Entry_SubF137h && pc != lastPc)
+            if (pc == FReadReturnAddr_0x32AB && pc != lastPc)
             {
-                entryCount++;
-                var fcbAddr = ReadFcbAddr(machine, CurrentFcbPointerCell_0xf579);
-                var cr = machine.Memory.Read((ushort)(fcbAddr + 0x20));
-                var rc = machine.Memory.Read((ushort)(fcbAddr + 0x0F));
-                var resultBefore = machine.Memory.Read(ResultFlag_lf582h);
-                if (fcbAddr != 0)
-                {
-                    maxCr = Math.Max(maxCr, cr);
-                    rcValuesSeen.Add(rc);
-                    if (resultBefore != 0) eofFlagEverSetDuringScan = true;
-                }
-                _output.WriteLine($"F_READ-entry#{entryCount,3} t={t,10}  FCB=0x{fcbAddr:X4}  CR=0x{cr:X2}({cr})  RC=0x{rc:X2}({rc})  lf582h-before=0x{resultBefore:X2}");
+                var a = machine.Cpu.Reg.A;
+                results.Add((t, a));
+                _output.WriteLine($"F_READ-return#{results.Count,3}  t={t,10}  A=0x{a:X2}({a})");
             }
-
             lastPc = pc;
         }
 
-        _output.WriteLine($"=== Total F_READ (sub_f137h) entries observed: {entryCount} ===");
-        var finalFcbAddr = ReadFcbAddr(machine, CurrentFcbPointerCell_0xf579);
-        var finalCr = machine.Memory.Read((ushort)(finalFcbAddr + 0x20));
-        var finalRc = machine.Memory.Read((ushort)(finalFcbAddr + 0x0F));
-        var finalResult = machine.Memory.Read(ResultFlag_lf582h);
-        _output.WriteLine($"=== Final state: FCB=0x{finalFcbAddr:X4} CR=0x{finalCr:X2}({finalCr}) RC=0x{finalRc:X2}({finalRc}) lf582h=0x{finalResult:X2} ===");
-        _output.WriteLine($"=== Max CR observed while FCB pointer was valid: {maxCr} ===");
-        _output.WriteLine($"=== RC values observed while FCB pointer was valid: {string.Join(",", rcValuesSeen)} ===");
-        _output.WriteLine($"=== Was the EOF-equivalent flag (lf582h) ever set during the scan: {eofFlagEverSetDuringScan} ===");
+        _output.WriteLine($"=== Total F_READ returns observed at 0x32AB: {results.Count} ===");
+        _output.WriteLine("=== Distinct A values seen: " + string.Join(", ", results.Select(r => r.A).Distinct().OrderBy(x => x).Select(v => $"0x{v:X2}")) + " ===");
+        _output.WriteLine($"=== Was A==1 (standard CP/M EOF) ever observed: {results.Any(r => r.A == 1)} ===");
 
         WaitForReadyPrompt(machine, maxFields: 3000);
         _output.WriteLine($"Final flag(6091)=0x{ReadFlag(machine):X2}");
         _output.WriteLine("Final screen:");
         _output.WriteLine(SnapshotScreenText(machine));
 
-        // CONFIRMED: RC stays constant at 44 the whole time (VOLORG's own real record count,
-        // never a stale/corrupt value), and CR only ever reaches 13 -- nowhere near RC. CP/M's own
-        // EOF condition (CR >= RC) is NEVER triggered for this repro.
-        Assert.True(entryCount > 0);
-        Assert.Equal(new[] { 44 }, rcValuesSeen.ToArray());
-        Assert.True(maxCr < 44, $"expected CR to never reach RC=44 in this repro; observed max CR={maxCr}");
-        Assert.False(eofFlagEverSetDuringScan, "expected the EOF-equivalent flag never to be set while the FCB pointer was valid -- the busy-wait is not an EOF-handling bug");
+        // CONFIRMED: A is always 0 (standard CP/M success) on every observed F_READ return, never
+        // 1 (EOF). Combined with the disproven branch-polarity reasoning above, this rules out
+        // the EOF-check path as the loop's real exit mechanism. Also notable, reconciled in the
+        // findings-log entry: only 13 genuine cycles' worth of returns are ever observed here
+        // (matching Part G's own confirmed 13 byte-scan cycles), even though Part E confirmed 14
+        // real physical disk completions -- the 14th real F_READ call's own CALL 6205h never
+        // returns to this call site at all.
+        // 27 = 13 genuine returns doubled by a PC-fetch-timing artifact plus one unpaired --
+        // the same class of false-positive-PC-hit gotcha already found twice elsewhere in this
+        // investigation (Part C/E). The genuine count is 13, not 14 or 27; kept as an exact
+        // regression pin since the doubling pattern itself is deterministic for this repro.
+        Assert.Equal(27, results.Count);
+        Assert.All(results, r => Assert.Equal(0, r.A));
+        Assert.False(results.Any(r => r.A == 1));
     }
 }

@@ -258,7 +258,15 @@ public class DiskIoErrorFlagTrace
         for (var i = traceCountBefore; i < trace.Count; i++) _output.WriteLine(trace[i]);
     }
 
-    [Fact]
+    [Fact(Skip = "SUPERSEDED (2026-08-04, Part I): this test pinned the CONFIRMED BUG's own " +
+        "symptom pattern (RESET/SYSTEM B/RUN\"VOLORG\" each producing \"Disk I/O error\"). Part I " +
+        "fixed the root cause (Upd765.DeferNaturalCompletion) -- NONE of RESET/SYSTEM B/FILES/" +
+        "RUN\"VOLORG\" report an error anymore; RUN\"VOLORG\" now loads and runs VOLORG.BAS's own " +
+        "real menu (\"P 2000 DISK UTILITY\") successfully. Even RESET's own error (previously " +
+        "believed CORRECT/intentional behavior -- a system disk's track 1 legitimately has no FCB " +
+        "index) no longer reproduces, which is itself a notable follow-up worth revisiting " +
+        "separately. See CLAUDE.md's Part I entry and FourteenthOperationRedirectDiag.cs. " +
+        "Retained, skipped, for historical/investigative record only.")]
     public void Repro_RESET_SYSTEMB_FILES_RUNVOLORG_TracesDiskIoErrorFlagAtEveryStep()
     {
         var repoRoot = FindRepoRoot();

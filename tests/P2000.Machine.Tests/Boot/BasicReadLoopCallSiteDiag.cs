@@ -7,38 +7,29 @@ using Xunit.Abstractions;
 namespace P2000.Machine.Tests.Boot;
 
 /// <summary>
-/// Part E addendum (cc-bugfix-prompt-12 addendum), item 2: capture CP/M's CR (current record,
-/// FCB offset+0x20) and RC (record count, FCB offset+0x0F) at every real <c>sub_f137h</c>
-/// (0x14/F_READ) entry, plus the actual EOF-equivalent result (<c>lf582h</c>) at return, to
-/// determine whether F_READ ever legitimately signals EOF for VOLORG's own FCB, and if so what
-/// happens immediately afterward -- clean EOF handling, or a fall-through into the busy-wait.
+/// Part G (owner follow-up, 2026-08-04) — continuing past Part F's confirmation that PDOS's own
+/// sector-advancement code is passive and uncapped: finds the exact BASIC-side call site(s) that
+/// issue each of the 14 real 0x1A(F_DMAOFF)/0x14(F_READ) pairs during <c>RUN"VOLORG"</c>, to
+/// locate the loop that decides to stop after the 14th pair.
 ///
-/// Static disassembly of <c>sub_f137h</c> (<c>docs/PDOS_wip.asm</c>, read but not edited):
-/// compares CR against RC (<c>sub_ec39h</c> reads both); if CR &lt; RC, jumps straight to issuing
-/// the next physical read (<c>lf15fh</c> -&gt; ... -&gt; <c>lf170h</c> -&gt; <c>Seek_to_track</c>/
-/// <c>sub_e8b3h</c>); if CR &gt;= RC, unconditionally sets <c>lf582h = 1</c> (the EOF-equivalent
-/// result that flows into the actual return value via <c>sub_f2fdh</c>'s own <c>lf3fah</c>
-/// epilogue) and returns immediately without reading anything further.
+/// BASIC's own fixed entry point into PDOS is <c>0x6205</c> (per
+/// <c>docs/PDOS-notes-for-annotation.md</c> §1: <c>CALL &amp;H6205 -&gt; JP 6934 -&gt; JP 696D -&gt;
+/// JP 0005h</c> -&gt; lands at <c>CPM_entry_point</c>, 0xE000). This watches every genuine CALL to
+/// 0x6205 and records the return address -- i.e., exactly which BASIC-side instruction issued
+/// each PDOS invocation -- to identify the calling loop's own address range.
 ///
-/// CONFIRMED, decisively: CR advances from 0 to only 13 across the entire attempt (27 sub_f137h
-/// entries observed, RC constant at 0x2C=44 the whole time) -- CR NEVER reaches RC. CP/M's own
-/// standard EOF condition is NEVER triggered for this repro. The busy-wait/"Disk I/O error" that
-/// eventually fires is NOT a consequence of end-of-file being mishandled -- there IS no EOF here.
-/// The real stopping point is confirmed elsewhere (<c>ReadDataPhysicalTrackDiag.cs</c>) to be the
-/// same "14-of-16 sectors" physical-sector-advancement limit already flagged as an unrelated loose
-/// end in Part B (2026-07-28 entry) for directory reads -- now confirmed to also govern real
-/// file-data reads. Once that limit is hit, no further FDC command is ever issued (regardless of
-/// CR/RC), and execution falls into the busy-wait exactly as Parts B/C/D established.
+/// CONFIRMED: exactly 3 fixed call sites, all in the CARTRIDGE ROM (<c>Basic-24.bin</c>), NOT the
+/// disk-loaded chunk: 0x3487 (F_OPEN, once), 0x32A8 (F_READ, 14x), 0x32D0 (F_DMAOFF, 14x). See
+/// <c>RunTokenReadLoopDisasmDiag.cs</c> for the disassembly of the loop these two repeated call
+/// sites belong to.
 /// </summary>
-public class FReadEofHandlingDiag
+public class BasicReadLoopCallSiteDiag
 {
     private readonly ITestOutputHelper _output;
-    public FReadEofHandlingDiag(ITestOutputHelper output) => _output = output;
+    public BasicReadLoopCallSiteDiag(ITestOutputHelper output) => _output = output;
 
     private const ushort DiskIoErrorFlag = 0x6091;
-    private const ushort Handler_0x14_Entry_SubF137h = 0xF137;
-    private const ushort CurrentFcbPointerCell_0xf579 = 0xF579;
-    private const ushort ResultFlag_lf582h = 0xF582;
+    private const ushort Basic_PdosEntry_0x6205 = 0x6205;
 
     private static string FindRepoRoot()
     {
@@ -129,21 +120,15 @@ public class FReadEofHandlingDiag
         }
     }
 
-    private static ushort ReadFcbAddr(Machine machine, ushort fcbPointerCell)
-    {
-        var lo = machine.Memory.Read(fcbPointerCell);
-        var hi = machine.Memory.Read((ushort)(fcbPointerCell + 1));
-        return (ushort)((hi << 8) | lo);
-    }
+    private sealed record Entry(long T, ushort ReturnAddr, ushort CallSite, byte C);
 
-    [Fact(Skip = "SUPERSEDED (2026-08-04, Part I): this test's own premise (\"CR never reaches " +
-        "RC=44\") pinned the CONFIRMED BUG's own symptom -- RUN\"VOLORG\" hanging at CR=13, well " +
-        "short of VOLORG.BAS's genuine 44-record length. Part I fixed the root cause " +
-        "(Upd765.DeferNaturalCompletion) -- CR now correctly reaches RC=44, the LEGITIMATE CP/M " +
-        "EOF condition, confirming the whole file now reads to completion. See CLAUDE.md's Part I " +
-        "entry and FourteenthOperationRedirectDiag.cs. Retained, skipped, for historical/" +
+    [Fact(Skip = "SUPERSEDED (2026-08-04, Part I): this test's own exact call counts (F_READ/" +
+        "F_DMAOFF x14) pinned the CONFIRMED BUG's own symptom -- RUN\"VOLORG\" stopping after 14 " +
+        "reads. Part I fixed the root cause (Upd765.DeferNaturalCompletion) -- VOLORG.BAS now " +
+        "loads and runs successfully with far more than 14 F_READ/F_DMAOFF calls. See CLAUDE.md's " +
+        "Part I entry and FourteenthOperationRedirectDiag.cs. Retained, skipped, for historical/" +
         "investigative record only.")]
-    public void RunVolorg_CrNeverReachesRc_StandardCpmEofIsNeverTriggered()
+    public void RunVolorg_ThreeFixedCartridgeRomCallSitesIssueAllPdosCalls()
     {
         var repoRoot = FindRepoRoot();
         var cartridgePath = Path.Combine(repoRoot, "assets", "Basic-24.bin");
@@ -187,58 +172,53 @@ public class FReadEofHandlingDiag
         TypeString(machine, "RUN\"VOLORG\"");
         PressEnter(machine);
 
-        _output.WriteLine("=== Watching every sub_f137h (0x14/F_READ) entry: CR, RC, and the return-flag lf582h ===");
+        _output.WriteLine("=== Watching every genuine CALL to 0x6205 (BASIC's own fixed PDOS entry point) ===");
         ushort? lastPc = null;
-        var entryCount = 0;
-        var maxCr = 0;
-        var rcValuesSeen = new HashSet<int>();
-        var eofFlagEverSetDuringScan = false;
+        var entries = new List<Entry>();
 
-        for (long t = 0; t < 20_000_000L; t++)
+        for (long t = 0; t < 10_000_000L; t++)
         {
             machine.Tick();
             var pc = machine.Cpu.Reg.PC;
-
-            if (pc == Handler_0x14_Entry_SubF137h && pc != lastPc)
+            if (pc == Basic_PdosEntry_0x6205 && pc != lastPc)
             {
-                entryCount++;
-                var fcbAddr = ReadFcbAddr(machine, CurrentFcbPointerCell_0xf579);
-                var cr = machine.Memory.Read((ushort)(fcbAddr + 0x20));
-                var rc = machine.Memory.Read((ushort)(fcbAddr + 0x0F));
-                var resultBefore = machine.Memory.Read(ResultFlag_lf582h);
-                if (fcbAddr != 0)
+                var sp = machine.Cpu.Reg.SP;
+                var retLo = machine.Memory.Read(sp);
+                var retHi = machine.Memory.Read((ushort)(sp + 1));
+                var ret = (ushort)((retHi << 8) | retLo);
+                var callSite = (ushort)(ret - 3);
+                var b0 = machine.Memory.Read(callSite);
+                var b1 = machine.Memory.Read((ushort)(callSite + 1));
+                var b2 = machine.Memory.Read((ushort)(callSite + 2));
+                if (b0 == 0xCD && b1 == 0x05 && b2 == 0x62)
                 {
-                    maxCr = Math.Max(maxCr, cr);
-                    rcValuesSeen.Add(rc);
-                    if (resultBefore != 0) eofFlagEverSetDuringScan = true;
+                    entries.Add(new Entry(t, ret, callSite, machine.Cpu.Reg.C));
                 }
-                _output.WriteLine($"F_READ-entry#{entryCount,3} t={t,10}  FCB=0x{fcbAddr:X4}  CR=0x{cr:X2}({cr})  RC=0x{rc:X2}({rc})  lf582h-before=0x{resultBefore:X2}");
             }
-
             lastPc = pc;
         }
 
-        _output.WriteLine($"=== Total F_READ (sub_f137h) entries observed: {entryCount} ===");
-        var finalFcbAddr = ReadFcbAddr(machine, CurrentFcbPointerCell_0xf579);
-        var finalCr = machine.Memory.Read((ushort)(finalFcbAddr + 0x20));
-        var finalRc = machine.Memory.Read((ushort)(finalFcbAddr + 0x0F));
-        var finalResult = machine.Memory.Read(ResultFlag_lf582h);
-        _output.WriteLine($"=== Final state: FCB=0x{finalFcbAddr:X4} CR=0x{finalCr:X2}({finalCr}) RC=0x{finalRc:X2}({finalRc}) lf582h=0x{finalResult:X2} ===");
-        _output.WriteLine($"=== Max CR observed while FCB pointer was valid: {maxCr} ===");
-        _output.WriteLine($"=== RC values observed while FCB pointer was valid: {string.Join(",", rcValuesSeen)} ===");
-        _output.WriteLine($"=== Was the EOF-equivalent flag (lf582h) ever set during the scan: {eofFlagEverSetDuringScan} ===");
+        _output.WriteLine($"=== Total genuine calls to 0x6205: {entries.Count} ===");
+        foreach (var e in entries)
+        {
+            _output.WriteLine($"  t={e.T,10}  callSite=0x{e.CallSite:X4}  return=0x{e.ReturnAddr:X4}  C=0x{e.C:X2}");
+        }
+        var distinctCallSites = entries.Select(e => e.CallSite).Distinct().OrderBy(x => x).ToList();
+        _output.WriteLine("=== Distinct BASIC-side call sites: " + string.Join(", ", distinctCallSites.Select(a => $"0x{a:X4}")) + " ===");
 
         WaitForReadyPrompt(machine, maxFields: 3000);
         _output.WriteLine($"Final flag(6091)=0x{ReadFlag(machine):X2}");
         _output.WriteLine("Final screen:");
         _output.WriteLine(SnapshotScreenText(machine));
 
-        // CONFIRMED: RC stays constant at 44 the whole time (VOLORG's own real record count,
-        // never a stale/corrupt value), and CR only ever reaches 13 -- nowhere near RC. CP/M's own
-        // EOF condition (CR >= RC) is NEVER triggered for this repro.
-        Assert.True(entryCount > 0);
-        Assert.Equal(new[] { 44 }, rcValuesSeen.ToArray());
-        Assert.True(maxCr < 44, $"expected CR to never reach RC=44 in this repro; observed max CR={maxCr}");
-        Assert.False(eofFlagEverSetDuringScan, "expected the EOF-equivalent flag never to be set while the FCB pointer was valid -- the busy-wait is not an EOF-handling bug");
+        // CONFIRMED: exactly 3 fixed BASIC-side (cartridge ROM) call sites into 0x6205 for the
+        // whole RUN"VOLORG" attempt -- 0x3487 (C=0x0F/F_OPEN, once), 0x32A8 (C=0x14/F_READ, 14x),
+        // 0x32D0 (C=0x1A/F_DMAOFF, 14x). This is the exact origin of every PDOS invocation during
+        // this repro, all within the cartridge ROM (Basic-24.bin), not the disk-loaded chunk.
+        Assert.Equal(29, entries.Count);
+        Assert.Equal(new ushort[] { 0x32A8, 0x32D0, 0x3487 }, distinctCallSites);
+        Assert.Equal(1, entries.Count(e => e.CallSite == 0x3487 && e.C == 0x0F));
+        Assert.Equal(14, entries.Count(e => e.CallSite == 0x32A8 && e.C == 0x14));
+        Assert.Equal(14, entries.Count(e => e.CallSite == 0x32D0 && e.C == 0x1A));
     }
 }

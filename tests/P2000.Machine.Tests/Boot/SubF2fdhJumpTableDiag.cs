@@ -130,7 +130,12 @@ public class SubF2fdhJumpTableDiag
 
     private sealed record Entry(long T, byte Code, ushort TableSlot, ushort TableTarget, ushort? ObservedJumpTarget);
 
-    [Fact]
+    [Fact(Skip = "SUPERSEDED (2026-08-04, Part I): this test's own exact call count (30) was " +
+        "pinned against the CONFIRMED BUG's behavior (RUN\"VOLORG\" hanging after 14 reads). Part " +
+        "I fixed the root cause (Upd765.DeferNaturalCompletion) -- VOLORG.BAS now loads and runs " +
+        "successfully, changing how many times sub_f2fdh is reached. See CLAUDE.md's Part I entry " +
+        "and FourteenthOperationRedirectDiag.cs. Retained, skipped, for historical/investigative " +
+        "record only.")]
     public void RunVolorg_ReachesSubF2fdh_WithThreeDistinctCodesEachLandingOnItsOwnTarget()
     {
         var repoRoot = FindRepoRoot();

@@ -62,7 +62,7 @@ public sealed class Upd765 : IDevice
     private const int ByteTransferTStates = 32;
 
     private enum Phase { Idle, CommandPhase, ExecutionPhase, ResultPhase }
-    private enum PendingAction { None, SeekSettle, ByteReady, ForcedCompletion }
+    private enum PendingAction { None, SeekSettle, ByteReady, ForcedCompletion, NaturalCompletion }
 
     /// <summary>Which of the 15 commands is driving the current execution-phase byte loop —
     /// needed because the loop's shape (direction, per-byte meaning, completion behaviour)
@@ -286,7 +286,7 @@ public sealed class Upd765 : IDevice
             _byteReady = false;
             if (_transferIndex >= _transferBuffer.Length)
             {
-                CompleteTransfer();
+                DeferNaturalCompletion();
             }
             else
             {
@@ -339,13 +339,37 @@ public sealed class Upd765 : IDevice
             _byteReady = false;
             if (_transferIndex >= _transferBuffer.Length)
             {
-                CompleteTransfer();
+                DeferNaturalCompletion();
             }
             else
             {
                 StartByteDelay();
             }
         }
+    }
+
+    /// <summary>Defers a transfer's own NATURAL end-of-buffer completion by
+    /// <see cref="MinimumLostWakeupGuardTStates"/> — the same "lost wakeup" guard the TC-forced
+    /// path already had (<see cref="WriteControl"/>'s <c>CtrlTerminalCount</c> branch), now
+    /// extended to cover the other way a transfer can end. Found via a live repro (reference doc
+    /// §5d, "Disk I/O error" investigation, Part I, 2026-08-04): PDOS's own driver always requests
+    /// a wide EOT window (fixed EOT, varying R) while its software polling loop only ever consumes
+    /// exactly one sector, so completion normally comes from an explicit TC write and already got
+    /// this guard — EXCEPT for the track's very last sector, where the nominal EOT-R+1 window
+    /// collapses to exactly one sector, matching what the software polls exactly. That case
+    /// completed via THIS synchronous path with no guard at all, delivering the interrupt in the
+    /// same T-state as the CPU's own last transfer byte — catching PDOS's own semi-DMA polling
+    /// loop (<c>dsk_in_loop</c>) still live rather than already idling in its own busy-wait, which
+    /// discarded the wrong interrupted context and led to a genuine, unrecoverable ~3.8M-T-state
+    /// hang. Completing every transfer's last byte this way, uniformly, removes the asymmetry
+    /// rather than special-casing "is this the track's last sector" — real silicon almost
+    /// certainly has SOME non-zero completion-to-INT-line propagation delay regardless of which
+    /// byte ends the transfer, so a uniform guard is the more faithful model, not just the
+    /// narrowest fix.</summary>
+    private void DeferNaturalCompletion()
+    {
+        _pending = PendingAction.NaturalCompletion;
+        _delayCounter = MinimumLostWakeupGuardTStates;
     }
 
     /// <summary>0x90 IN — semi-DMA per-byte poll target: bit0 set when a transfer byte is ready
@@ -444,6 +468,7 @@ public sealed class Upd765 : IDevice
                 break;
 
             case PendingAction.ForcedCompletion:
+            case PendingAction.NaturalCompletion:
                 _pending = PendingAction.None;
                 CompleteTransfer();
                 break;

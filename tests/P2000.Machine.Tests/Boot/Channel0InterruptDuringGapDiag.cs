@@ -151,7 +151,12 @@ public class Channel0InterruptDuringGapDiag
         return (IDaisyChainDevice)channels.GetValue(index)!;
     }
 
-    [Fact]
+    [Fact(Skip = "SUPERSEDED (2026-08-04, Part I): this test pinned the CONFIRMED BUG's own " +
+        "symptom (the directory/file-data scan completing 15 real reads then NO further FDC " +
+        "command ever being issued). Part I fixed the root cause (Upd765.DeferNaturalCompletion) " +
+        "-- RUN\"VOLORG\" now continues reading far past 15 commands and loads VOLORG.BAS " +
+        "successfully. See CLAUDE.md's Part I entry and FourteenthOperationRedirectDiag.cs. " +
+        "Retained, skipped, for historical/investigative record only.")]
     public void Diag_RunVolorg_TraceFdcAndChannel0DuringTheGap()
     {
         var repoRoot = FindRepoRoot();

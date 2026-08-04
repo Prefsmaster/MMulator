@@ -281,7 +281,14 @@ public class PdosLoadSaveRepro
         return machine;
     }
 
-    [Fact]
+    [Fact(Skip = "SUPERSEDED (2026-08-04, Part I): this test's own script assumed the CONFIRMED " +
+        "BUG (Upd765's natural end-of-buffer completion racing PDOS's own semi-DMA polling loop " +
+        "on a track's last sector) that made RUN\"VOLORG\" hang and report \"Disk I/O error\". " +
+        "Part I fixed the root cause (Upd765.DeferNaturalCompletion) -- VOLORG.BAS now loads and " +
+        "runs successfully (its own real menu, \"P 2000 DISK UTILITY\", confirmed on screen), " +
+        "invalidating the specific counts/text this test pinned. See CLAUDE.md's Part I entry and " +
+        "FourteenthOperationRedirectDiag.cs (the regression guard for this exact bug class). " +
+        "Retained, skipped, for historical/investigative record only.")]
     public void Boot_ThenLoadVolorg_TraceFdcCommandsAndScreenOutput()
     {
         var repoRoot = FindRepoRoot();

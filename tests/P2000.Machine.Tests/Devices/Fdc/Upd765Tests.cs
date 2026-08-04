@@ -230,6 +230,10 @@ public class Upd765Tests
             Assert.Equal(0x01, fdc.ReadControl()); // semi-DMA byte-ready flag
             read[i] = fdc.ReadData();
         }
+        // Milestone 19a/Part I (2026-08-04): a transfer's own NATURAL end-of-buffer completion is
+        // now deferred by MinimumLostWakeupGuardTStates too (same guard the TC-forced path already
+        // had), so it needs draining just like every other deferred completion in this file.
+        for (var i = 0; i < 300; i++) fdc.Tick();
 
         Assert.Equal(image[..256], read);
         Assert.True(fired);
@@ -334,6 +338,7 @@ public class Upd765Tests
             Assert.Equal(0x01, fdc.ReadControl());
             fdc.WriteData(pattern[i]);
         }
+        for (var i = 0; i < 300; i++) fdc.Tick(); // let the (deferred) natural completion fire
 
         Assert.True(fired);
         Assert.Equal(pattern, disk.ReadSector(cylinder: 2, head: 0, sector: 1).ToArray());
@@ -475,6 +480,7 @@ public class Upd765Tests
         // drained in full before the chip leaves ExecutionPhase and accepts the next command.
         var firstTrack = new byte[16 * 256];
         for (var i = 0; i < firstTrack.Length; i++) firstTrack[i] = fdc.ReadData();
+        for (var i = 0; i < 300; i++) fdc.Tick(); // let the (deferred) natural completion fire
         for (var i = 0; i < 7; i++) fdc.ReadData(); // drain the result phase
 
         Assert.Equal(cyl0Head0, firstTrack[..256]); // sector 1's content is what getdos actually uses
@@ -564,7 +570,8 @@ public class Upd765Tests
         fdc.WriteData(0x01);
         fdc.WriteData(0x00);
         fdc.WriteData(0x00);
-        for (var i = 0; i < 256; i++) fdc.ReadData(); // completes the transfer, phase -> ResultPhase
+        for (var i = 0; i < 256; i++) fdc.ReadData();
+        for (var i = 0; i < 300; i++) fdc.Tick(); // let the (deferred) natural completion fire -> ResultPhase
         for (var i = 0; i < 7; i++) fdc.ReadData(); // drain the backfilled result phase back to Idle
                                                      // (milestone 19a — real ROM does the same, see
                                                      // ReadTrack_Turbo_ReturnsExactSectorBytes)
@@ -595,6 +602,7 @@ public class Upd765Tests
         fdc.WriteData(0x00);
         fdc.WriteData(0x00);
         for (var i = 0; i < 256; i++) fdc.ReadData();
+        for (var i = 0; i < 300; i++) fdc.Tick(); // let the (deferred) natural completion fire
 
         Assert.Null(fdc.CurrentTransfer);
     }
@@ -809,6 +817,7 @@ public class Upd765Tests
             pattern[i] = (byte)(i + 1);
             fdc.WriteData(pattern[i]);
         }
+        for (var i = 0; i < 300; i++) fdc.Tick(); // let the (deferred) natural completion fire
 
         Assert.Equal(pattern, disk.ReadSector(0, 0, 1).ToArray());
     }
@@ -836,6 +845,7 @@ public class Upd765Tests
         fdc.WriteData(0x01);
 
         for (var i = 0; i < 256; i++) fdc.WriteData((byte)(i ^ 0x3C)); // identical to disk content
+        for (var i = 0; i < 300; i++) fdc.Tick(); // let the (deferred) natural completion fire
 
         Assert.Equal(0x00, fdc.ReadData()); // ST0
         Assert.Equal(0x00, fdc.ReadData()); // ST1
@@ -861,6 +871,7 @@ public class Upd765Tests
         fdc.WriteData(0x01);
 
         for (var i = 0; i < 256; i++) fdc.WriteData(0xFF); // never equals the disk's all-zero content
+        for (var i = 0; i < 300; i++) fdc.Tick(); // let the (deferred) natural completion fire
 
         fdc.ReadData(); // ST0
         fdc.ReadData(); // ST1
@@ -890,6 +901,7 @@ public class Upd765Tests
 
         // disk byte (0x00) < host byte (0x01) for every byte — satisfies "disk <= host".
         for (var i = 0; i < 256; i++) fdc.WriteData(0x01);
+        for (var i = 0; i < 300; i++) fdc.Tick(); // let the (deferred) natural completion fire
 
         fdc.ReadData(); // ST0
         fdc.ReadData(); // ST1
@@ -920,6 +932,7 @@ public class Upd765Tests
 
         // disk byte (0x80) > host byte (0x00) for every byte — satisfies "disk >= host".
         for (var i = 0; i < 256; i++) fdc.WriteData(0x00);
+        for (var i = 0; i < 300; i++) fdc.Tick(); // let the (deferred) natural completion fire
 
         fdc.ReadData(); // ST0
         fdc.ReadData(); // ST1
@@ -950,6 +963,7 @@ public class Upd765Tests
         // Host feeds 4 bytes (C,H,R,N) per sector, SC=2 times.
         byte[] groups = { 1, 0, 1, 1, 1, 0, 2, 1 };
         foreach (var b in groups) fdc.WriteData(b);
+        for (var i = 0; i < 300; i++) fdc.Tick(); // let the (deferred) natural completion fire
 
         Assert.All(disk.ReadSector(0, 0, 1).ToArray(), b => Assert.Equal(0x00, b));
         Assert.All(disk.ReadSector(0, 0, 2).ToArray(), b => Assert.Equal(0x00, b));
@@ -994,6 +1008,7 @@ public class Upd765Tests
             fdc.WriteData(sector); // R
             fdc.WriteData(0x01);   // N — 256B
         }
+        for (var i = 0; i < 300; i++) fdc.Tick(); // let the (deferred) natural completion fire
 
         for (var s = 1; s <= DskImage.SectorsPerTrack; s++)
         {
@@ -1095,6 +1110,7 @@ public class Upd765Tests
         fdc.WriteData(0x00);
         fdc.WriteData(0x00);
         for (var i = 0; i < 256; i++) fdc.ReadData();
+        for (var i = 0; i < 300; i++) fdc.Tick(); // let the (deferred) natural completion fire
 
         // ST0's D2 (HD)/D1-D0 (US1/US0) must reflect the addressed unit even on a normal
         // completion — datasheet-standard, previously always 0x00 regardless of drive/head

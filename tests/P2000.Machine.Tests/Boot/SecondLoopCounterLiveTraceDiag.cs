@@ -7,38 +7,35 @@ using Xunit.Abstractions;
 namespace P2000.Machine.Tests.Boot;
 
 /// <summary>
-/// Part E addendum (cc-bugfix-prompt-12 addendum), item 2: capture CP/M's CR (current record,
-/// FCB offset+0x20) and RC (record count, FCB offset+0x0F) at every real <c>sub_f137h</c>
-/// (0x14/F_READ) entry, plus the actual EOF-equivalent result (<c>lf582h</c>) at return, to
-/// determine whether F_READ ever legitimately signals EOF for VOLORG's own FCB, and if so what
-/// happens immediately afterward -- clean EOF handling, or a fall-through into the busy-wait.
+/// Part H (cc-bugfix-prompt-14) — traces the SECOND loop counter at
+/// <c>[pointer+0x24..0x25]</c> (<c>pointer</c> = the value at fixed cell <c>0x63A3</c>, itself set
+/// once at <c>0x37AD</c>), checked at <c>0x326C</c> only once the first, byte-scan counter
+/// (<c>[pointer+0x26..0x27]</c>, Part G) empties. Originally hypothesized as the check that
+/// actually decides whether the read loop exits (<c>0x3279</c>) or fetches another disk sector
+/// (<c>0x327F</c>).
 ///
-/// Static disassembly of <c>sub_f137h</c> (<c>docs/PDOS_wip.asm</c>, read but not edited):
-/// compares CR against RC (<c>sub_ec39h</c> reads both); if CR &lt; RC, jumps straight to issuing
-/// the next physical read (<c>lf15fh</c> -&gt; ... -&gt; <c>lf170h</c> -&gt; <c>Seek_to_track</c>/
-/// <c>sub_e8b3h</c>); if CR &gt;= RC, unconditionally sets <c>lf582h = 1</c> (the EOF-equivalent
-/// result that flows into the actual return value via <c>sub_f2fdh</c>'s own <c>lf3fah</c>
-/// epilogue) and returns immediately without reading anything further.
-///
-/// CONFIRMED, decisively: CR advances from 0 to only 13 across the entire attempt (27 sub_f137h
-/// entries observed, RC constant at 0x2C=44 the whole time) -- CR NEVER reaches RC. CP/M's own
-/// standard EOF condition is NEVER triggered for this repro. The busy-wait/"Disk I/O error" that
-/// eventually fires is NOT a consequence of end-of-file being mishandled -- there IS no EOF here.
-/// The real stopping point is confirmed elsewhere (<c>ReadDataPhysicalTrackDiag.cs</c>) to be the
-/// same "14-of-16 sectors" physical-sector-advancement limit already flagged as an unrelated loose
-/// end in Part B (2026-07-28 entry) for directory reads -- now confirmed to also govern real
-/// file-data reads. Once that limit is hit, no further FDC command is ever issued (regardless of
-/// CR/RC), and execution falls into the busy-wait exactly as Parts B/C/D established.
+/// CONFIRMED, and DISPROVES that hypothesis: this counter is set ONCE, to 256, right when
+/// <c>0x63A3</c> is first set, and NEVER CHANGES for the rest of the loop -- it stays at 256 at
+/// every single one of 3329 entries to <c>0x323A</c>, including the very last one. It cannot be
+/// what governs the loop's real termination, since <c>0x326C</c>'s own check requires it to reach
+/// zero. Combined with <c>FReadReturnValueDiag.cs</c> (F_READ's own return value is always 0,
+/// never the standard EOF value 1) and <c>LoopExitPathDiag.cs</c> (the OTHER candidate check,
+/// <c>[pointer+0]==3</c>, never fires either -- <c>[pointer+0]</c> stays at 1 throughout), ALL
+/// THREE plausible graceful-exit mechanisms in this loop's own body are ruled out. See the
+/// findings-log entry for the actual reconciled mechanism: the loop does not gracefully exit at
+/// all -- it hangs on the 14th real F_READ call, which physically completes at the FDC level
+/// (Part E) but never returns to this BASIC-side call site.
 /// </summary>
-public class FReadEofHandlingDiag
+public class SecondLoopCounterLiveTraceDiag
 {
     private readonly ITestOutputHelper _output;
-    public FReadEofHandlingDiag(ITestOutputHelper output) => _output = output;
+    public SecondLoopCounterLiveTraceDiag(ITestOutputHelper output) => _output = output;
 
     private const ushort DiskIoErrorFlag = 0x6091;
-    private const ushort Handler_0x14_Entry_SubF137h = 0xF137;
-    private const ushort CurrentFcbPointerCell_0xf579 = 0xF579;
-    private const ushort ResultFlag_lf582h = 0xF582;
+    private const ushort PointerCell_0x63A3 = 0x63A3;
+    private const ushort SecondCounterOffset = 0x24;
+    private const ushort FirstCounterOffset = 0x26;
+    private const ushort LoopDriverEntry_0x323A = 0x323A;
 
     private static string FindRepoRoot()
     {
@@ -129,21 +126,11 @@ public class FReadEofHandlingDiag
         }
     }
 
-    private static ushort ReadFcbAddr(Machine machine, ushort fcbPointerCell)
-    {
-        var lo = machine.Memory.Read(fcbPointerCell);
-        var hi = machine.Memory.Read((ushort)(fcbPointerCell + 1));
-        return (ushort)((hi << 8) | lo);
-    }
+    private static ushort ReadWord(Machine m, ushort addr) =>
+        (ushort)((m.Memory.Read((ushort)(addr + 1)) << 8) | m.Memory.Read(addr));
 
-    [Fact(Skip = "SUPERSEDED (2026-08-04, Part I): this test's own premise (\"CR never reaches " +
-        "RC=44\") pinned the CONFIRMED BUG's own symptom -- RUN\"VOLORG\" hanging at CR=13, well " +
-        "short of VOLORG.BAS's genuine 44-record length. Part I fixed the root cause " +
-        "(Upd765.DeferNaturalCompletion) -- CR now correctly reaches RC=44, the LEGITIMATE CP/M " +
-        "EOF condition, confirming the whole file now reads to completion. See CLAUDE.md's Part I " +
-        "entry and FourteenthOperationRedirectDiag.cs. Retained, skipped, for historical/" +
-        "investigative record only.")]
-    public void RunVolorg_CrNeverReachesRc_StandardCpmEofIsNeverTriggered()
+    [Fact]
+    public void RunVolorg_SecondCounterStaysAt256_CannotGovernLoopExit()
     {
         var repoRoot = FindRepoRoot();
         var cartridgePath = Path.Combine(repoRoot, "assets", "Basic-24.bin");
@@ -187,58 +174,57 @@ public class FReadEofHandlingDiag
         TypeString(machine, "RUN\"VOLORG\"");
         PressEnter(machine);
 
-        _output.WriteLine("=== Watching every sub_f137h (0x14/F_READ) entry: CR, RC, and the return-flag lf582h ===");
+        _output.WriteLine("=== Watching every entry to 0x323A: read pointer(0x63A3) + both counters fresh each time, matching Part G's own proven approach ===");
         ushort? lastPc = null;
-        var entryCount = 0;
-        var maxCr = 0;
-        var rcValuesSeen = new HashSet<int>();
-        var eofFlagEverSetDuringScan = false;
+        ushort? lastPointer = null;
+        ushort? lastSecondCounter = null;
+        var loopEntries = new List<(long T, ushort Pointer, ushort Second, ushort First)>();
 
-        for (long t = 0; t < 20_000_000L; t++)
+        for (long t = 0; t < 10_000_000L; t++)
         {
             machine.Tick();
             var pc = machine.Cpu.Reg.PC;
 
-            if (pc == Handler_0x14_Entry_SubF137h && pc != lastPc)
+            if (pc == LoopDriverEntry_0x323A && pc != lastPc)
             {
-                entryCount++;
-                var fcbAddr = ReadFcbAddr(machine, CurrentFcbPointerCell_0xf579);
-                var cr = machine.Memory.Read((ushort)(fcbAddr + 0x20));
-                var rc = machine.Memory.Read((ushort)(fcbAddr + 0x0F));
-                var resultBefore = machine.Memory.Read(ResultFlag_lf582h);
-                if (fcbAddr != 0)
+                var p = ReadWord(machine, PointerCell_0x63A3);
+                var secondVal = ReadWord(machine, (ushort)(p + SecondCounterOffset));
+                var firstVal = ReadWord(machine, (ushort)(p + FirstCounterOffset));
+                loopEntries.Add((t, p, secondVal, firstVal));
+                if (p != lastPointer)
                 {
-                    maxCr = Math.Max(maxCr, cr);
-                    rcValuesSeen.Add(rc);
-                    if (resultBefore != 0) eofFlagEverSetDuringScan = true;
+                    _output.WriteLine($"t={t,10}  pointer(0x63A3)=0x{p:X4}  (changed from {(lastPointer.HasValue ? $"0x{lastPointer.Value:X4}" : "null")})");
+                    lastPointer = p;
                 }
-                _output.WriteLine($"F_READ-entry#{entryCount,3} t={t,10}  FCB=0x{fcbAddr:X4}  CR=0x{cr:X2}({cr})  RC=0x{rc:X2}({rc})  lf582h-before=0x{resultBefore:X2}");
+                if (secondVal != lastSecondCounter)
+                {
+                    _output.WriteLine($"t={t,10}  pointer=0x{p:X4}  [pointer+0x24..25]=0x{secondVal:X4}({secondVal})  [pointer+0x26..27]=0x{firstVal:X4}({firstVal})  (second changed from {(lastSecondCounter.HasValue ? lastSecondCounter.Value.ToString() : "null")})");
+                    lastSecondCounter = secondVal;
+                }
             }
 
             lastPc = pc;
         }
 
-        _output.WriteLine($"=== Total F_READ (sub_f137h) entries observed: {entryCount} ===");
-        var finalFcbAddr = ReadFcbAddr(machine, CurrentFcbPointerCell_0xf579);
-        var finalCr = machine.Memory.Read((ushort)(finalFcbAddr + 0x20));
-        var finalRc = machine.Memory.Read((ushort)(finalFcbAddr + 0x0F));
-        var finalResult = machine.Memory.Read(ResultFlag_lf582h);
-        _output.WriteLine($"=== Final state: FCB=0x{finalFcbAddr:X4} CR=0x{finalCr:X2}({finalCr}) RC=0x{finalRc:X2}({finalRc}) lf582h=0x{finalResult:X2} ===");
-        _output.WriteLine($"=== Max CR observed while FCB pointer was valid: {maxCr} ===");
-        _output.WriteLine($"=== RC values observed while FCB pointer was valid: {string.Join(",", rcValuesSeen)} ===");
-        _output.WriteLine($"=== Was the EOF-equivalent flag (lf582h) ever set during the scan: {eofFlagEverSetDuringScan} ===");
+        _output.WriteLine($"=== Total entries to 0x323A: {loopEntries.Count} ===");
+        if (loopEntries.Count > 0)
+        {
+            _output.WriteLine($"=== [pointer+0x24..25] at FIRST 0x323A entry: {loopEntries[0].Second} ===");
+            _output.WriteLine($"=== [pointer+0x24..25] at LAST 0x323A entry: {loopEntries[^1].Second} ===");
+        }
 
         WaitForReadyPrompt(machine, maxFields: 3000);
         _output.WriteLine($"Final flag(6091)=0x{ReadFlag(machine):X2}");
         _output.WriteLine("Final screen:");
         _output.WriteLine(SnapshotScreenText(machine));
 
-        // CONFIRMED: RC stays constant at 44 the whole time (VOLORG's own real record count,
-        // never a stale/corrupt value), and CR only ever reaches 13 -- nowhere near RC. CP/M's own
-        // EOF condition (CR >= RC) is NEVER triggered for this repro.
-        Assert.True(entryCount > 0);
-        Assert.Equal(new[] { 44 }, rcValuesSeen.ToArray());
-        Assert.True(maxCr < 44, $"expected CR to never reach RC=44 in this repro; observed max CR={maxCr}");
-        Assert.False(eofFlagEverSetDuringScan, "expected the EOF-equivalent flag never to be set while the FCB pointer was valid -- the busy-wait is not an EOF-handling bug");
+        // CONFIRMED: the second counter is set once (to 256) and NEVER changes for the rest of
+        // the loop -- it cannot be what governs the loop's real exit condition. See
+        // LoopExitPathDiag.cs and FReadReturnValueDiag.cs for the other two hypothesized exit
+        // paths, both also disproven, and the findings-log entry for the actual reconciled
+        // mechanism (the loop doesn't gracefully exit at all -- it hangs on the 14th real F_READ
+        // call, which never returns).
+        Assert.True(loopEntries.Count > 0);
+        Assert.All(loopEntries, e => Assert.Equal(256, e.Second));
     }
 }

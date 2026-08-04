@@ -1626,6 +1626,48 @@ marked synced. Do NOT edit the reference doc from this project.
 - **Synced:** yes (2026-07-05, into P2000T-reference.md + device guides)
 -->
 
+### 2026-08-04 — INVESTIGATION (no bug): `OUT 48,xx` at the BASIC prompt is undone by BASIC itself
+- **Owner report:** on a bare 16 K machine with `BASIC.bin` and no 80-column card, *"none of my
+  out 48,xx attempts had any effect"*, while `OUT 0,1` demonstrably works. Reproduced headlessly
+  by typing the command into BASIC through the real keyboard matrix — not by poking the port,
+  which is what every prior test did and is exactly why nothing caught this.
+- **Root cause: BASIC writes the pan register back to 0 as part of returning to the `Ok`
+  prompt.** Instrumenting ports `0x30`-`0x3F` while typing `OUT 48,3` + Enter shows **two**
+  writes, in this order:
+  ```
+  port 0x30 = 0x03   <- the user's own OUT, delivered correctly
+  port 0x30 = 0x00   <- BASIC, immediately afterwards
+  ```
+  The pan really is applied and then normalised away within the same command cycle, so it is
+  invisible at the prompt. **Nothing in the emulator is wrong** — this is cartridge code doing it,
+  so a real P2000T behaves identically.
+- **Confirmed by the complementary experiment:** a program that sets the pan and then does NOT
+  write to the screen holds it indefinitely —
+  ```
+  10 OUT 48,3
+  20 GOTO 20
+  RUN
+  ```
+  → `PanX` stays 3 across 100+ fields with exactly one port write. So the reset is tied to
+  BASIC's screen output, not to some periodic housekeeping.
+- **Why `OUT 0,1` looks different:** BASIC never touches port `0x00`, so the 80-column latch
+  survives. The contrast is what made the pan look broken.
+- **This also corrects an over-broad claim in this file's own milestone-26 entry** (see above):
+  that entry says the BASIC cartridge issues zero writes to `0x30`-`0x3F`, based on instrumenting
+  an idle machine sitting at the `Ok` prompt. That is true only while idle. **BASIC does write the
+  range — on screen output.** The milestone-26 conclusion it supported (a user-set pan persists
+  and is visible) holds only for guest code that does not print; at the prompt it does not.
+- **Consequence for §5's "used to reduce flicker" note:** that technique is application software's
+  to use, and any program using it must own the pan register continuously — BASIC will fight it
+  the moment it prints. Worth knowing before anyone reaches for the two-screen trick from BASIC.
+- **No code change, and no new test.** The behaviour under test is the cartridge's, not this
+  project's; the emulator side is already pinned cheaply by
+  `VideoControlRegisterTests.OutInstruction_FromRealZ80Code_DrivesTheRegister`. Adding a
+  boot-BASIC-and-type test would cost ~30 s of suite time to assert something Philips wrote.
+- **Applies to:** no source files. Reference doc §5g (worth a note that BASIC normalises the pan
+  on screen output) and §5's flicker-reduction paragraph.
+- **Synced:** no — awaiting the human's sync pass.
+
 ### 2026-08-04 — Milestone 26 IMPLEMENTED: video control register, output ports `0x30`–`0x3F`
 - **Trigger:** owner-supplied Philips manual description (reference doc §5g), spec
   `docs/P2000T-portx30-milestone-spec.md`. Closes a gap milestone 25 surfaced: `Video.PanX` has

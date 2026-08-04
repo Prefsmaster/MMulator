@@ -16,7 +16,7 @@ public partial class DisplayWindow : Window
     private ConfigWindow? _configWindow;
     private DebuggerWindow? _debuggerWindow;
     private KeyboardWindow? _keyboardWindow;
-    private Action<uint[], bool, bool[]>? _frameReadyHandler;
+    private Action<uint[], bool, bool[], int>? _frameReadyHandler;
 
     public DisplayWindow()
     {
@@ -50,7 +50,7 @@ public partial class DisplayWindow : Window
 
         if (_vm is not null)
         {
-            _frameReadyHandler = (pixels, fieldWasOdd, corruption) =>
+            _frameReadyHandler = (pixels, fieldWasOdd, corruption, corruptionWidth) =>
             {
                 Display.Mode             = _vm.DisplayMode;
                 Display.Crop             = _vm.Crop;
@@ -58,7 +58,7 @@ public partial class DisplayWindow : Window
                 Display.PalAspect        = _vm.PalAspect;
                 Display.ShowScanlines    = _vm.ShowScanlines;
                 Display.ShowDebugOverlay = _vm.ShowDebugOverlay;
-                Display.Present(pixels, fieldWasOdd, corruption);
+                Display.Present(pixels, fieldWasOdd, corruption, corruptionWidth);
             };
             _vm.Runner.FrameReady += _frameReadyHandler;
             _vm.OpenDeckWindowRequested     += ShowDeckWindow;

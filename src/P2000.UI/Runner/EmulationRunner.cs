@@ -51,10 +51,12 @@ public sealed class EmulationRunner : IDisposable
     /// <c>pixels</c> is a stable BGRA copy of the machine's full-field buffer (928×626,
     /// project CLAUDE.md §17 2026-07-22 full-field change) owned by the runner.
     /// <c>fieldWasOdd</c> is true when the odd field just completed (useful for Progressive /
-    /// EvenOnly / OddOnly display modes). <c>corruption</c> is a stable 40×24 snapshot of the
-    /// machine's CorruptionOverlay for that field.
+    /// EvenOnly / OddOnly display modes). <c>corruption</c> is a stable snapshot of the
+    /// machine's CorruptionOverlay for that field, and <c>corruptionWidth</c> is the viewport
+    /// width it is indexed by — 40 normally, 80 while the 80-column board is enabled (machine
+    /// milestone 25). <b>Index it as <c>row * corruptionWidth + col</c>; never assume 40.</b>
     /// All arrays are safe to read until the next <see cref="FrameReady"/> fires.</summary>
-    public event Action<uint[], bool, bool[]>? FrameReady;
+    public event Action<uint[], bool, bool[], int>? FrameReady;
 
     /// <summary>Skip the 50 Hz sleep and run as fast as the CPU allows.</summary>
     public volatile bool Turbo;
@@ -75,10 +77,14 @@ public sealed class EmulationRunner : IDisposable
         new uint[Video.Width * Video.Height],
         new uint[Video.Width * Video.Height]
     };
+    // Sized for the widest possible viewport (80 columns) unconditionally: the machine's own
+    // overlay is 40 wide unless the 80-column board is fitted, and Reconfigure can swap between
+    // the two, so a fixed max-size presentation buffer avoids reallocating on a topology swap.
+    // Only the first `corruptionWidth * CharRows` entries are ever meaningful.
     private readonly bool[][] _corruptionBufs =
     {
-        new bool[VideoFetchUnit.Columns * Video.CharRows],
-        new bool[VideoFetchUnit.Columns * Video.CharRows]
+        new bool[VideoFetchUnit.ColumnsEightyColumn * Video.CharRows],
+        new bool[VideoFetchUnit.ColumnsEightyColumn * Video.CharRows]
     };
     private int _writeBufIdx;
 
@@ -300,12 +306,14 @@ public sealed class EmulationRunner : IDisposable
         bool fieldWasOdd = !_machine.Video.IsOddField;
         var buf          = _frameBufs[_writeBufIdx];
         var corruption   = _corruptionBufs[_writeBufIdx];
-        Array.Copy(_machine.Video.Framebuffer,       buf,        buf.Length);
-        Array.Copy(_machine.Video.CorruptionOverlay, corruption, corruption.Length);
+        var machineOverlay = _machine.Video.CorruptionOverlay;
+        int corruptionWidth = _machine.Video.CorruptionOverlayWidth;
+        Array.Copy(_machine.Video.Framebuffer, buf, buf.Length);
+        Array.Copy(machineOverlay, corruption, machineOverlay.Length);
         _writeBufIdx ^= 1;
 
         Dispatcher.UIThread.Post(
-            () => FrameReady?.Invoke(buf, fieldWasOdd, corruption),
+            () => FrameReady?.Invoke(buf, fieldWasOdd, corruption, corruptionWidth),
             DispatcherPriority.Render);
 
         // ── Speed measurement ─────────────────────────────────────────────────

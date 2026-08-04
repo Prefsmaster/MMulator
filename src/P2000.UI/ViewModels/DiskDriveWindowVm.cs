@@ -63,7 +63,7 @@ public sealed partial class DiskDriveWindowVm : ObservableObject
         RebuildIfMachineChanged();
     }
 
-    private void OnFrameReady(uint[] _, bool __, bool[] ___) => RebuildIfMachineChanged();
+    private void OnFrameReady(uint[] _, bool __, bool[] ___, int ____) => RebuildIfMachineChanged();
 
     /// <summary>Rebuilds <see cref="Drives"/> against whatever machine <see cref="_runner"/>
     /// currently holds, but ONLY if it's actually a different instance from last time

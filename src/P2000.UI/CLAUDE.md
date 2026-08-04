@@ -1518,7 +1518,10 @@ builds did. Do not advance while the current milestone is red. Record spec corre
   the same primitive surface so UI + IDE share one driver — a move, not a redesign.
 - **P2000M UI differences** (VRAM geometry in the VRAM window reads from model — already
   parameterized; M itself deferred in the machine).
-- **80-column display**, **hires overlay** presentation — once the machine supports them.
+- **hires overlay** presentation — once the machine supports it. (**80-column display
+  dropped off this list as of UI milestone 18**, §18 2026-08-04 — the machine's 80-column board
+  needed no display-mode or crop work at all, since the raster geometry is unchanged; only the
+  corrupted-cell overlay's viewport width had to stop being assumed to be 40.)
 
 (**Disk / FDC UI dropped off this list as of milestone 14** — §14.14, now that the machine's FDC
 + multi-drive subsystem has a milestone (M20) to unlock it.)
@@ -1562,6 +1565,121 @@ project.
 - **Applies to:** reference doc §3a / <file>
 - **Synced:** yes (YYYY-MM-DD)
 -->
+
+### 2026-08-04 — Milestone 21 IMPLEMENTED: config window two-column relayout (interim)
+- **Trigger:** owner decision (reference doc §3a) — the window had grown too tall as topology
+  axes accumulated, and milestone 20's Modifications section was the one that tipped it. Spec:
+  `docs/P2000T-portx30-milestone-spec.md` Part B. Independent of machine milestone 26, which
+  landed in the same pass: no shared code, no shared tests.
+- **Number taken from THIS log**, per the spec's warning: §14's numbered list stops at 19, but
+  the log's highest is 20 (the 80-column axis), so 21 is next. The reference doc lagged by two
+  UI milestones last time and produced a wrong number.
+- **Layout as specified.** Left column: Model, Memory (RAM), Monitor ROM, Internal-Slot Board +
+  Floppy Drives. Right column: Cassette, SLOT1, Modifications. Spanning both underneath:
+  Load/Save/Apply, Startup ("Always start with this configuration"), and the status message.
+- **The column split has a load-bearing reason, confirmed by the owner mid-implementation, and
+  worth preserving if these sections are ever reshuffled:** Floppy Drives is the ONLY dynamic
+  section — its height varies with the drive count (0–4 rows, two lines each) and it vanishes
+  entirely unless the Floppy+RAM board is selected. It therefore sits **last in the left column**,
+  so the whole column absorbs the growth, while the right column carries only fixed-height
+  sections. Adding a drive lengthens one column instead of reflowing both, and the action row
+  below stays put. Recorded in the XAML itself, not just here.
+- **Presentation only — and verified, not merely asserted.** Every section is the same markup as
+  before, moved wholesale into two `StackPanel`s inside a `Grid ColumnDefinitions="*,20,*"`. No
+  binding, command, converter or enablement gate changed. **`ConfigWindowVm` was not touched at
+  all** — checked against the diff: its only changes in this working tree are milestone 20's
+  `EightyColumnBoard`/`ShowEightyColumnArtifacts` additions, nothing layout-related. The existing
+  `ConfigWindowVmTests`/`StartupConfigurationTests` passing untouched is the real assurance here,
+  exactly as the spec framed it.
+- **Width checked rather than guessed — REPORTING the numbers since the spec asked for the
+  narrowest-sensible-size check.** Measured headlessly (temporary probe, removed after use):
+  - Before: **480 × 507** bare, **480 × 580** with Floppy+RAM and 4 drives.
+  - After, at 860 wide: **860 × 374** bare, **860 × 426** with 4 drives — **~27% shorter** in both
+    cases.
+  - The *natural* unconstrained width measures 1892, but that is dominated by the wrapping hint
+    captions wanting one line each, not by controls — so width is a free choice, not a constraint.
+  - Swept 740/800/860/900/960: **height is flat across the whole range**, so nothing is bought by
+    going wider. The hard floor from fixed-size controls is ~732 (per column: 140 px label + 200 px
+    ComboBox, ×2, plus the 20 px gutter and 32 px padding).
+  - **Chose 860:** ~128 px clear of that floor, leaves the file-path text boxes ~129 px each, and
+    still fits a 1024-wide screen with margin. **No awkward minimum width to report** — the
+    trade-off the spec warned about did not materialise, because the only genuinely wide elements
+    are wrapping captions.
+- **Explicitly interim, and said so in the markup:** the acknowledged end state is a TABBED config
+  window (§3a). No tabs built. The XAML comment records that the column split was chosen to
+  balance HEIGHT whereas tabs would be chosen to group by CONCEPT, so whoever revisits this does
+  not mistake the columns for a considered final grouping.
+- **No new tests, deliberately.** The spec's own guidance: layout is largely not unit-testable and
+  inventing brittle visual-tree assertions is worse than not testing. This project has no existing
+  pattern for asserting a named control's presence in the config window, so none was invented.
+  Full `P2000.UI.Tests`: **253/253 green**, identical to the baseline.
+- **Manual check left for the owner** (per the spec): open the config window, confirm every
+  section is reachable without scrolling at the default size, and that Apply / Load / Save /
+  "Always start with this configuration" all still behave.
+- **Applies to:** `src/P2000.UI/Views/ConfigWindow.axaml` only.
+- **Synced:** no — awaiting the human's sync pass into `docs/P2000T-reference.md` §3a.
+
+### 2026-08-04 — Milestone 20 IMPLEMENTED: 80-column board config axis + viewport-width plumbing
+- **Trigger:** machine milestone 25 (same day) — read its §17 entry first; every hardware fact,
+  and the two decisions it reports back rather than making, live there. This entry is the UI half.
+- **NUMBERING CORRECTION, flagged for the human's sync pass: the milestone spec called this "UI
+  milestone 18", and 18 is already taken.** The spec derived its number from
+  `docs/P2000T-reference.md`, whose highest UI reference is 17 — but §14 of THIS file has since
+  grown items **18** (Config window Capacity/Sides staleness bugfix) and **19** (per-drive
+  topology display), both added and implemented 2026-07-31, after the reference doc's last sync.
+  The next free UI number is **20**, used here. The machine side needed no correction: its spec
+  number, 25, is genuinely free (§13's highest is 24).
+- **Config window — new "Modifications" section** (`ConfigWindowVm.EightyColumnBoard` /
+  `.ShowEightyColumnArtifacts`, bound in `ConfigWindow.axaml` between the SLOT1 and Monitor-ROM
+  sections). Reset-to-apply like every other topology axis, so it rides `BuildConfig`/`Apply`
+  with no special handling. `CanEditEightyColumnArtifacts` greys the artifact toggle out unless
+  the board is fitted — it's inert otherwise, and a live-looking control that does nothing is
+  worse than a disabled one.
+- **`CanEditModifications` is deliberately a real property returning constant `true`, not an
+  inlined literal.** The axis is T-only and the machine layer REJECTS it on a P2000M rather than
+  ignoring it; this window only ever offers the T today (`BuildConfig` hardcodes `MachineModel
+  .P2000T`), so the gate has nothing to do yet — but when the M selector arrives it must grey the
+  section out rather than let Apply throw. Leaving a named seam is the difference between that
+  being a one-line change and a bug report.
+- **Corrupted-cell overlay: the viewport width is now PASSED, not assumed** — the change that
+  rippled furthest. `EmulationRunner.FrameReady` gained a fourth argument, `corruptionWidth`
+  (40, or 80 while the board is enabled), because the overlay's stride is no longer a constant.
+  Every subscriber's signature was updated; only two actually consume it (`DisplayControl.Present`
+  → `DrawCorruptionOverlay`, and `DebuggerWindowVm` → `VramWindowVm`). The runner's two
+  presentation snapshot buffers are now allocated at the 80-column size unconditionally so a
+  `Reconfigure` that adds or removes the board needs no reallocation; only the first
+  `corruptionWidth × 24` entries are ever meaningful.
+- **`VramGridControl` gained a `ViewportWidth` styled property** (default 40) driving BOTH the
+  yellow viewport rectangle and the corruption stride. In 80-column mode the whole 80-column
+  buffer is on screen and the pan register is held cleared in hardware, so the viewport rectangle
+  correctly spans the full grid rather than staying a 40-wide box at PanX 0. Its corruption-array
+  length check was relaxed from an exact `Length: 24 * 40` pattern match to `>= 24 * width` — the
+  exact match would have silently dropped the overlay entirely once the runner's buffer became
+  80-wide, which is the kind of failure that looks like "contention stopped happening".
+- **Not built, and not needed:** any display-mode/crop change. 80-column mode does not touch the
+  raster — same 928×626 buffer, same (144, 98) crop, same four display modes — so `DisplayMode`,
+  `DisplayCrop`, aspect correction and the screenshot path are all untouched by this milestone.
+- **Tests:** `tests/P2000.UI.Tests/ViewModels/EightyColumnConfigTests.cs` (new, 7) — the axis
+  defaults, the artifact toggle's enablement gate, Apply actually fitting/not fitting the board on
+  a live runner, and `VramWindowVm` accepting an 80-wide overlay (including a cell at column 79,
+  unreachable under a 40-wide stride) plus its fallback when the array is too short for the stated
+  width. Full `P2000.UI.Tests`: 253/253 green, unfiltered, no flakes this run.
+- **Applies to:** `src/P2000.UI/ViewModels/ConfigWindowVm.cs`, `src/P2000.UI/Views/ConfigWindow.axaml`,
+  `src/P2000.UI/Runner/EmulationRunner.cs` (`FrameReady` signature, snapshot buffers),
+  `src/P2000.UI/Rendering/DisplayControl.cs` (`Present`, `DrawCorruptionOverlay`),
+  `src/P2000.UI/Rendering/VramGridControl.cs` (`ViewportWidth`),
+  `src/P2000.UI/ViewModels/VramWindowVm.cs`, `src/P2000.UI/ViewModels/DebuggerWindowVm.cs`,
+  `src/P2000.UI/Views/VramWindow.axaml`, `src/P2000.UI/Views/DisplayWindow.axaml.cs`, and the
+  three VMs whose `OnFrameReady` signatures changed without consuming the new argument
+  (`CassetteDeckVm`, `DiskDriveVm`, `DiskDriveWindowVm`, `DisplayWindowVm`).
+- **Synced:** **yes (2026-08-04).** Into `docs/P2000T-reference.md` §3a (the config axis's
+  as-built detail, including the `CanEditModifications` seam for the future M selector) and §5's
+  "80-column mode → IMPLEMENTED" (the `corruptionWidth` plumbing, `VramGridControl.ViewportWidth`,
+  and the "no display-mode or crop change was needed" result). Also into
+  `docs/P2000T-80col-milestone-spec.md`, now marked **IMPLEMENTED** and carrying both of its own
+  errors on the record. **The numbering correction this entry raised is now recorded in the
+  reference doc as a standing warning at the top of §9** — milestone numbers come from the
+  findings logs, never from the reference doc.
 
 ### 2026-08-01 — FIXED (spin-off from the 2026-07-31 test-leak investigation): `KeyHeldAcrossMenuOpen_StillReleasesCleanly_NoStuckForcedShiftState` — a real production bug AND a stale test assumption, not "flaky"
 - **Trigger:** the 2026-07-31 window/thread-leak fix (entry above) deliberately did NOT chase this

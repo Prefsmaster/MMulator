@@ -151,6 +151,19 @@ public sealed partial class ConfigWindowVm : ObservableObject
     [NotifyPropertyChangedFor(nameof(CanEditRamVariant), nameof(ShowFloppyDrives))]
     private InternalBoard _board;
 
+    /// <summary>The 1986 80-column modification daughterboard (machine milestone 25,
+    /// <c>MachineConfig.Modifications.EightyColumnBoard</c>) — T-only, reset-to-apply. The
+    /// machine layer REJECTS this on a P2000M rather than ignoring it, so
+    /// <see cref="CanEditModifications"/> gates the control rather than letting Apply throw.</summary>
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(CanEditEightyColumnArtifacts))]
+    private bool _eightyColumnBoard;
+
+    /// <summary>Reproduce the article's documented out-of-spec 80-column rendering artifact
+    /// (<c>MachineConfig.Modifications.ShowEightyColumnArtifacts</c>). Defaults ON, matching the
+    /// machine-layer default; only meaningful with the board fitted.</summary>
+    [ObservableProperty] private bool _showEightyColumnArtifacts = true;
+
     [ObservableProperty] private string _slot1CartridgePath = "";
     [ObservableProperty] private string _monitorRomPath = "";
 
@@ -188,6 +201,17 @@ public sealed partial class ConfigWindowVm : ObservableObject
 
     public bool ShowFloppyDrives => Board == InternalBoard.FloppyRam;
 
+    /// <summary>False when the modifications axis is unavailable for the selected model. Only
+    /// the P2000T is offered by this window today (<see cref="BuildConfig"/> hardcodes it), so
+    /// this is constant true for now — kept as a real property rather than inlined <c>true</c>
+    /// so adding the M selector later greys the axis out instead of building an invalid
+    /// config.</summary>
+    public bool CanEditModifications => true;
+
+    /// <summary>The artifact toggle is meaningless without the board — grey it out rather than
+    /// leaving a live-looking control that does nothing.</summary>
+    public bool CanEditEightyColumnArtifacts => CanEditModifications && EightyColumnBoard;
+
     // ── Floppy drives axis (project CLAUDE.md §14 milestone 14) ──────────────
 
     public IReadOnlyList<int> FloppyDriveCounts { get; } = [0, 1, 2, 3, 4];
@@ -220,6 +244,8 @@ public sealed partial class ConfigWindowVm : ObservableObject
         Slot1CartridgePath = cfg.Slot1CartridgePath ?? "";
         MonitorRomPath = cfg.MonitorRomPath ?? "";
         CassettePath = cfg.CassettePath ?? "";
+        EightyColumnBoard = cfg.Modifications.EightyColumnBoard;
+        ShowEightyColumnArtifacts = cfg.Modifications.ShowEightyColumnArtifacts;
         LoadFloppyDrivesFrom(cfg.FloppyDrives);
         _ramSeed = cfg.RamSeed;
         _bankCount = cfg.BankCount;
@@ -477,6 +503,8 @@ public sealed partial class ConfigWindowVm : ObservableObject
             Slot1CartridgePath = cfg.Slot1CartridgePath ?? "";
             MonitorRomPath = cfg.MonitorRomPath ?? "";
             CassettePath = cfg.CassettePath ?? "";
+            EightyColumnBoard = cfg.Modifications.EightyColumnBoard;
+            ShowEightyColumnArtifacts = cfg.Modifications.ShowEightyColumnArtifacts;
             LoadFloppyDrivesFrom(cfg.FloppyDrives);
             _ramSeed = cfg.RamSeed;
             _bankCount = cfg.BankCount;
@@ -600,6 +628,11 @@ public sealed partial class ConfigWindowVm : ObservableObject
         CassettePath = NullIfEmpty(CassettePath),
         FloppyDrives = FloppyDriveRows.Select(r => r.ToConfig()).ToList(),
         RamSeed = _ramSeed,
+        Modifications = new ModificationsConfig
+        {
+            EightyColumnBoard = EightyColumnBoard,
+            ShowEightyColumnArtifacts = ShowEightyColumnArtifacts,
+        },
     };
 
     private static string? NullIfEmpty(string s) =>

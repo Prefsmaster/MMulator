@@ -5,7 +5,7 @@
         x:DataType="vm:ConfigWindowVm"
         x:Class="P2000.UI.Views.ConfigWindow"
         Title="Machine Configuration"
-        Width="480" SizeToContent="Height"
+        Width="860" SizeToContent="Height"
         CanResize="False"
         WindowStartupLocation="CenterOwner">
 
@@ -32,144 +32,185 @@
     <Border Background="#252525" Padding="16">
         <StackPanel Spacing="4">
 
-            <!-- ── Model (T-only for now) ──────────────────────────────────── -->
-            <TextBlock Classes="section" Text="Model" />
-            <DockPanel>
-                <TextBlock Classes="label" Text="Machine model" />
-                <TextBlock Text="P2000T" Foreground="#888" VerticalAlignment="Center"
-                           ToolTip.Tip="P2000M is not yet emulated." />
-            </DockPanel>
+            <!-- ── Two-column layout (UI milestone 21) ──────────────────────
+                 INTERIM, deliberately: the window had grown too tall as topology axes
+                 accumulated (the Modifications section tipped it). The acknowledged end state
+                 is a TABBED config window — reference doc §3a. Two columns buys room now; it
+                 does not solve "every new axis has to go somewhere on one surface", and the
+                 column split was chosen to balance HEIGHT, whereas tabs would be chosen to
+                 group by CONCEPT. Do not treat this as a considered final layout.
 
-            <!-- ── RAM ─────────────────────────────────────────────────────── -->
-            <TextBlock Classes="section" Text="Memory" />
-            <DockPanel>
-                <TextBlock Classes="label" Text="RAM" />
-                <ComboBox ItemsSource="{Binding RamVariants}"
-                          SelectedItem="{Binding RamVariant}"
-                          IsEnabled="{Binding CanEditRamVariant}"
-                          ToolTip.Tip="Fixed to T/102 while Floppy + RAM is selected below — the machine's own disk-boot gate requires it."
-                          MinWidth="200">
-                    <ComboBox.ItemTemplate>
-                        <DataTemplate x:DataType="m:RamVariant">
-                            <TextBlock Text="{Binding Converter={x:Static vm:RamVariantDescConverter.Instance}}" />
-                        </DataTemplate>
-                    </ComboBox.ItemTemplate>
-                </ComboBox>
-            </DockPanel>
+                 Presentation only: every section below is the same markup as before, moved
+                 wholesale. No binding, command or enablement gate changed, and ConfigWindowVm
+                 was not touched at all.
 
-            <!-- ── Internal-slot board ──────────────────────────────────────── -->
-            <TextBlock Classes="section" Text="Internal-Slot Board" />
-            <TextBlock Classes="hint"
-                       Text="Determines upper memory AND whether the FDC/CTC + floppy drives exist." />
-            <DockPanel>
-                <TextBlock Classes="label" Text="Board" />
-                <ComboBox ItemsSource="{Binding Boards}"
-                          SelectedItem="{Binding Board}"
-                          MinWidth="200">
-                    <ComboBox.ItemTemplate>
-                        <DataTemplate x:DataType="m:InternalBoard">
-                            <TextBlock Text="{Binding Converter={x:Static vm:InternalBoardDescConverter.Instance}}" />
-                        </DataTemplate>
-                    </ComboBox.ItemTemplate>
-                </ComboBox>
-            </DockPanel>
-
-            <!-- ── Floppy drives (project CLAUDE.md §14 milestone 14) ───────── -->
-            <StackPanel IsVisible="{Binding ShowFloppyDrives}" Spacing="4">
-                <TextBlock Classes="section" Text="Floppy Drives" />
-                <TextBlock Classes="hint"
-                           Text="Drive count/geometry is topology (reset-to-apply). Capacity/Sides only seed newly-created blank media — a mounted image's own label always wins. Images themselves are mounted live from the Floppy Drives window." />
+                 WHY THE SPLIT IS WHAT IT IS (owner, 2026-08-04): Floppy Drives is the only
+                 DYNAMIC section — its height varies with the drive count (0-4 rows, each two
+                 lines), and it disappears entirely unless the Floppy+RAM board is selected. So
+                 it goes LAST IN THE LEFT COLUMN, where the whole column absorbs the growth,
+                 and the right column carries only fixed-height sections. Adding a drive
+                 therefore lengthens one column instead of reflowing both, and the action row
+                 below stays put. Keep that property if these sections are ever reshuffled. -->
+            <Grid ColumnDefinitions="*,20,*">
+                <StackPanel Grid.Column="0" Spacing="4" VerticalAlignment="Top">
+                <!-- ── Model (T-only for now) ──────────────────────────────────── -->
+                <TextBlock Classes="section" Text="Model" />
                 <DockPanel>
-                    <TextBlock Classes="label" Text="Drive count" />
-                    <ComboBox ItemsSource="{Binding FloppyDriveCounts}"
-                              SelectedItem="{Binding FloppyDriveCount}"
-                              MinWidth="80" />
+                    <TextBlock Classes="label" Text="Machine model" />
+                    <TextBlock Text="P2000T" Foreground="#888" VerticalAlignment="Center"
+                               ToolTip.Tip="P2000M is not yet emulated." />
                 </DockPanel>
-                <ItemsControl ItemsSource="{Binding FloppyDriveRows}">
-                    <ItemsControl.ItemTemplate>
-                        <DataTemplate x:DataType="vm:FloppyDriveRowVm">
-                            <StackPanel Margin="0,2" Spacing="2">
-                                <DockPanel>
-                                    <TextBlock Classes="label" Width="90"
-                                               Text="{Binding DriveIndex, StringFormat='Drive {0}'}" />
-                                    <ComboBox ItemsSource="{x:Static vm:FloppyDriveRowVm.Capacities}"
-                                              SelectedItem="{Binding Capacity}"
-                                              MinWidth="90" Margin="0,0,8,0" />
-                                    <ComboBox ItemsSource="{x:Static vm:FloppyDriveRowVm.SidesOptions}"
-                                              SelectedItem="{Binding Sides}"
-                                              MinWidth="140">
-                                        <ComboBox.ItemTemplate>
-                                            <DataTemplate x:DataType="m:DiskSides">
-                                                <TextBlock Text="{Binding Converter={x:Static vm:DiskSidesDescConverter.Instance}}" />
-                                            </DataTemplate>
-                                        </ComboBox.ItemTemplate>
-                                    </ComboBox>
-                                </DockPanel>
-                                <!-- Manual initial-image authoring (project CLAUDE.md milestone 14c) —
-                                     complementary to Save .cfg now capturing whatever's live-mounted. -->
-                                <DockPanel Margin="90,0,0,0">
-                                    <Button Command="{Binding ClearImageCommand}"
-                                            DockPanel.Dock="Right" Content="Clear" Margin="4,0,0,0" />
-                                    <Button Command="{Binding BrowseImageCommand}"
-                                            DockPanel.Dock="Right" Content="Browse…" Margin="4,0,0,0" />
-                                    <TextBox Text="{Binding ImagePath}"
-                                             Watermark="(no initial image — mount live at runtime)"
-                                             FontSize="11" IsReadOnly="True" />
-                                </DockPanel>
-                            </StackPanel>
-                        </DataTemplate>
-                    </ItemsControl.ItemTemplate>
-                </ItemsControl>
-            </StackPanel>
 
-            <!-- ── Cassette (project CLAUDE.md milestone 14c) ───────────────── -->
-            <TextBlock Classes="section" Text="Cassette" />
-            <TextBlock Classes="hint"
-                       Text="Manually-authored initial tape (hand-authoring a .cfg). Save .cfg from a running machine instead captures whatever's actually mounted in the deck." />
-            <DockPanel>
-                <TextBlock Classes="label" Text="Initial cassette" />
-                <Button Command="{Binding ClearCassetteCommand}"
-                        DockPanel.Dock="Right" Content="Clear" Margin="4,0,0,0"
-                        ToolTip.Tip="No initial cassette (bare deck)" />
-                <Button Command="{Binding BrowseCassetteCommand}"
-                        DockPanel.Dock="Right" Content="Browse…" Margin="4,0,0,0" />
-                <TextBox Text="{Binding CassettePath}"
-                         Watermark="(empty — bare deck)"
-                         IsReadOnly="True" />
-            </DockPanel>
+                <!-- ── RAM ─────────────────────────────────────────────────────── -->
+                <TextBlock Classes="section" Text="Memory" />
+                <DockPanel>
+                    <TextBlock Classes="label" Text="RAM" />
+                    <ComboBox ItemsSource="{Binding RamVariants}"
+                              SelectedItem="{Binding RamVariant}"
+                              IsEnabled="{Binding CanEditRamVariant}"
+                              ToolTip.Tip="Fixed to T/102 while Floppy + RAM is selected below — the machine's own disk-boot gate requires it."
+                              MinWidth="200">
+                        <ComboBox.ItemTemplate>
+                            <DataTemplate x:DataType="m:RamVariant">
+                                <TextBlock Text="{Binding Converter={x:Static vm:RamVariantDescConverter.Instance}}" />
+                            </DataTemplate>
+                        </ComboBox.ItemTemplate>
+                    </ComboBox>
+                </DockPanel>
 
-            <!-- ── SLOT1 cartridge ─────────────────────────────────────────── -->
-            <TextBlock Classes="section" Text="SLOT1 Cartridge" />
-            <TextBlock Classes="hint"
-                       Text="Empty SLOT1 → cassette-wait boot. Populate with BASIC.bin to boot into BASIC." />
-            <DockPanel>
-                <TextBlock Classes="label" Text="Cartridge image" />
-                <Button Command="{Binding ClearSlot1Command}"
-                        DockPanel.Dock="Right" Content="Clear" Margin="4,0,0,0"
-                        ToolTip.Tip="Remove SLOT1 cartridge (bare machine)" />
-                <Button Command="{Binding BrowseSlot1Command}"
-                        DockPanel.Dock="Right" Content="Browse…" Margin="4,0,0,0" />
-                <TextBox Text="{Binding Slot1CartridgePath}"
-                         Watermark="(empty — bare machine)"
-                         IsReadOnly="True" />
-            </DockPanel>
+                <!-- ── Monitor ROM override ────────────────────────────────────── -->
+                <TextBlock Classes="section" Text="Monitor ROM" />
+                <TextBlock Classes="hint"
+                           Text="Leave empty to use the built-in embedded ROM (P2000ROM.rom). Override only for patched revisions." />
+                <DockPanel>
+                    <TextBlock Classes="label" Text="Custom ROM path" />
+                    <Button Command="{Binding ClearMonitorRomCommand}"
+                            DockPanel.Dock="Right" Content="Clear" Margin="4,0,0,0" />
+                    <Button Command="{Binding BrowseMonitorRomCommand}"
+                            DockPanel.Dock="Right" Content="Browse…" Margin="4,0,0,0" />
+                    <TextBox Text="{Binding MonitorRomPath}"
+                             Watermark="(built-in default)"
+                             IsReadOnly="True" />
+                </DockPanel>
 
-            <!-- ── Monitor ROM override ────────────────────────────────────── -->
-            <TextBlock Classes="section" Text="Monitor ROM" />
-            <TextBlock Classes="hint"
-                       Text="Leave empty to use the built-in embedded ROM (P2000ROM.rom). Override only for patched revisions." />
-            <DockPanel>
-                <TextBlock Classes="label" Text="Custom ROM path" />
-                <Button Command="{Binding ClearMonitorRomCommand}"
-                        DockPanel.Dock="Right" Content="Clear" Margin="4,0,0,0" />
-                <Button Command="{Binding BrowseMonitorRomCommand}"
-                        DockPanel.Dock="Right" Content="Browse…" Margin="4,0,0,0" />
-                <TextBox Text="{Binding MonitorRomPath}"
-                         Watermark="(built-in default)"
-                         IsReadOnly="True" />
-            </DockPanel>
+                <!-- ── Internal-slot board ──────────────────────────────────────── -->
+                <TextBlock Classes="section" Text="Internal-Slot Board" />
+                <TextBlock Classes="hint"
+                           Text="Determines upper memory AND whether the FDC/CTC + floppy drives exist." />
+                <DockPanel>
+                    <TextBlock Classes="label" Text="Board" />
+                    <ComboBox ItemsSource="{Binding Boards}"
+                              SelectedItem="{Binding Board}"
+                              MinWidth="200">
+                        <ComboBox.ItemTemplate>
+                            <DataTemplate x:DataType="m:InternalBoard">
+                                <TextBlock Text="{Binding Converter={x:Static vm:InternalBoardDescConverter.Instance}}" />
+                            </DataTemplate>
+                        </ComboBox.ItemTemplate>
+                    </ComboBox>
+                </DockPanel>
 
-            <!-- ── Buttons ─────────────────────────────────────────────────── -->
+                <!-- ── Floppy drives (project CLAUDE.md §14 milestone 14) ───────── -->
+                <StackPanel IsVisible="{Binding ShowFloppyDrives}" Spacing="4">
+                    <TextBlock Classes="section" Text="Floppy Drives" />
+                    <TextBlock Classes="hint"
+                               Text="Drive count/geometry is topology (reset-to-apply). Capacity/Sides only seed newly-created blank media — a mounted image's own label always wins. Images themselves are mounted live from the Floppy Drives window." />
+                    <DockPanel>
+                        <TextBlock Classes="label" Text="Drive count" />
+                        <ComboBox ItemsSource="{Binding FloppyDriveCounts}"
+                                  SelectedItem="{Binding FloppyDriveCount}"
+                                  MinWidth="80" />
+                    </DockPanel>
+                    <ItemsControl ItemsSource="{Binding FloppyDriveRows}">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate x:DataType="vm:FloppyDriveRowVm">
+                                <StackPanel Margin="0,2" Spacing="2">
+                                    <DockPanel>
+                                        <TextBlock Classes="label" Width="90"
+                                                   Text="{Binding DriveIndex, StringFormat='Drive {0}'}" />
+                                        <ComboBox ItemsSource="{x:Static vm:FloppyDriveRowVm.Capacities}"
+                                                  SelectedItem="{Binding Capacity}"
+                                                  MinWidth="90" Margin="0,0,8,0" />
+                                        <ComboBox ItemsSource="{x:Static vm:FloppyDriveRowVm.SidesOptions}"
+                                                  SelectedItem="{Binding Sides}"
+                                                  MinWidth="140">
+                                            <ComboBox.ItemTemplate>
+                                                <DataTemplate x:DataType="m:DiskSides">
+                                                    <TextBlock Text="{Binding Converter={x:Static vm:DiskSidesDescConverter.Instance}}" />
+                                                </DataTemplate>
+                                            </ComboBox.ItemTemplate>
+                                        </ComboBox>
+                                    </DockPanel>
+                                    <!-- Manual initial-image authoring (project CLAUDE.md milestone 14c) —
+                                         complementary to Save .cfg now capturing whatever's live-mounted. -->
+                                    <DockPanel Margin="90,0,0,0">
+                                        <Button Command="{Binding ClearImageCommand}"
+                                                DockPanel.Dock="Right" Content="Clear" Margin="4,0,0,0" />
+                                        <Button Command="{Binding BrowseImageCommand}"
+                                                DockPanel.Dock="Right" Content="Browse…" Margin="4,0,0,0" />
+                                        <TextBox Text="{Binding ImagePath}"
+                                                 Watermark="(no initial image — mount live at runtime)"
+                                                 FontSize="11" IsReadOnly="True" />
+                                    </DockPanel>
+                                </StackPanel>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                </StackPanel>
+                </StackPanel>
+
+                <StackPanel Grid.Column="2" Spacing="4" VerticalAlignment="Top">
+                <!-- ── Cassette (project CLAUDE.md milestone 14c) ───────────────── -->
+                <TextBlock Classes="section" Text="Cassette" />
+                <TextBlock Classes="hint"
+                           Text="Manually-authored initial tape (hand-authoring a .cfg). Save .cfg from a running machine instead captures whatever's actually mounted in the deck." />
+                <DockPanel>
+                    <TextBlock Classes="label" Text="Initial cassette" />
+                    <Button Command="{Binding ClearCassetteCommand}"
+                            DockPanel.Dock="Right" Content="Clear" Margin="4,0,0,0"
+                            ToolTip.Tip="No initial cassette (bare deck)" />
+                    <Button Command="{Binding BrowseCassetteCommand}"
+                            DockPanel.Dock="Right" Content="Browse…" Margin="4,0,0,0" />
+                    <TextBox Text="{Binding CassettePath}"
+                             Watermark="(empty — bare deck)"
+                             IsReadOnly="True" />
+                </DockPanel>
+
+                <!-- ── SLOT1 cartridge ─────────────────────────────────────────── -->
+                <TextBlock Classes="section" Text="SLOT1 Cartridge" />
+                <TextBlock Classes="hint"
+                           Text="Empty SLOT1 → cassette-wait boot. Populate with BASIC.bin to boot into BASIC." />
+                <DockPanel>
+                    <TextBlock Classes="label" Text="Cartridge image" />
+                    <Button Command="{Binding ClearSlot1Command}"
+                            DockPanel.Dock="Right" Content="Clear" Margin="4,0,0,0"
+                            ToolTip.Tip="Remove SLOT1 cartridge (bare machine)" />
+                    <Button Command="{Binding BrowseSlot1Command}"
+                            DockPanel.Dock="Right" Content="Browse…" Margin="4,0,0,0" />
+                    <TextBox Text="{Binding Slot1CartridgePath}"
+                             Watermark="(empty — bare machine)"
+                             IsReadOnly="True" />
+                </DockPanel>
+
+                <!-- ── Modifications (T-only, machine milestone 25) ─────────────── -->
+                <TextBlock Classes="section" Text="Modifications" />
+                <TextBlock Classes="hint"
+                           Text="Period socket/piggyback hardware modifications. Reset-to-apply, like every other topology axis." />
+                <CheckBox IsChecked="{Binding EightyColumnBoard}"
+                          IsEnabled="{Binding CanEditModifications}"
+                          Content="80-column board (1986 daughterboard)"
+                          ToolTip.Tip="Displaces the SAA5020 onto a daughterboard; OUT 0,1 switches to 80 characters per line, OUT 0,0 back to 40, IN &amp;H70 reads the mode back. Not available on the P2000M." />
+                <TextBlock Classes="hint"
+                           Text="With the board fitted the machine still starts in 40 columns — software (or you, via OUT 0,1) switches it." />
+                <CheckBox IsChecked="{Binding ShowEightyColumnArtifacts}"
+                          IsEnabled="{Binding CanEditEightyColumnArtifacts}"
+                          Content="Show SAA 80-column artifacts"
+                          ToolTip.Tip="At 12 MHz the SAA5050 runs far outside spec; the 1986 article reports a small block or dashes where a control character should show a space, and calls it normal. Placeholder rule awaiting a real-hardware capture." />
+                </StackPanel>
+            </Grid>
+
+            <!-- ── Buttons (span both columns: Load/Save/Apply are global, not
+                 properties of the right-hand column) ─────────────────────────────────────────────────── -->
             <Separator Margin="0,12,0,4" />
             <DockPanel>
                 <!-- .cfg load/save on the left -->

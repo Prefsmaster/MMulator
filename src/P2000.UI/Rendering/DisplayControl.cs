@@ -66,6 +66,9 @@ public sealed class DisplayControl : Control
     // Stored per-Present call; used by Render() for the overlay and dest-rect drawing.
     private Rect _destRect;
     private bool[]? _pendingCorruption;
+    // Viewport width the pending overlay is indexed by: 40 normally, 80 while the 80-column
+    // board is enabled (machine milestone 25). Never assume 40 here.
+    private int _pendingCorruptionWidth = VideoFetchUnit.Columns;
 
     public DisplayControl()
     {
@@ -86,11 +89,12 @@ public sealed class DisplayControl : Control
     /// <summary>Copies <paramref name="pixels"/> into the bitmap and triggers a repaint,
     /// applying the current display mode. <paramref name="fieldWasOdd"/> is true when the
     /// ODD field just completed (used to gate Progressive / EvenOnly / OddOnly modes).
-    /// <paramref name="corruption"/> is a 40×24 snapshot of the machine's CorruptionOverlay.
+    /// <paramref name="corruption"/> is a snapshot of the machine's CorruptionOverlay,
+    /// indexed by <paramref name="corruptionWidth"/> (40, or 80 in 80-column mode).
     /// <paramref name="pixels"/> is always the machine's full 928×626 field buffer, regardless
     /// of <see cref="Crop"/> — cropping happens at the final blit. Must be called on the UI
     /// thread.</summary>
-    public void Present(uint[] pixels, bool fieldWasOdd, bool[] corruption)
+    public void Present(uint[] pixels, bool fieldWasOdd, bool[] corruption, int corruptionWidth)
     {
         bool shouldPresent = Mode switch
         {
@@ -122,6 +126,7 @@ public sealed class DisplayControl : Control
         CopyToWriteableBitmap(source);
 
         _pendingCorruption = ShowDebugOverlay ? corruption : null;
+        _pendingCorruptionWidth = corruptionWidth;
 
         InvalidateVisual();
     }
@@ -190,7 +195,7 @@ public sealed class DisplayControl : Control
     }
 
     /// <summary>Overlays an amber tint on each character cell that was contention-corrupted
-    /// in the last presented field (40×24 grid, each cell 16×20 source pixels). Overlay
+    /// in the last presented field (<c>_pendingCorruptionWidth</c>×24 grid). Overlay
     /// indices are relative to the 640×480 active window, not the full buffer — when
     /// Full-Field is showing, the active window itself is a sub-rectangle of <see cref="_destRect"/>
     /// starting at (<see cref="Video.ActiveOffsetX"/>, <see cref="Video.ActiveOffsetY"/>);
@@ -203,13 +208,14 @@ public sealed class DisplayControl : Control
         double scaleY = _destRect.Height / DisplayHeight;
         double activeOriginX = _destRect.X + (_crop == DisplayCrop.FullField ? Video.ActiveOffsetX * scaleX : 0);
         double activeOriginY = _destRect.Y + (_crop == DisplayCrop.FullField ? Video.ActiveOffsetY * scaleY : 0);
-        double cellW = Video.ActiveWidth  * scaleX / VideoFetchUnit.Columns;
+        int cols = _pendingCorruptionWidth;
+        double cellW = Video.ActiveWidth  * scaleX / cols;
         double cellH = Video.ActiveHeight * scaleY / Video.CharRows;
 
         for (int row = 0; row < Video.CharRows; row++)
-        for (int col = 0; col < VideoFetchUnit.Columns; col++)
+        for (int col = 0; col < cols; col++)
         {
-            if (!overlay[row * VideoFetchUnit.Columns + col]) continue;
+            if (!overlay[row * cols + col]) continue;
             var r = new Rect(
                 activeOriginX + col * cellW,
                 activeOriginY + row * cellH,

@@ -21,7 +21,11 @@ public sealed class VramGridControl : Control
 
     private const int VramCols   = 80;
     private const int VramRows   = 24;
-    private const int ViewportW  = 40;  // always 40 cols wide
+    /// <summary>Default visible viewport width — 40 columns on a stock machine. With the
+    /// 80-column board enabled the whole 80-column buffer is on screen at once and the pan
+    /// register is held cleared, so <see cref="ViewportWidth"/> carries the live value instead
+    /// of this being assumed (machine milestone 25).</summary>
+    private const int DefaultViewportW = 40;
     private const double CellH   = 14.0;
     private const double FontSz  = 10.5;
 
@@ -47,6 +51,11 @@ public sealed class VramGridControl : Control
     public static readonly StyledProperty<bool> ShowHexProperty =
         AvaloniaProperty.Register<VramGridControl, bool>(nameof(ShowHex));
 
+    /// <summary>Visible viewport width in columns — 40 normally, 80 in 80-column mode. Also
+    /// the stride <see cref="Corruption"/> is indexed by.</summary>
+    public static readonly StyledProperty<int> ViewportWidthProperty =
+        AvaloniaProperty.Register<VramGridControl, int>(nameof(ViewportWidth), DefaultViewportW);
+
     public byte[]? VramData
     {
         get => GetValue(VramDataProperty);
@@ -71,13 +80,20 @@ public sealed class VramGridControl : Control
         set => SetValue(ShowHexProperty, value);
     }
 
+    public int ViewportWidth
+    {
+        get => GetValue(ViewportWidthProperty);
+        set => SetValue(ViewportWidthProperty, value);
+    }
+
     // ────────────────────────────────────────────────────────────────────────
 
     static VramGridControl()
     {
         // Invalidate on any data change so the control redraws.
         AffectsRender<VramGridControl>(VramDataProperty, CorruptionProperty,
-                                       PanXProperty, ShowHexProperty);
+                                       PanXProperty, ShowHexProperty,
+                                       ViewportWidthProperty);
     }
 
     protected override Size MeasureOverride(Size availableSize)
@@ -95,7 +111,8 @@ public sealed class VramGridControl : Control
     {
         var vram       = VramData;
         var corruption = Corruption;
-        int panX       = Math.Clamp(PanX, 0, VramCols - ViewportW);
+        int viewportW  = Math.Clamp(ViewportWidth, 1, VramCols);
+        int panX       = Math.Clamp(PanX, 0, VramCols - viewportW);
         bool showHex   = ShowHex;
 
         // Measure the actual character pitch from the font — don't trust the hardcoded
@@ -119,15 +136,15 @@ public sealed class VramGridControl : Control
         // ── 1. Viewport background highlight ──────────────────────────────
         double vpLeft = panX * cellW;
         ctx.FillRectangle(ViewportBrush,
-            new Rect(vpLeft, 0, ViewportW * cellW, VramRows * CellH));
+            new Rect(vpLeft, 0, viewportW * cellW, VramRows * CellH));
 
         // ── 2. Corruption backgrounds ─────────────────────────────────────
-        if (corruption is { Length: VramRows * ViewportW })
+        if (corruption is not null && corruption.Length >= VramRows * viewportW)
         {
             for (int row = 0; row < VramRows; row++)
-            for (int vcol = 0; vcol < ViewportW; vcol++)
+            for (int vcol = 0; vcol < viewportW; vcol++)
             {
-                if (corruption[row * ViewportW + vcol])
+                if (corruption[row * viewportW + vcol])
                 {
                     int col = panX + vcol;
                     ctx.FillRectangle(CorruptBrush,
@@ -170,7 +187,7 @@ public sealed class VramGridControl : Control
         // ── 4. Viewport border ────────────────────────────────────────────
         ctx.DrawRectangle(null, ViewportPen,
             new Rect(vpLeft + 0.75, 0.75,
-                     ViewportW * cellW - 1.5, VramRows * CellH - 1.5));
+                     viewportW * cellW - 1.5, VramRows * CellH - 1.5));
     }
 
     private static char HexChar(int nibble)

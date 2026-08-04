@@ -233,7 +233,7 @@ public sealed partial class DiskDriveVm : ObservableObject
 
     // ── Frame callback ────────────────────────────────────────────────────────────────────────
 
-    private void OnFrameReady(uint[] _, bool __, bool[] ___) => RefreshFromMachine();
+    private void OnFrameReady(uint[] _, bool __, bool[] ___, int ____) => RefreshFromMachine();
 
     private void RefreshFromMachine()
     {

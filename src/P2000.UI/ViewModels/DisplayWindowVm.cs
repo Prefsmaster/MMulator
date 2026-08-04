@@ -140,7 +140,7 @@ public sealed partial class DisplayWindowVm : ObservableObject, IDisposable
 
     // ── Frame callback ────────────────────────────────────────────────────────
 
-    private void OnFrameReady(uint[] _, bool __, bool[] ___)
+    private void OnFrameReady(uint[] _, bool __, bool[] ___, int ____)
     {
         // Update cassette LED every frame (cheap flag read).
         CassetteActive = Runner.Machine.CpOut.Forward || Runner.Machine.CpOut.Reverse;

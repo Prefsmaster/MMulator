@@ -39,6 +39,7 @@
                 VramData="{Binding VramData}"
                 Corruption="{Binding Corruption}"
                 PanX="{Binding PanX}"
+                ViewportWidth="{Binding ViewportWidth}"
                 ShowHex="{Binding ShowHex}" />
         </ScrollViewer>
 

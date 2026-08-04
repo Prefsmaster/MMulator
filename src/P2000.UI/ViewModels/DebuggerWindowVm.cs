@@ -22,6 +22,9 @@ public sealed partial class DebuggerWindowVm : ObservableObject, IDisposable
     // Last corruption snapshot from FrameReady (stable, at field boundary)
     private bool[] _lastCorruption = new bool[40 * 24];
 
+    // Viewport width _lastCorruption is indexed by: 40 normally, 80 in 80-column mode.
+    private int _lastCorruptionWidth = 40;
+
     // Tracks exec breakpoint addresses and their optional bank qualifier (project CLAUDE.md §14
     // milestone 17; machine ms.24) — null = unqualified (fires regardless of active bank, the
     // only shape that existed before this milestone). Updated via SyncBreakpointsToMachine.
@@ -90,7 +93,7 @@ public sealed partial class DebuggerWindowVm : ObservableObject, IDisposable
             Disassembly.Refresh(snap.PC, snap.ReadMemory);
 
             // VRAM: read from snapshot's memory view (live page table, but paused = stable).
-            Vram.Update(snap.ReadMemory, m.Video.PanX, _lastCorruption);
+            Vram.Update(snap.ReadMemory, m.Video.PanX, _lastCorruption, _lastCorruptionWidth);
 
             // Memory watches also update from the snapshot.
             foreach (var watch in MemoryWatches)
@@ -99,10 +102,11 @@ public sealed partial class DebuggerWindowVm : ObservableObject, IDisposable
     }
 
     // FrameReady fires on the UI thread (already posted by the runner).
-    private void OnFrameReady(uint[] _, bool fieldWasOdd, bool[] corruption)
+    private void OnFrameReady(uint[] _, bool fieldWasOdd, bool[] corruption, int corruptionWidth)
     {
         // Keep the corruption snapshot current for the paused view.
         _lastCorruption = corruption;
+        _lastCorruptionWidth = corruptionWidth;
 
         // When running, update registers/VRAM/memory watches live.
         if (!IsPaused)
@@ -118,7 +122,7 @@ public sealed partial class DebuggerWindowVm : ObservableObject, IDisposable
             if (Disassembly.NeedsRefresh(pc))
                 Disassembly.Refresh(pc, m.Memory.Read);
 
-            Vram.Update(m.Memory.Read, m.Video.PanX, corruption);
+            Vram.Update(m.Memory.Read, m.Video.PanX, corruption, corruptionWidth);
 
             foreach (var watch in MemoryWatches)
                 watch.Update(m.Memory.Read, FollowBase(watch, m));
@@ -127,6 +131,7 @@ public sealed partial class DebuggerWindowVm : ObservableObject, IDisposable
         {
             // Refresh the VRAM corruption overlay even while paused
             // (shows corruption from the last completed field).
+            Vram.ViewportWidth = corruptionWidth;
             Vram.Corruption = (bool[])corruption.Clone();
         }
 

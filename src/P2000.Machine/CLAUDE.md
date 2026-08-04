@@ -1626,12 +1626,18 @@ marked synced. Do NOT edit the reference doc from this project.
 - **Synced:** yes (2026-07-05, into P2000T-reference.md + device guides)
 -->
 
-### 2026-08-04 — INVESTIGATION (no bug): `OUT 48,xx` at the BASIC prompt is undone by BASIC itself
+### 2026-08-04 — INVESTIGATION (no bug): `OUT 48,xx` is undone by CASSETTE BASIC, not by the emulator
 - **Owner report:** on a bare 16 K machine with `BASIC.bin` and no 80-column card, *"none of my
   out 48,xx attempts had any effect"*, while `OUT 0,1` demonstrably works. Reproduced headlessly
   by typing the command into BASIC through the real keyboard matrix — not by poking the port,
   which is what every prior test did and is exactly why nothing caught this.
-- **Root cause: BASIC writes the pan register back to 0 as part of returning to the `Ok`
+- **It is CARTRIDGE-SPECIFIC — that is the whole explanation for the confusion.** The failing
+  case is `BASIC.bin` (PHILIPS CASSETTE BASIC, Versie 1.1 NL). **Disk BASIC 24 (`Basic-24.bin`)
+  does NOT do this and `OUT 48,xx` works there — confirmed by the owner on a real manual test.**
+  The owner's own earlier successful pan experiments were on Disk BASIC 24; switching to a bare
+  16 K machine with Cassette BASIC is what made it look newly broken. So the register is fine on
+  every configuration; what differs is whether the resident interpreter keeps writing it.
+- **Root cause: Cassette BASIC writes the pan register back to 0 as part of returning to the `Ok`
   prompt.** Instrumenting ports `0x30`-`0x3F` while typing `OUT 48,3` + Enter shows **two**
   writes, in this order:
   ```
@@ -1658,8 +1664,8 @@ marked synced. Do NOT edit the reference doc from this project.
   range — on screen output.** The milestone-26 conclusion it supported (a user-set pan persists
   and is visible) holds only for guest code that does not print; at the prompt it does not.
 - **Consequence for §5's "used to reduce flicker" note:** that technique is application software's
-  to use, and any program using it must own the pan register continuously — BASIC will fight it
-  the moment it prints. Worth knowing before anyone reaches for the two-screen trick from BASIC.
+  to use, and under Cassette BASIC a program must own the pan register continuously — that
+  interpreter will fight it the moment it prints. Under Disk BASIC 24 it does not. Worth knowing before anyone reaches for the two-screen trick from BASIC.
 - **No code change, and no new test.** The behaviour under test is the cartridge's, not this
   project's; the emulator side is already pinned cheaply by
   `VideoControlRegisterTests.OutInstruction_FromRealZ80Code_DrivesTheRegister`. Adding a

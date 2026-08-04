@@ -1566,6 +1566,43 @@ project.
 - **Synced:** yes (YYYY-MM-DD)
 -->
 
+### 2026-08-04 — FIXED: `EnsureRamSeed` silently dropped the 80-column board from every Apply
+- **Trigger:** owner report that the VRAM window's viewport rectangle did not track the pan and
+  did not widen in 80-column mode. Investigating the rectangle turned up a different, larger bug
+  underneath it.
+- **Root cause, and it is a regression I introduced in milestone 20:**
+  `EmulationRunner.EnsureRamSeed` rebuilds `MachineConfig` property-by-property to inject a random
+  RAM seed when the caller has not pinned one. Milestone 20 added
+  `MachineConfig.Modifications` and never added it to that hand-written list — so the rebuild
+  returned a config with `Modifications` back at its default. **Every config with
+  `RamSeed == null` lost the 80-column board on Apply, which is every config the Config window
+  builds.** Ticking "80-column board" and pressing Apply did nothing, silently and with no error.
+- **This is the THIRD drift of that same list** (`CassettePath` previously, now `Modifications`).
+  The 2026-07-26 entry extracted the duplicated copy into one shared helper specifically to stop
+  this, and it did not, because the helper still enumerates properties by hand. So the fix is not
+  just the missing line: `MachineConfigPreservationTests` now walks `MachineConfig` by
+  **reflection** through the real `Reconfigure` path and fails on any property that does not
+  survive, naming it and telling the reader exactly what to add. A property added in future breaks
+  a test instead of vanishing at runtime.
+- **Verified the guard is real, not decorative:** reverting the one-line fix fails both the
+  reflection test (reporting `Modifications` by name) and the concrete 80-column regression test.
+- **The rectangle itself was never broken.** Once the board is actually fitted it behaves exactly
+  as milestone 20 built it — new `VramViewportRectangleTests` drive the live path end-to-end from
+  real port writes: the rectangle follows `OUT 0x30` pans (including the owner's own `OUT 48,3`),
+  and widens to 80 columns on `OUT 0,1`, with `PanX` correctly held at 0 while there. The
+  behaviour was invisible only because the board was never being fitted.
+- **Test-ordering rule found along the way, worth knowing:** `EmulationRunner.Reconfigure` applies
+  the swap on the emulation thread at a field boundary, so a `Reconfigure` issued while the runner
+  is stopped never lands — it just times out its 500 ms acknowledgement wait and the pending
+  machine is dropped. Harmless in production (the runner is always started long before the Config
+  window can Apply) but it fails **silently** in a test, which cost time here. Tests must
+  `Start()` before `Reconfigure`.
+- **Tests:** `tests/P2000.UI.Tests/Runner/MachineConfigPreservationTests.cs` (new, 3),
+  `tests/P2000.UI.Tests/ViewModels/VramViewportRectangleTests.cs` (new, 3). Full
+  `P2000.UI.Tests`: 259/259 green (was 253).
+- **Applies to:** `src/P2000.UI/Runner/EmulationRunner.cs` (`EnsureRamSeed`).
+- **Synced:** no — awaiting the human's sync pass.
+
 ### 2026-08-04 — Milestone 21 IMPLEMENTED: config window two-column relayout (interim)
 - **Trigger:** owner decision (reference doc §3a) — the window had grown too tall as topology
   axes accumulated, and milestone 20's Modifications section was the one that tipped it. Spec:

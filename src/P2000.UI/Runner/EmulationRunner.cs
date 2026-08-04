@@ -213,8 +213,16 @@ public sealed class EmulationRunner : IDisposable
             Slot1CartridgePath = config.Slot1CartridgePath,
             FloppyDrives = config.FloppyDrives,
             CassettePath = config.CassettePath,
+            Modifications = config.Modifications,
             RamSeed = NewRandomRamSeed(),
         };
+
+    // ⚠ EVERY property of MachineConfig must be copied above. This hand-written list has now
+    // drifted twice — CassettePath once, and Modifications (the 80-column board) in UI milestone
+    // 20, which silently un-fitted the board for every config that did not pin a RamSeed, i.e.
+    // every config this window builds. `MachineConfigPreservationTests` walks the type by
+    // reflection so the NEXT added property fails a test instead of vanishing at runtime. Add
+    // the property here and that test goes green on its own; forget, and it does not.
 
     /// <summary>Generates a genuinely random 64-bit RAM-fill seed (project CLAUDE.md §17,
     /// 2026-07-21/22 finding). Lives here, outside `P2000.Machine`, deliberately — the core

@@ -1709,6 +1709,25 @@ marked synced. Do NOT edit the reference doc from this project.
   is a one-test change, and `CpuTiming_IsIdenticalBlankedAndUnblanked` pins the Z80-priority
   assumption that makes every "blanking as a speed trick" idea wrong — if it ever fails, the
   priority model has been broken, not this milestone.
+- **Incidental finding while verifying an owner report — the monitor ROM WRITES port `0x70`,
+  and it is a P2000M feature, not a T one.** Enumerating every `OUT` in the ROM disassembly
+  (`docs/Monitor Documented Disassembly/`) gives exactly four targets: `0x94` ×10 (bank select),
+  `0x10` ×7 (CPOUT), `0x50` ×2 (sound) and **`0x70` ×2**. The `0x70` pair is `Cassette.asm`'s
+  `off_M`/`on_M`, whose own comments read *"turn off/on Video memory access on model M — on model
+  T this has no effect"*: `LD A,0FFh / OUT (070h),A` before a cassette transfer and `XOR A / OUT
+  (070h),A` after. **Checked for interaction with the 80-column board (milestone 25) and there is
+  none:** the board claims the READ side of `0x70` and its mode latch is on the port-`0x00` WRITE,
+  so the ROM's writes land on an unclaimed port and are correctly inert on a T. Worth recording
+  because it looks alarming — the ROM appears to be hammering "the 80-column port" on every
+  cassette operation — and because it is a real M fact the reference doc's port map does not
+  carry.
+- **The same enumeration confirms the ROM NEVER writes `0x30`-`0x3F`**, i.e. nothing in firmware
+  drives or resets the pan register. Verified for the BASIC cartridge too, by instrumenting the
+  port range on a booted machine: across 10 fields after an `OUT 48,3`, the guest issues zero
+  writes to the range and `PanX` holds at 3, with 8,596 framebuffer pixels changing versus pan 0.
+  So a pan set by the user persists and is visible — useful to know, since §5's "used to reduce
+  flicker" wording could be read as implying firmware flips the pan itself. It does not; that
+  technique is up to application software.
 - **Applies to:** `src/P2000.Machine/Devices/Video.cs` (`ControlPortFirst`/`ControlPortLast`/
   `MaxPan`/`BlankedColor`, `WriteControlRegister`, `VideoBlanked`, `ClampPan`, `PanX` setter,
   `OnColumnFetch`, `Reset`, `SaveState`/`LoadState`), `src/P2000.Machine/Machine.cs` (port-range

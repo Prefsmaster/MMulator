@@ -39,15 +39,54 @@ public sealed class VideoFetchUnit : IDevice
     /// T-states/line are the fetch window; the rest is horizontal blank.</summary>
     public const int ActiveTStatesPerLine = 100;
 
+    /// <summary>Character columns fetched per active scanline in the stock 40-column machine.
+    /// This is also the *viewport* width consumers index the corrupted-cell overlay by
+    /// (reference doc §4) — see <see cref="ActiveColumns"/> for the value that varies with the
+    /// 80-column board's cadence.</summary>
     public const int Columns = 40;
+
+    /// <summary>Character columns fetched per active scanline with the 80-column board fitted
+    /// AND enabled (reference doc §5 "80-column mode", P2000 Nieuwsbrief §13.25.2/§13.25.3):
+    /// the board's 24 MHz ÷2 = 12 MHz chain generates doubled-rate copies of the SAA5020's
+    /// character-timing outputs, so the character-fetch rate goes 1 MHz → 2 MHz. The SAA5020
+    /// itself is NOT overclocked — it keeps generating line/field timing at 6 MHz, so the
+    /// raster geometry is entirely unchanged and only the fetch cadence doubles.</summary>
+    public const int ColumnsEightyColumn = 80;
 
     private int _fieldTState;
     private int _column;
+    private bool _eightyColumn;
 
     /// <summary>T-state offset within the current 50 Hz field (0 –
     /// <see cref="TStatesPerField"/>-1). Together with <see cref="Line"/> and
     /// <see cref="LineTState"/> this gives the debugger's in-frame cycle position.</summary>
     public int FieldTState => _fieldTState;
+
+    /// <summary>The 80-column board's cadence bit — a *parameter on this unit*, not a second
+    /// fetch path (reference doc §5, milestone spec §5). <c>false</c> (the default, and the
+    /// only reachable value on an unmodified machine) is byte-for-byte the stock 40-column
+    /// behaviour. Set from the board device's port-0x00 latch via <see cref="Devices.Video"/>;
+    /// takes effect on the very next fetch slot, mid-frame included — real hardware has no
+    /// synchronisation here (the LS157 multiplexer switches the instant the S74 latch does).
+    ///
+    /// <b>Mid-line switch:</b> the per-line column counter is NOT rewound, so a switch part-way
+    /// through an active line simply continues from the current column under the new slot
+    /// spacing — any slot whose new T-state has already elapsed on this line is skipped, and
+    /// the line resynchronises at the next <see cref="LineComplete"/>. Deterministic and
+    /// reproducible; matching real hardware's sub-character behaviour here is not derivable
+    /// (see §4a "the one parameter that is NOT derivable").</summary>
+    public bool EightyColumn
+    {
+        get => _eightyColumn;
+        set => _eightyColumn = value;
+    }
+
+    /// <summary>Columns fetched per active scanline right now — <see cref="Columns"/> (40) or
+    /// <see cref="ColumnsEightyColumn"/> (80). This is also the corrupted-cell overlay's
+    /// current viewport width (reference doc §4; the map is 80 wide in 80-column mode, and
+    /// since the pan register is held cleared there, viewport column == absolute VRAM
+    /// column).</summary>
+    public int ActiveColumns => _eightyColumn ? ColumnsEightyColumn : Columns;
 
     public int Line { get; private set; }
 
@@ -61,8 +100,8 @@ public sealed class VideoFetchUnit : IDevice
     /// reference doc §4).</summary>
     public bool IsFetchTick { get; private set; }
 
-    /// <summary>Column index (0-39) of the fetch that fired during the current tick.
-    /// Only valid when <see cref="IsFetchTick"/> is true.</summary>
+    /// <summary>Column index (0-39, or 0-79 in 80-column mode) of the fetch that fired during
+    /// the current tick. Only valid when <see cref="IsFetchTick"/> is true.</summary>
     public int LastFetchColumn { get; private set; }
 
     /// <summary>Scanline (0-239) on which the current tick's fetch was issued.
@@ -70,14 +109,15 @@ public sealed class VideoFetchUnit : IDevice
     public int LastFetchLine { get; private set; }
 
     /// <summary>Raised once per column, at that column's fetch slot, with the column index
-    /// (0-39). The listener reads VRAM and feeds the generator - kept a real per-T-state
-    /// event so milestone 10 can intercept it for contention without restructuring the
-    /// schedule.</summary>
+    /// (0-39, or 0-79 in 80-column mode). The listener reads VRAM and feeds the generator -
+    /// kept a real per-T-state event so milestone 10 can intercept it for contention without
+    /// restructuring the schedule.</summary>
     public event Action<int>? ColumnFetch;
 
     /// <summary>Raised once a scanline's fetch window has fully elapsed (SAA5020 LOSE pulse),
-    /// so the video device can advance its own per-row state. All 40 <see cref="ColumnFetch"/>
-    /// events for that line have already fired by the time this raises.</summary>
+    /// so the video device can advance its own per-row state. All
+    /// <see cref="ActiveColumns"/> <see cref="ColumnFetch"/> events for that line have already
+    /// fired by the time this raises.</summary>
     public event Action? LineComplete;
 
     /// <summary>Raised at the 50 Hz field boundary (SAA5020 DEW pulse), after that field's
@@ -99,7 +139,7 @@ public sealed class VideoFetchUnit : IDevice
     public void Tick()
     {
         IsFetchTick = false;
-        if (IsActiveLine && _column < Columns && LineTState == FetchSlot(_column))
+        if (IsActiveLine && _column < ActiveColumns && LineTState == FetchSlot(_column))
         {
             IsFetchTick = true;
             LastFetchColumn = _column;
@@ -137,8 +177,23 @@ public sealed class VideoFetchUnit : IDevice
     /// T-states/column, not an integer, so slots land at <c>floor(column * 2.5)</c>
     /// (reference doc §4a: the exact fetch bus-occupancy is unconfirmed pending a
     /// logic-analyzer capture; evenly-spaced integer slots are the best available
-    /// approximation until then).</summary>
-    private static int FetchSlot(int column) => column * ActiveTStatesPerLine / Columns;
+    /// approximation until then).
+    ///
+    /// <b>80-column mode (milestone spec §5.1):</b> the rate doubles to 2 MHz, i.e. 1.25
+    /// T-states/column — the slot boundaries no longer land on T-state boundaries at all.
+    /// This is the spec's "acceptable fallback": the slot position stays an EXACT rational in
+    /// character-clock units (<c>column × ActiveTStatesPerLine / ActiveColumns</c>) and is
+    /// truncated to the T-state the character-clock edge falls in. Rationale for choosing it
+    /// over moving the whole unit's accounting onto the character/dot clock: contention is
+    /// resolved once per T-state in <see cref="Machine.Tick"/> (the CPU can drive at most one
+    /// RAM access per T-state), so a sub-T-state fetch grid has nothing finer to collide with
+    /// — a genuine char-clock master would have to re-quantise the machine's whole tick loop,
+    /// which is exactly the change most likely to perturb 40-column results. The set of
+    /// contended accesses this produces is exactly reproducible: with 80 columns the slots
+    /// fall on T-states 0,1,2,3,5,6,7,8,10,… (a repeating +1,+1,+1,+2 pattern), never two in
+    /// the same T-state, and the last one at LineTState 98. With 40 columns the expression is
+    /// arithmetically identical to what it always was.</summary>
+    private int FetchSlot(int column) => column * ActiveTStatesPerLine / ActiveColumns;
 
     public void SaveState(IStateWriter writer)
     {

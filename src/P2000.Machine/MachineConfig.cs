@@ -79,6 +79,32 @@ public sealed class FloppyDriveConfig
 }
 
 /// <summary>
+/// Socket/piggyback hardware MODIFICATIONS fitted to the machine (reference doc §3a's
+/// "modifications" axis, §5 "80-column mode"). Orthogonal to model / RAM / internal-slot board
+/// / slot population — a modified T can also carry any of those. Reset-to-apply, like every
+/// other topology axis. Defaults are "stock machine", so a config that says nothing about
+/// modifications is byte-for-byte the machine this project has always built.
+/// </summary>
+public sealed class ModificationsConfig
+{
+    /// <summary>The 1986 80-character daughterboard (P2000 Nieuwsbrief §13.25 — see
+    /// <c>docs/P2000T-80column-board-1986-newsletter.md</c>). <b>T-only:</b> a config that
+    /// fits it on a <see cref="MachineModel.P2000M"/> is INVALID and rejected at machine
+    /// assembly, not silently ignored — the M has no SAA5050 at all, and its native 80-column
+    /// business display is entirely different circuitry (reference doc §5).</summary>
+    public bool EightyColumnBoard { get; init; }
+
+    /// <summary>Reproduce the out-of-spec SAA5050 rendering artifact the article documents for
+    /// 80-column mode (§13.25.2: at 12 MHz the character generator runs "far outside its
+    /// specifications" and "sometimes one sees, at the position of a switch-over character, a
+    /// small block or a few dashes instead of a space"). Sibling in spirit to the existing
+    /// "show contention glitches" toggle: an authentic-but-ugly hardware behaviour the user can
+    /// switch off. Defaults ON — the article's own commissioning procedure calls the artifact
+    /// normal. Meaningless (and inert) with no board fitted or in 40-column mode.</summary>
+    public bool ShowEightyColumnArtifacts { get; init; } = true;
+}
+
+/// <summary>
 /// Machine TOPOLOGY — what the machine IS, independent of what it's doing right now
 /// (project CLAUDE.md §11 / reference doc §3a). Serializable, small, human-editable.
 /// Loading a <see cref="MachineConfig"/> rebuilds the machine (reset-to-apply, locked
@@ -97,6 +123,11 @@ public sealed class MachineConfig
     public InternalBoard Board { get; init; } = InternalBoard.None;
 
     public RamVariant RamVariant { get; init; } = RamVariant.T38;
+
+    /// <summary>Socket/piggyback hardware modifications (T-only). Never null — an absent
+    /// <c>modifications</c> key in an older <c>.cfg</c>/<c>.state</c> deserializes to this
+    /// all-defaults instance, i.e. "no board fitted".</summary>
+    public ModificationsConfig Modifications { get; init; } = new();
 
     /// <summary>Bank count for the 0xE000-0xFFFF window. <c>null</c> derives the faithful
     /// count from <see cref="RamVariant"/> (6 for T102, 0 = unbanked/open-bus otherwise).

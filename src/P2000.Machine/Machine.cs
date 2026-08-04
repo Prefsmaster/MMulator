@@ -76,6 +76,13 @@ public sealed class Machine
     /// "genuine silence" fallback pattern (reference doc §5d).</summary>
     public Upd765? Fdc => Board?.Fdc;
 
+    /// <summary>The 80-column modification daughterboard (reference doc §5 "80-column mode"),
+    /// or <c>null</c> when it isn't fitted — which is the default and the only possibility on a
+    /// P2000M. Absent board = ports 0x00 (write) and 0x70 (read) genuinely unclaimed, so a
+    /// presence probe reads open bus 0xFF and correctly concludes "no board", the same
+    /// "genuine silence" pattern the CTC and FDC probes rely on.</summary>
+    public EightyColumnBoard? EightyColumn { get; }
+
     /// <summary>SLOT1 cartridge (0x1000–0x4FFF, reference doc §5c), or <c>null</c> when the
     /// machine is bare (cassette-wait boot). Constructed from
     /// <see cref="MachineConfig.Slot1CartridgePath"/>; null when that path is not set.</summary>
@@ -137,6 +144,16 @@ public sealed class Machine
     {
         Config = config ?? new MachineConfig();
 
+        // Modifications axis (reference doc §3a/§5): the 80-column board is a T-only socket
+        // modification. It CANNOT exist on a P2000M — that machine has no SAA5050 at all, and
+        // its native 80-column display is different circuitry driving the larger 4 KB buffer.
+        // Reject rather than silently ignore, same discipline as the FloppyRam/RamVariant gate.
+        if (Config.Modifications.EightyColumnBoard && Config.Model != MachineModel.P2000T)
+            throw new ArgumentException(
+                "Modifications.EightyColumnBoard is a P2000T-only modification — the P2000M has " +
+                "no SAA5050 for the board's doubled character clock to drive, and its native " +
+                "80-column display is separate circuitry (reference doc §5).", nameof(config));
+
         // Construct SLOT1 cartridge (if configured) before building PageTable so it
         // can route 0x1000–0x4FFF reads through the typed IMemorySlot interface.
         Slot1 = Config.Slot1CartridgePath is not null
@@ -149,7 +166,10 @@ public sealed class Machine
         // reproducible; P2000.UI supplies a genuinely random seed via MachineConfig.RamSeed at
         // each real app launch.
         Memory.FillRam(Config.RamSeed ?? PageTable.DefaultRamSeed);
-        Video = new Video(Memory);
+        Video = new Video(Memory, Config.Modifications.EightyColumnBoard)
+        {
+            ShowEightyColumnArtifacts = Config.Modifications.ShowEightyColumnArtifacts,
+        };
         Keyboard = new KeyboardDevice(CpOut);
         Mdcr = new MdcrDevice(CpOut);
         if (Config.CassettePath is not null)
@@ -162,12 +182,33 @@ public sealed class Machine
         Ports.RegisterRead(CprinReader.Port,  Mdcr.ReadStatus);
         Ports.RegisterWrite(PageTable.BankSelectPort, Memory.SelectBank);
 
+        // Video control register: ports 0x30-0x3F, WRITE ONLY (reference doc §5g, machine
+        // milestone 26). A 16-port partially-decoded range — only the high nibble is decoded, so
+        // every port in it is the same register. The read side is deliberately NOT registered:
+        // the register has no read-back, so the range must read open-bus 0xFF rather than a
+        // shadow of the last write.
+        for (var port = Video.ControlPortFirst; port <= Video.ControlPortLast; port++)
+        {
+            Ports.RegisterWrite(port, Video.WriteControlRegister);
+        }
+
         // Keyboard: ports 0x00-0x09 (reference doc §5f). Each port needs its own closure
         // capturing the port index so the keyboard knows which row is being read.
         for (byte port = 0; port <= 9; port++)
         {
             var p = port;
             Ports.RegisterRead(p, () => Keyboard.ReadPort(p));
+        }
+
+        // 80-column board (reference doc §5): registered ONLY when fitted, so on an unmodified
+        // machine port 0x00's write side goes nowhere and port 0x70 reads open bus 0xFF — the
+        // article's software presence-probe then correctly reports "absent" (§13.25.9).
+        if (Config.Modifications.EightyColumnBoard)
+        {
+            EightyColumn = new EightyColumnBoard();
+            Ports.RegisterWrite(EightyColumnBoard.ModePort, EightyColumn.WriteModePort);
+            Ports.RegisterRead(EightyColumnBoard.StatusPort, EightyColumn.ReadStatusPort);
+            EightyColumn.ModeChanged += Video.SetEightyColumnMode;
         }
 
         // Wire the 50 Hz video VBLANK → INT (project CLAUDE.md §8: T-first INT source).
@@ -301,6 +342,9 @@ public sealed class Machine
         Mdcr.Reset();
         Sound.Reset();
         Board?.Reset();
+        // 40 columns on both cold and warm reset (article §13.25.9). Video.Reset() has already
+        // dropped its own cadence flag; this drops the latch itself so port 0x70 reads back 0.
+        EightyColumn?.Reset();
         Slot1?.Reset();
         _pins = 0;
         _lastM1WasEd = false;
@@ -721,6 +765,7 @@ public sealed class Machine
         Sound.SaveState(writer);
         Interrupts.SaveState(writer);
         Board?.SaveState(writer);
+        EightyColumn?.SaveState(writer);
     }
 
     /// <summary>Restores runtime state saved by <see cref="SaveState"/>. Intended to be
@@ -740,6 +785,15 @@ public sealed class Machine
         Sound.LoadState(reader);
         Interrupts.LoadState(reader);
         Board?.LoadState(reader);
+        if (EightyColumn is not null)
+        {
+            EightyColumn.LoadState(reader);
+            // Re-apply the restored mode to the video path explicitly. Using the restore-only
+            // entry point, not SetEightyColumnMode: the latter models the mode latch's hardware
+            // clear of the scroll register, which would wipe the PanX this same state file just
+            // restored.
+            Video.RestoreEightyColumnMode(EightyColumn.EightyColumn);
+        }
     }
 
     /// <summary>
@@ -796,6 +850,9 @@ public sealed class Machine
             MonitorRomPath = Config.MonitorRomPath,
             Slot1CartridgePath = Config.Slot1CartridgePath,
             RamSeed = Config.RamSeed,
+            // Modifications are topology (reset-to-apply, no live-swap path), so they echo the
+            // original config exactly like Model/Board/RamVariant do.
+            Modifications = Config.Modifications,
             FloppyDrives = floppyDrives,
             CassettePath = Mdcr.HasTape ? Mdcr.MountedPath : null,
         };

@@ -12,8 +12,22 @@ namespace P2000.Machine.State;
 public static class MachineConfigFile
 {
     /// <summary>Current <c>.cfg</c> format version. Increment when fields are added or
-    /// removed; the reader rejects files whose version exceeds this value.</summary>
-    public const int CurrentVersion = 1;
+    /// removed; the reader rejects files whose version exceeds this value.
+    /// <list type="bullet">
+    ///   <item>v1: original (milestone 11) through the additive
+    ///     <c>bankCount</c>/<c>monitorRomPath</c>/<c>slot1CartridgePath</c>/<c>floppyDrives</c>/
+    ///     <c>ramSeed</c>/<c>cassettePath</c> growth — none of which changed an existing key's
+    ///     meaning, so none bumped this.</item>
+    ///   <item>v2: the T-only <c>modifications</c> axis (80-column board, project CLAUDE.md
+    ///     milestone 25). Bumped deliberately even though the key is additive and a v1 file
+    ///     still loads correctly as "no board fitted": the milestone asked for an explicit
+    ///     version marker for this axis, and files written from here on genuinely describe a
+    ///     topology dimension a v1 reader had no concept of. <b>v1 files are still accepted</b>
+    ///     — the reader's floor is 1, not <see cref="CurrentVersion"/>, unlike <c>.state</c>'s
+    ///     stricter rule (a missing config key degrades gracefully; a shifted device-stream
+    ///     layout does not).</item>
+    /// </list></summary>
+    public const int CurrentVersion = 2;
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -70,6 +84,7 @@ public static class MachineConfigFile
         FloppyDrives = c.FloppyDrives.ToList(),
         RamSeed = c.RamSeed,
         CassettePath = c.CassettePath,
+        Modifications = c.Modifications,
     };
 
     private static MachineConfig FromDto(ConfigDto d) => new()
@@ -83,6 +98,8 @@ public static class MachineConfigFile
         FloppyDrives = d.FloppyDrives ?? new List<FloppyDriveConfig>(),
         RamSeed = d.RamSeed,
         CassettePath = d.CassettePath,
+        // A v1 file has no `modifications` key at all -> all-defaults, i.e. "no board fitted".
+        Modifications = d.Modifications ?? new ModificationsConfig(),
     };
 
     private sealed class ConfigDto
@@ -97,5 +114,6 @@ public static class MachineConfigFile
         public List<FloppyDriveConfig>? FloppyDrives { get; set; }
         public ulong? RamSeed { get; set; }
         public string? CassettePath { get; set; }
+        public ModificationsConfig? Modifications { get; set; }
     }
 }

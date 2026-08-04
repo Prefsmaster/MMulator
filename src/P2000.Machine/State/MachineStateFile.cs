@@ -71,8 +71,25 @@ public static class MachineStateFile
     ///     motor fields. A v7 file has neither addition — reading it under the new layout would
     ///     either misalign (Mdcr, mid-block) or under-read (Fdc, trailing fields silently
     ///     absent) rather than just miss new content.</item>
+    ///   <item>v9: the 80-column modification board (project CLAUDE.md milestone 25). Two
+    ///     changes, both conditional on the board being fitted, which is exactly why a version
+    ///     gate is needed rather than graceful degradation: (a) a one-bool
+    ///     <see cref="Devices.EightyColumnBoard"/> block is appended after the optional
+    ///     FloppyRam board block; (b) the <see cref="Devices.Video"/> block's generator
+    ///     sub-block carries an 80-byte previous-line array instead of 40, since the generator
+    ///     must be able to hold a full 80-column row. The embedded config JSON also gains the
+    ///     <c>modifications</c> key. A machine with NO board fitted writes a v9 stream that is
+    ///     byte-for-byte identical to its v8 one — the bump is about the fitted case, and about
+    ///     not letting a v8 file silently load as "board absent" when its config says
+    ///     otherwise.</item>
+    ///   <item>v10: the video control register (project CLAUDE.md milestone 26; reference doc
+    ///     §5g). <see cref="Devices.Video"/>'s block gained a <c>VideoBlanked</c> bool, written
+    ///     mid-stream directly after the existing <c>PanX</c> int32 and before <c>_oddField</c>
+    ///     — so a v9 file is not merely missing a trailing field, it misaligns every field after
+    ///     PanX (the odd/even field parity, then the whole fetch-unit and generator sub-blocks).
+    ///     Unconditional, unlike v9's board block: every machine has a video control register.</item>
     /// </list></summary>
-    public const int CurrentVersion = 8;
+    public const int CurrentVersion = 10;
 
     /// <summary>Oldest <c>.state</c> version accepted by this build. Older files are rejected
     /// because the device-stream layout (or, for v4→v5, the embedded config JSON shape) changed
@@ -84,8 +101,10 @@ public static class MachineStateFile
     /// the _transferKind/_formatFillByte/_formatSectorSize fields — see
     /// <see cref="CurrentVersion"/>'s v7 note; v7→v8: mounted cassette/disk media content now
     /// embeds directly in the Mdcr/Fdc device blocks — see <see cref="CurrentVersion"/>'s v8
-    /// note).</summary>
-    private const int MinVersion = 8;
+    /// note; v8→v9: the optional 80-column board block plus the widened generator array — see
+    /// <see cref="CurrentVersion"/>'s v9 note; v9→v10: the Video block's new VideoBlanked bool,
+    /// written mid-block — see <see cref="CurrentVersion"/>'s v10 note).</summary>
+    private const int MinVersion = 10;
 
     private static readonly byte[] Magic = "P2ST"u8.ToArray();
 

@@ -6,3 +6,15 @@ obj/
 # SingleStepTests/z80 JSON fixtures: downloaded on demand by
 # SingleStepTestLoader, not vendored (see CLAUDE.md §7a).
 tests/Z80.Tests/SingleStepTests/data/
+
+# Local asset library: ROMs, cartridge images, tapes and disk images. Personal/collected
+# material that does not belong in the repo, and much of it is large.
+#
+# NOTE: this does NOT untrack the fixtures already committed here — the test suite depends on
+# several of them (assets/BASIC.bin, assets/Basic-24.bin, assets/P2000ROM.rom, and the disk
+# images under assets/Disks/ used by the boot/disk tests). Ignore rules only affect UNtracked
+# files, so those stay versioned and keep working.
+#
+# Consequence to remember: a genuinely new test fixture added under assets/ will be silently
+# ignored. Commit one with `git add -f assets/<file>`.
+assets/

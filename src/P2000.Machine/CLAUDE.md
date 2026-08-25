@@ -1672,7 +1672,12 @@ marked synced. Do NOT edit the reference doc from this project.
   boot-BASIC-and-type test would cost ~30 s of suite time to assert something Philips wrote.
 - **Applies to:** no source files. Reference doc §5g (worth a note that BASIC normalises the pan
   on screen output) and §5's flicker-reduction paragraph.
-- **Synced:** no — awaiting the human's sync pass.
+- **Synced:** **yes (2026-08-04).** Into `docs/P2000T-reference.md` §5g as a new "Who writes this
+  register — CARTRIDGE-SPECIFIC" subsection (the full ROM `OUT` enumeration, Cassette BASIC's
+  write-back on screen output, Disk BASIC 24's contrasting behaviour, and why `OUT 0,1` looked
+  different), plus a caveat on §5 Memory/video's flicker-reduction sentence so the technique is
+  not read as free on every cartridge. The over-broad "zero writes to the range" claim in the
+  milestone-26 entry was **not** carried across — §5g states the corrected version only.
 
 ### 2026-08-04 — Milestone 26 IMPLEMENTED: video control register, output ports `0x30`–`0x3F`
 - **Trigger:** owner-supplied Philips manual description (reference doc §5g), spec
@@ -1782,7 +1787,19 @@ marked synced. Do NOT edit the reference doc from this project.
   registration), `src/P2000.Machine/State/MachineStateFile.cs` (v10),
   `tests/P2000.Machine.Tests/Devices/VideoControlRegisterTests.cs` (new). Reference doc §5g, §4
   (the superseded modulo), §5 (80-column pan hold).
-- **Synced:** no — awaiting the human's sync pass into `docs/P2000T-reference.md`.
+- **Synced:** **yes (2026-08-04).** Into `docs/P2000T-reference.md`: §5g's "Emulator status"
+  replaced by an IMPLEMENTED subsection (active-window-only blanking with the border keeping its
+  blanking colour, bit 7 not riding the 80-column pan hold and why the assignment order matters,
+  the `Reset` behaviour change, the blank-vs-fetch decision point); §5g's clamp bullet now records
+  that the clamp lives in the **setter** and the `% 80` survives as a `Debug.Assert`, with the
+  same as-built note added to §4's fetch-address block; §3a gained a `.state` v10 entry noting the
+  bump is **unconditional**, unlike v9's. The two incidental findings were promoted to reference
+  facts in their own right: **port `0x70`'s second, M-only user** (`off_M`/`on_M`) is now a
+  subsection of §5's 80-column port discussion, and it let §5d's M2200 port-table paragraph be
+  upgraded — that appendix had been *under-read*, since it was also confirming the `0x30`-`0x3F`
+  **range** and the `0x70`-`0x7F` wait-lock now has a second independent citation. The recurring
+  **glyph-row-0 vacuous-test hazard** and the SAA5050 **defined/undefined code map** went into §5's
+  SAA5050 quirks list. §9 gained a DONE entry.
 
 ### 2026-08-04 — Milestone 25 IMPLEMENTED: 80-column board (opt-in, T-only modification device)
 - **Trigger:** owner-supplied 1986 newsletter scan unblocked the milestone

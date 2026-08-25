@@ -1601,7 +1601,13 @@ project.
   `tests/P2000.UI.Tests/ViewModels/VramViewportRectangleTests.cs` (new, 3). Full
   `P2000.UI.Tests`: 259/259 green (was 253).
 - **Applies to:** `src/P2000.UI/Runner/EmulationRunner.cs` (`EnsureRamSeed`).
-- **Synced:** no — awaiting the human's sync pass.
+- **Synced:** **yes (2026-08-04).** Into `docs/P2000T-reference.md` §3a, appended to the
+  2026-07-26 `CassettePath` entry that first flagged this hand-maintained list as "a class of bug
+  to watch for" — now recording that watching was not enough, that `Modifications` was the third
+  drift, and that the reflection test is what actually closes the class. Stated as a general
+  lesson (guard a hand-enumerated mirror with a reflection test rather than a comment) rather than
+  as a one-off fix. The `Reconfigure`-while-stopped test-ordering rule was left here — it is a
+  test-harness fact, not a design decision.
 
 ### 2026-08-04 — Milestone 21 IMPLEMENTED: config window two-column relayout (interim)
 - **Trigger:** owner decision (reference doc §3a) — the window had grown too tall as topology
@@ -1654,7 +1660,13 @@ project.
   section is reachable without scrolling at the default size, and that Apply / Load / Save /
   "Always start with this configuration" all still behave.
 - **Applies to:** `src/P2000.UI/Views/ConfigWindow.axaml` only.
-- **Synced:** no — awaiting the human's sync pass into `docs/P2000T-reference.md` §3a.
+- **Synced:** **yes (2026-08-04).** Into `docs/P2000T-reference.md` §3a's Config-window entry:
+  marked IMPLEMENTED with the final section grouping, **the load-bearing reason for the split**
+  (Floppy Drives is the only dynamic section, so it goes last in the left column and that column
+  absorbs all the growth), and the measured width numbers (height flat across 740–960, ~732 floor,
+  860 chosen, ~27% shorter). The "no awkward minimum width to report" result is recorded too,
+  since the spec had explicitly asked for that check. Still marked INTERIM, with tabs as the
+  acknowledged end state.
 
 ### 2026-08-04 — Milestone 20 IMPLEMENTED: 80-column board config axis + viewport-width plumbing
 - **Trigger:** machine milestone 25 (same day) — read its §17 entry first; every hardware fact,

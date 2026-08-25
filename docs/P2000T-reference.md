@@ -78,6 +78,9 @@ Correct model:
   empty cassette drive, no expansion RAM, no disk interface. This is deliberate: a bare
   machine exercises the ROM's presence-probe fallback paths (CTC→video tick, disk-absent),
   which is the honest default and the best baseline for correctness testing.
+  **T-scoped (flagged 2026-08-04):** "empty cassette drive" describes the **T**. The P2000M has
+  no cassette hardware at all — see the model-selector gate in "Config axes" below before
+  applying this default to an M.
 - **Display is the main window;** everything else is a satellite window.
 - **Machine on its own thread; every window is an OBSERVER** (extends §3). Windows read
   snapshots of machine state; they never mutate the live core directly. The debugger reads
@@ -92,6 +95,34 @@ Correct model:
    **drag-and-drop** of `.cas` / cartridge / disk images onto the display (Avalonia
    `DragDrop`), complementing the file dialogs.
 2. **Config window** (modal-ish) — see config axes below.
+   - **Layout DECIDED (owner, 2026-08-04): two columns, as an explicitly INTERIM step.** The
+     window has grown too tall as axes accumulated (the 80-column Modifications section was the
+     one that tipped it). **IMPLEMENTED, UI milestone 21** — **left column:** Model, Memory
+     (RAM), Monitor ROM, Internal-Slot Board + Floppy Drives. **Right column:** Cassette, SLOT1,
+     Modifications. **Spanning both columns underneath:** Load/Save/Apply, Startup ("Always start
+     with this configuration"), and the status message.
+   - **The column split has a load-bearing reason — preserve it if these sections are ever
+     reshuffled.** **Floppy Drives is the only DYNAMIC section:** its height varies with the drive
+     count (0–4 rows, two lines each) and it vanishes entirely unless the Floppy+RAM board is
+     selected. It therefore sits **last in the left column**, so that column absorbs all the
+     growth while the right column carries only fixed-height sections. Adding a drive lengthens
+     one column instead of reflowing both, and the action row below stays put. (Recorded in the
+     XAML itself as well as here.)
+   - **Width was measured, not guessed** (UI milestone 21): height is **flat across 740–960 px**,
+     so nothing is bought by going wider; the hard floor from fixed-size controls is ~732 px
+     (per column: 140 px label + 200 px ComboBox, ×2, plus a 20 px gutter and 32 px padding).
+     **860 px chosen** — clear of the floor, ~129 px each for the file-path text boxes, still fits
+     a 1024-wide screen. Result: **480×507 → 860×374** bare, **480×580 → 860×426** with four
+     drives, i.e. **~27% shorter**. The "awkward minimum width" the spec warned about did not
+     materialise, because the only genuinely wide elements are wrapping hint captions (natural
+     unconstrained width measures 1892 px and is entirely caption-driven).
+   - **Deferred, and the acknowledged end state: a TABBED config window.** Two columns buys room
+     now; it does not solve the underlying problem, which is that every new topology axis has to
+     go *somewhere* on one surface. Whoever revisits this should know the two-column pass was
+     deliberately a stopgap rather than a considered final layout — reach for tabs when the next
+     axis makes the two-column form awkward, and expect the tab grouping to differ from the
+     column grouping above (columns were chosen to balance height, tabs would be chosen to group
+     by concept).
 3. **Keyboard window** — shows the original P2000 key layout; also serves as a soft
    keyboard (click keys) and a reference for the host-key mapping.
 4. **Debugger window** — full debugger (spec below).
@@ -227,6 +258,27 @@ Config changes that alter hardware topology **require a machine reset to take ef
 (simplest, most authentic). Apply by queueing the new config and performing a cold reset.
 - **Model selector (top-level axis): P2000T vs P2000M.** Gates everything else — M implies
   its disk/CTC; T offers the slot cards. Put this above RAM/slots.
+  - **DECIDED (2026-08-04, owner — real-hardware inspection): the P2000M has NO cassette
+    interface at all.** Not "an empty deck" — a real P2000M has **no MDCR installed**, and the
+    model gate must express *absent hardware*, not *absent media*: no drive, no MDCR ports, and
+    no CPOUT tape-control lines / CPRIN cassette-status bits on that model. The M is the
+    disk-equipped business sibling; the floppy interface is its only mass storage. **Do not
+    default the M to a cassette deck** when M support is eventually undertaken (§14) — the
+    "bare by default … empty cassette drive" guiding principle at the top of §3a is a
+    **T-oriented** default, exactly like the internal-slot/board discussion below it, and must
+    not be read as implying an empty-but-present deck on the M.
+    - **Consequences to honour when M support starts:** the cassette device (§5b) is not
+      instantiated at all on M; the monitor's cassette-wait boot path (§5b step 3–4, which
+      polls **CIP** on CPRIN bit 4) is a T-only boot path; the CPOUT shared-latch fan-out (§5f)
+      loses its tape-control consumers on M, so the latch's *other* consumers must not be
+      written as if the cassette listener is always attached; and the config UI's cassette
+      controls (file dialog, drag-and-drop, deck window) are hidden — not merely empty — when
+      the model is M.
+    - **Source:** owner's direct inspection of real P2000M hardware (2026-08-04). Same
+      evidentiary class as the RAM power-on-garbage observation (§5b) — an owner real-hardware
+      fact, not a manual citation. **Upgrade path:** if the Field Service Manual or a P2000M
+      schematic is ever checked for the corresponding absent decode/connector, cite it here and
+      promote this from owner-observed to sourced.
 - **Monitor ROM (base machine, default + override).** The 4 KB monitor at 0x0000 is present on
   every machine from power-on — NOT a cartridge/slot. The emulator loads a **built-in default**
   automatically; config exposes an optional **custom boot-ROM override** (`MonitorRomPath`,
@@ -262,6 +314,29 @@ Config changes that alter hardware topology **require a machine reset to take ef
   from the Field Service Manual's §3.8.1/§3.8.11 connector pinouts) rather than being a single
   mutually-exclusive board choice — this three-way T model will need extending, not just
   reusing, when M support starts.
+- **Modifications (NEW AXIS — DECIDED 2026-08-04, owner; T-only, orthogonal to everything
+  above).** Socket/piggyback **hardware modifications**: period add-ons that are neither slot
+  cards nor board options, but invasive alterations to the motherboard itself. Distinct axis
+  because a modified T can *also* have any internal-slot board, any RAM variant and any slot
+  population — these compose freely. Reset-to-apply, **all default off**, and the whole axis is
+  **unavailable (not merely off) when the model is P2000M**.
+  - **80-column board (§5)** — the 1986 *P2000 Nieuwsbrief* daughterboard that takes over the
+    SAA5020's socket and doubles the character cadence on `OUT 0,1`. Sub-option: **`Show SAA
+    80-column artifacts`** (default on when the board is fitted), reproducing the out-of-spec
+    control-character rendering the source documents; greyed out when the board is absent or the
+    machine is in 40-column mode. Sibling in spirit to the existing "show contention glitches"
+    toggle under Display mode.
+    **IMPLEMENTED** (machine milestone 25 / UI milestone 20, 2026-08-04) as
+    `MachineConfig.Modifications.EightyColumnBoard` / `.ShowEightyColumnArtifacts`; the config
+    window's "Modifications" section sits between SLOT1 and Monitor ROM. Setting the board on a
+    P2000M is **rejected at the machine layer**, not ignored — the UI keeps a named
+    `CanEditModifications` seam (constant `true` today, since the window only offers the T) so
+    that when the M selector lands it greys the section out instead of letting Apply throw.
+  - **Candidate for this axis later, NOT decided:** §5a's hires overlay board. It is also an
+    add-on rather than a slot card, but it is a genlock overlay with its own bitmap RAM and MAME
+    models it as a slot device — settle that when the overlay milestone is scoped, not now.
+    **Flagged:** the two boards both manipulate video timing and their interaction is unexplored;
+    treat them as mutually exclusive in config until there is evidence otherwise (§5a).
 - **Slot population** (three typed slots, §5c): **SLOT1** (external, memory-mapped ROMs:
   BASIC, DB manager, other ROM carts); **SLOT2** (external, I/O-mapped expansion hardware);
   **internal extension** (floppy/CTC card — populated in M, optional on T).
@@ -636,6 +711,20 @@ works, not just in principle:
      copy until someone remembers to add it there too. `CassettePath` was added to that list in
      this pass; worth a glance whenever a future field is added to `MachineConfig`, since nothing
      enforces the two staying in sync.
+     - **"Worth a glance" was not enough — this drifted twice more and is now enforced
+       (2026-08-04).** The same hand-maintained list silently dropped **`Modifications`** when
+       milestone 20 added the 80-column axis, so **every config with `RamSeed == null` lost the
+       board on Apply — which is every config the Config window builds.** Ticking "80-column
+       board" and pressing Apply did nothing, with no error. Extracting the duplicated copy into
+       one shared helper (2026-07-26, above) had not helped, because the helper still enumerated
+       properties by hand.
+     - **The fix that actually closes the class of bug:** `MachineConfigPreservationTests` now
+       walks `MachineConfig` **by reflection** through the real `Reconfigure` path and fails on
+       any property that does not survive, naming it and saying what to add. A property added in
+       future breaks a test instead of vanishing at runtime. **General lesson worth carrying
+       beyond this one list:** where a hand-enumerated mirror of a type cannot be replaced by a
+       `with` expression, guard it with a reflection test rather than a comment asking people to
+       remember.
 
 **RESOLVED (owner, 2026-07-26) — startup configuration: the app remembers your last setup
 automatically; pinning a specific one is available too.** Prompted by a real, reported gap: today
@@ -784,6 +873,26 @@ retroactively.
 this narrative** (the FDC, milestone 19, and multi-drive floppy config, milestone 20, each bumped
 it per their own device-block changes — see `P2000.Machine` CLAUDE.md §17 for the exact per-bump
 detail if needed) **— then to v8 (2026-07-26, self-contained state, below).**
+
+**`.state` now v9 and `.cfg` now v2 (2026-08-04, machine milestone 25 — the 80-column board,
+§5).** `.state`: with the board fitted the stream gains a one-bool board block and the glyph
+generator's per-line array widens 40 → 80 bytes; `CurrentVersion`/`MinVersion = 9`, v8 rejected,
+per the same build-time discipline. **`.cfg` behaves differently and deliberately so** — the new
+`modifications` key bumps it to v2, but **v1 files are still accepted** and load as "no board
+fitted", because a missing config key degrades gracefully whereas a misaligned device stream
+does not. Config is hand-editable and long-lived; state is a positional binary stream. *Worth
+noting as the general rule the two formats now visibly follow: `.cfg` bumps are additive and
+backward-compatible; `.state` bumps are hard cutoffs.*
+- Byte-identity for a machine without the board was **designed in, not hoped for**: the widened
+  arrays are sized from the board's *presence* (a constructor parameter), so a board-absent
+  machine writes the exact same `.state` bytes as before the milestone.
+
+**`.state` now v10 (2026-08-04, machine milestone 26 — the video control register, §5g).**
+`VideoBlanked` joins the stream directly after `PanX`, mid-block, so a v9 file would not merely
+lack a trailing field — it would misalign field parity and then every sub-block after it.
+`MinVersion` raised, v9 rejected. **Unlike v9's board block this bump is unconditional:** every
+machine has a video control register, so there is no "absent device" path that keeps the old byte
+layout. `.cfg` unaffected — this is machine state, not topology, and stays at v2.
 
 **RESOLVED (owner, 2026-07-26) — UI-layer session state: a separate `.uistate` sidecar file,
 NOT embedded in `.state`.** Opened 2026-07-23 as a genuinely undecided question (whether a saved
@@ -1524,9 +1633,25 @@ Address generation simplifies dramatically given the confirmed 10× re-read (see
 within a character row's 10 scanlines the **column sequence is identical every time**;
 only the glyph row index advances, and that goes to the SAA5050, not the address:
 ```
-fetchAddr = videoBase + (charRow * 40) + column      // + scroll/pan offset
-glyphRow  = scanlineWithinRow                         // 0..9, to SAA5050 only
+fetchAddr = videoBase + (charRow * 80) + ((PanX + column) % 80)   // 80 = BufferColumns
+glyphRow  = scanlineWithinRow                                     // 0..9, to SAA5050 only
 ```
+**CORRECTED 2026-08-04 (was `charRow * 40 + column`, a 40-byte row stride).** The stride is
+**80**, not 40: the buffer is 80 chars × 24 rows at `0x5000`–`0x577F` (§5), and the port-`0x30`
+pan register slides a 40-wide window *sideways* across an 80-wide row — pan 40 shows "the 2nd
+screen to the right". A 40 stride would make pan 40 a *vertical* scroll by one row instead. The
+1986 newsletter (§5) independently confirms this from the software side: programs used "the
+left-hand and right-hand screen of 40 characters each", which only works if the two screens are
+horizontally adjacent within one row. **This was a doc-only error — `Video.OnColumnFetch` has
+always used the 80 stride** (verified by CC, machine milestone 25), so nothing in the emulator
+was ever wrong. `column` runs `0..39` in 40-column mode and `0..79` in 80-column mode, where
+`PanX` is held at 0.
+**Modulo SUPERSEDED 2026-08-04 (§5g), and this is now AS BUILT (machine milestone 26):** the wrap
+was the placeholder answer to "what do pan values > 40 do". The sourced answer is that `PanX` is
+**clamped to 0–40 — in the property setter, not only at the port**, so the debugger and tests
+cannot bypass it. `PanX + column` therefore maxes at 79 (the last byte of the row) in both
+modes, and the `% 80` survives only as a `Debug.Assert` guarding against a future unclamped
+writer, which would otherwise silently read into the *next* character row.
 Loop shape:
 ```
 each master tick:
@@ -1884,6 +2009,46 @@ horizontal-timing / F-signal waveforms (the non-OCR-able part). Get it by readin
 scanned timing diagram by eye, or — better — a logic-analyzer trace of Z80 /MREQ
 against RAM /CAS|/RAS during active display.
 
+### Fetch-slot quantisation — AS BUILT (machine milestone 25, 2026-08-04)
+The 80-column milestone (§5) forced a decision this framework had left implicit, because a
+40-column slot is a tidy 1 µs = 2.5 T-states but an 80-column slot is 0.5 µs = **1.25 T-states**,
+which does not align to the T-state grid the machine ticks on. **DECIDED — quantise the
+character-clock grid onto T-states, rather than re-quantising the machine's tick loop:**
+```
+FetchSlot(column) = column * ActiveTStatesPerLine / ActiveColumns     // integer division
+                  // ActiveTStatesPerLine = 100  (the 40 µs active window × 2.5 T-states/µs)
+                  // ActiveColumns        = 40 or 80
+```
+An exact rational in character-clock units, truncated to the T-state its edge falls in.
+- **40 columns:** `column × 2.5` → slots at 0, 2, 5, 7, 10 … last at **97**. Arithmetically the
+  identical expression the code always had, so 40-column results cannot move — and none did.
+- **80 columns:** `column × 1.25` → slots at 0, 1, 2, 3, 5, 6, 7, 8, 10 … (a repeating
+  +1,+1,+1,+2), last at **98**. Never two fetches in one T-state.
+- **Why not a true character-clock master** (which §4's "Modeling approach" nominally prefers):
+  contention is resolved **once per T-state** in `Machine.Tick`, because the Z80 can drive at
+  most one RAM access per T-state. A sub-T-state fetch grid therefore has nothing finer to
+  collide with — it would add resolution the collision model cannot use, while requiring the
+  whole tick loop to be re-quantised, which is precisely the change most likely to perturb the
+  40-column behaviour the regression suite protects. Revisit only if a future device genuinely
+  needs sub-T-state bus resolution.
+- The resulting contended-access set is exactly reproducible and pinned by test.
+
+### Rendered lanes at 80 columns — MEASURED, no global change needed (machine milestone 25)
+Because the buffer is a **time-based** raster and the line period is unchanged, the full-field
+buffer stays **928 × 626 in both modes**; an 80-column character therefore occupies **8 rendered
+lanes** instead of 16. The open worry was that 8 lanes under-samples the SAA5050's rounding grid
+(computed at 12 half-dot sub-columns) badly enough to make glyphs ambiguous. **Measured: it does
+not.** For every one of the 20 packed glyph rows, the number of distinct patterns across all 96
+characters is **exactly the same at 8 lanes as at 16** — the extra 16-lane resolution is
+anti-aliasing headroom, not information. Two glyphs a 40-column screen can tell apart stay
+distinguishable at 80 columns; only the smoothing gradient is coarser. Implemented as a box
+filter over adjacent 2-bit coverage levels (`(a+b+1)>>1`) — a resample of the same rounded
+waveform, not a second render path.
+- **Recommendation: do NOT raise the global lanes-per-char-time constant.** It would change the
+  buffer width in *both* modes for anti-aliasing smoothness alone.
+- **Still open, owner's call:** whether the coarser gradient looks acceptable on screen. Flagged
+  rather than decided; the constant is untouched.
+
 ---
 
 ## 5. Hardware facts
@@ -1904,13 +2069,141 @@ against RAM /CAS|/RAS during active display.
 - **Video RAM:** 2 KB area on the T-version (mask should be `0x7FF`). Includes
   teletext control characters and cursor info.
 - **Screen buffer:** 2 screens in size, 80 chars × 24 rows, address range
-  **`0x5000`–`0x577F`**. Pan the viewport via the **scroll register at I/O port `0x30`**
-  (CONFIRMED): write **0–40**, 0 = no offset (base screen), 40 = max (shows the 2nd screen to
-  the right of the base). Used to reduce flicker, since the Z80 can't refresh the whole screen
-  each field. The video device reads port 0x30 when computing fetch addresses.
-  - **Values > 40 are UNDEFINED** (owner: to investigate later). For now implement the defined
-    0–40 range correctly; clamp or wrap >40 as a placeholder (owner will pin down real behaviour
-    later). Don't block on it.
+  **`0x5000`–`0x577F`**. Pan the viewport via the **video control register**, §5g below. Used to
+  reduce flicker, since the Z80 can't refresh the whole screen each field. The video device
+  applies the pan when computing fetch addresses (§4).
+  - **Caveat (2026-08-04):** this is a technique for *application* software, and it is not free
+    on every cartridge — **PHILIPS CASSETTE BASIC writes the pan back to 0 on every screen
+    output**, so a program under it must own the register continuously; Disk BASIC 24 does not.
+    Firmware itself never touches the register. See §5g "Who writes this register".
+
+### Video control register — output ports `0x30`–`0x3F` (SOURCED 2026-08-04, Philips manual)
+**Supersedes this doc's earlier "scroll register at I/O port `0x30`" entry**, which was marked
+CONFIRMED but carried no citation, named a single port rather than the range, and did not mention
+bit 7 at all. Owner-supplied from the official Philips manual, 2026-08-04.
+
+| Bits | Function |
+|---|---|
+| **7** | **Blank video to black when set.** Does **not** destroy video memory contents. |
+| **6–0** | **Horizontal pan.** `0` = leftmost, `40` = rightmost. Values above 40 undefined. |
+
+- **It is a 16-port range, `0x30`–`0x3F`, not one port** — partial address decode, only the high
+  nibble is significant. Register the whole range in the port dispatch; a write to `0x3A` must
+  behave identically to a write to `0x30`. (Same shape as other partially-decoded P2000T ports —
+  do not assume a single-port claim is enough.)
+  - **Independently corroborated** by the M2200 manual's own port-table appendix (§5d), which
+    lists `0x30`-`0x3F` as "Video horizontal-scroll" — the same 16-port range, from a different
+    document. That entry had been read here as merely "matching the confirmed pan register at
+    port `0x30`"; it was in fact also confirming the *range*, which this doc had not noticed.
+- **Output only.** There is no read-back of pan or blank state; the register is write-only, so an
+  emulator must not answer reads on this range from a shadow byte. Whether the range reads
+  open-bus `0xFF` or something else is **not stated** — treat as open bus per the usual
+  convention, and flag it if any software is ever seen reading it.
+- **Values above 40 — DECIDED (owner, 2026-08-04): clamp to 40.** *"Other values have undefined
+  behaviour, I need to test on a real machine what they do; for now let's flag this and let all
+  values above 40 behave as 40."* **This replaces the previous wrap placeholder** (`(PanX +
+  column) % 80`, §4). The two are genuinely different and the difference is observable, so this
+  is a behaviour change, not a tidy-up.
+  - **Pleasant consequence:** with `PanX` clamped to 0–40 and `column` running 0–39, `PanX +
+    column` maxes out at **79** — exactly the last byte of an 80-wide row, and identically so in
+    80-column mode (pan 0 + column 79). **The modulo becomes unreachable.**
+  - **AS BUILT (machine milestone 26): the clamp lives in the `PanX` SETTER, not only at the
+    port** — which is what makes the wrap genuinely unreachable rather than merely unlikely, since
+    the debugger and tests can set `PanX` directly and would bypass a port-only clamp. The `% 80`
+    was **demoted to a `Debug.Assert`, not deleted**: free in Release, and it catches a future
+    change that reintroduces an unclamped writer — which would otherwise silently read into the
+    *next* character row. No existing test depended on the wrap (checked: the only `% 80` in the
+    test tree is in diagnostic VRAM-dump helpers that mirror the production formula and never
+    reach it).
+  - **OPEN, needs real hardware:** what values > 40 actually do. Wrap, clamp, mirror, or garbage
+    are all plausible on a design that decodes a 7-bit field into a 41-value range. Owner intends
+    to test.
+
+#### Bit 7 (video blank) — OPEN: does blanking stop the fetches? (flagged 2026-08-04)
+The manual says only that it blanks video to black without destroying VRAM contents. **It does
+not say whether the SAA5020 keeps addressing VRAM while blanked.**
+
+**CORRECTED 2026-08-04 (owner) — this was first written up as contention-relevant, with a
+proposed timing test. Both were wrong, and the reason is worth stating because it is a mistake
+imported from other machines' contention models:** *"in a P2000T the processor has always
+priority, causing black contention lines in the video, because the [SAA]5020 is denied RAM
+access. So that test will not reveal anything."* On this machine **the Z80 never waits** (§4:
+"The Z80 has unconditional priority — the VIDEO is what breaks"). There are no wait states, so
+CPU timing is *already* independent of whether a video fetch happens. Blanking therefore **cannot**
+be a speed trick, and no timing measurement — stress ROM or otherwise — can distinguish the two
+models. The Spectrum-style intuition that contention costs the CPU cycles does not apply here and
+should not be reached for again.
+
+**What follows from that — the question is nearly unobservable:**
+- **On real hardware:** while blanked, the output is black by definition, so a *corrupted* fetch
+  and a *suppressed* fetch look identical — both produce nothing visible. Corruption is
+  single-cell and **non-persistent** (§4), so nothing survives into the next unblanked field
+  either. There is no software-visible difference at all. **It is a logic-analyzer question** —
+  probe whether the SAA5020 still drives VRAM addresses (RAM `/CAS`|`/RAS` still cycling) during
+  a blanked field — and nothing cheaper will answer it.
+- **In emulation, the only thing it changes is a diagnostic:** whether the corrupted-cell overlay
+  (§4, the UI's "show contention glitches") lights up cells during a blanked field. Emulated
+  video output and emulated timing are identical either way.
+- **So this is a display-diagnostic detail, not a fidelity question.** It was originally filed
+  here as contention-relevant; it is not. Keep it recorded — the hardware fact is still unknown —
+  but do not treat it as blocking or important.
+- **Build-against-now default: FETCHES CONTINUE, contention model untouched.** Blank gates the
+  *output* stage only — the conservative reading of "blanks video to black", which describes a
+  display effect, with the "doesn't destroy video memory contents" clause contrasting against
+  *clearing the screen* rather than saying anything about the address bus.
+
+#### IMPLEMENTED — machine milestone 26, 2026-08-04
+All sixteen ports registered **write-only**; the read side is deliberately unclaimed so the range
+reads open-bus `0xFF`. Regression gate: **707 total, 695 passed, 12 skipped, 0 failed** against
+the 678/666/12 baseline (+29 new), with no pre-existing contention or timing result moved.
+Decisions taken during the build, all of which are behaviour rather than implementation detail:
+- **What goes black: the ACTIVE WINDOW only.** The border keeps rendering as the normal blanking
+  colour rather than switching to black, because the bit describes blanking *video* and the
+  borders carry no video — they are blanking intervals already. **Visible in Full-Field display
+  mode**, so it is stated here rather than left implicit, and pinned by test.
+- **Bit 7 does not ride the 80-column pan hold.** In 80-column mode the mode latch holds the
+  scroll register cleared, so the pan field is ineffective — but the blank bit is not part of that
+  register's reset. The implementation assigns `VideoBlanked` *before* `PanX` precisely because
+  the hold silently swallows the `PanX` assignment and must not swallow the blank with it.
+  `0x80 | 25` in 80-column mode blanks and leaves `PanX` at 0.
+- **Reset now clears `PanX` to 0** as well as unblanking — a deliberate behaviour change, flagged
+  rather than slipped in. Before milestone 26 `Video.Reset()` left `PanX` alone, which was
+  defensible only while nothing could write it and no reset behaviour was sourced. It is now
+  sourced (spec A5), so a panned or blanked machine no longer survives a reset.
+- **`.state` bumped v9 → v10** (`MinVersion` likewise; v9 rejected). `VideoBlanked` is written
+  mid-block, directly after `PanX`, so a v9 file would not merely lack a trailing field — it would
+  misalign field parity and then the whole fetch-unit and generator sub-blocks. Unlike v9's board
+  block this is **unconditional**: every machine has a video control register. `.cfg` untouched —
+  this is machine state, not topology.
+- The blank-vs-fetch decision point is marked in code with the exact one-line change that would
+  switch it to the suppress-fetches model, should a capture ever settle it.
+
+#### Who writes this register — CARTRIDGE-SPECIFIC, and it surprises people (2026-08-04)
+Investigated after an owner report that *"none of my `OUT 48,xx` attempts had any effect"* on a
+bare 16 K machine, while `OUT 0,1` demonstrably worked. **No emulator bug — a real P2000T behaves
+identically.** The findings are about firmware and cartridges, so they belong here rather than in
+a findings log:
+- **The monitor ROM never writes `0x30`-`0x3F`.** Enumerating every `OUT` in the documented
+  disassembly gives exactly four targets in the whole ROM: **`0x94` ×10** (bank select), **`0x10`
+  ×7** (CPOUT), **`0x50` ×2** (sound) and **`0x70` ×2** (an M-only mechanism — see §5f). Nothing
+  in firmware drives, resets or polls the pan register.
+- **PHILIPS CASSETTE BASIC (v1.1 NL) writes the pan back to 0 on screen output.** Typing
+  `OUT 48,3` + Enter produces **two** writes to the range — the user's `0x03`, then BASIC's `0x00`
+  immediately afterwards as part of returning to the `Ok` prompt. The pan really is applied and
+  then normalised away inside the same command cycle, so it is invisible at the prompt. A program
+  that sets the pan and does *not* print holds it indefinitely (`10 OUT 48,3 / 20 GOTO 20` keeps
+  `PanX` at 3 across 100+ fields, one port write total), which confirms the reset is tied to
+  BASIC's screen output rather than to periodic housekeeping.
+- **Disk BASIC 24 does NOT do this** — `OUT 48,xx` works there, confirmed by the owner on real
+  hardware. So the register behaves the same on every configuration; what differs is whether the
+  resident interpreter keeps overwriting it.
+- **Why `OUT 0,1` looked different:** BASIC never touches port `0x00`, so the 80-column latch
+  survives untouched. That contrast is the entire reason the pan looked broken.
+- **Consequence for the "reduce flicker" technique (§5 Memory/video):** panning between the two
+  half-screens is *application software's* to use, and **under Cassette BASIC a program must own
+  the pan register continuously** — that interpreter will fight it the moment it prints. Under
+  Disk BASIC 24 it will not. Worth knowing before anyone reaches for the two-screen trick from
+  BASIC.
 - Monitor ROM: 4 KB, BIOS-style routines only (memory test, cassette + serial
   printer drivers). No UI, no debug monitor. Machine is non-operational without a
   cartridge.
@@ -1951,7 +2244,11 @@ what's actually backed by the RAM-variable table.
 **The 0x5000–0x5FFF block is MODEL-SPECIFIC — the map is NOT a T superset:**
 - **P2000T:** 2 KB video RAM (0x5000–0x57FF) + 2 KB unused/open-bus (0x5800–0x5FFF).
 - **P2000M:** the **full 4 KB (0x5000–0x5FFF) is video memory** — consistent with the M being
-  the 80×24 business-display machine needing the larger character matrix.
+  the 80×24 business-display machine needing the larger character matrix. **The M has NO
+  SAA5050 at all (owner, 2026-08-04)** — its 80-column display is separate circuitry, not a
+  faster-clocked teletext chip, so none of the T's SAA5050/SAA5020 model (§4, §4a, §5's
+  80-column board) transfers to it. See §5's "80-column mode" for the three-way
+  don't-conflate list.
 - Consequence: build the page table **per model**, not built-for-T-then-patched. The video
   region entry differs by model (2 KB VRAM + 2 KB open-bus on T vs a single 4 KB VRAM page
   on M), AND the video *device* it routes to differs (SAA5050 teletext on T; the M's display
@@ -2130,6 +2427,18 @@ The machine object builds a **page table** over the 64 KB space when assembled (
 - Known schematic erratum: in the common hobbyist teletext schematic
   (qsl.net/zl1wtt), SAA5050 **pin 27 (P0) should be tied to GND, not VCC**. Use the
   Philips originals as ground truth.
+- **Control-code space (established 2026-08-04, while narrowing the 80-column artifact rule):**
+  **defined** = 1–9, 12, 13, 17–26, 28–31; **undefined and inert** = **0, 10, 11, 14, 15, 16,
+  27**. Note that `0x00` is simultaneously the cleared/power-on VRAM fill (§5b) *and* an
+  undefined code — a collision that any "blank cell" heuristic has to account for, and which
+  turned an empty screen into solid blocks the first time it was ignored (§5, 80-column mode).
+- **Glyph row 0 is blank padding for nearly every glyph — a recurring TEST hazard.** Two
+  milestones running (25 and 26) shipped tests that passed vacuously because they asserted on
+  glyph row 0: at that row almost every character is identical, so "these two columns differ" and
+  "blanking changed the picture" are both trivially true (and on a black background a blank cell
+  renders as exactly the blanked colour). **Assert content on a mid-glyph row**, and open
+  picture-difference tests with a positive control proving the row is not uniformly blank before
+  the change under test. Cheap to state, twice now expensive to rediscover.
 - **National/teletext character-set remaps — CONFIRMED, some on real hardware (2026-07-19/20,
   found while sourcing the keyboard matrix, UI milestone 3a):** several ASCII code points do
   NOT render as their US-ASCII glyph on the P2000T — already implemented correctly in
@@ -2145,12 +2454,295 @@ The machine object builds a **page table** over the 64 KB space when assembled (
   against that table (or real hardware) rather than assuming plain ASCII when decoding a VRAM
   byte — an earlier pass of the ms.3a investigation briefly misread 0x23 as plain `#` this way.
 
-### 80-column mode (timing-relevant)
-- Switching 40→80 columns switches the SAA5050 operating frequency **6 MHz → 12 MHz**.
-- Controlled by **bit 0 of port `0x00`** (BASIC: `OUT 0,1` = 80-col, `OUT 0,0` = 40-col).
-- Current mode readable on **bit 0 of port `0x70`** (0 = 40, 1 = 80).
-- Default after reset: 40 columns.
-- Often used with the Word Processor ROM module; required a hardware mod on stock units.
+### 80-column mode (timing-relevant) — SOURCED 2026-08-04, mechanism now CONFIRMED
+**Primary source: *P2000 Nieuwsbrief* nr. 126–135, februari 1986, §13.25 "80-karakterprint"**
+(owner-supplied scan, 2026-08-04). Full English translation, with the Dutch originals for every
+load-bearing sentence, lives in
+[`docs/P2000T-80column-board-1986-newsletter.md`](P2000T-80column-board-1986-newsletter.md) —
+**consult it rather than re-deriving from this summary**, and cite it as the article + page.
+Everything below is either quoted from that article or explicitly marked as inference.
+
+The headline facts, all now sourced:
+- Switching 40→80 columns runs the SAA5050 at **12 MHz instead of 6 MHz** (article §13.25.2).
+- Controlled by **bit 0 of port `0x00`** — `OUT 0,1` = 80-col, `OUT 0,0` = 40-col (§13.25.9).
+- Current mode readable on **bit 0 of port `0x70`**: `A=INP(&H70)` gives **0 at 40 columns, 1 at
+  80 columns** (§13.25.9). The article states the whole returned byte as 0 or 1, so the board
+  appears to drive all eight bits with the upper seven low — *treat "upper bits read 0" as
+  likely-but-not-certain* (BASIC `INP` shorthand could hide a mask).
+- **Default after reset: 40 columns** — *"Bij RESET wordt automatisch de 40 karakter-stand
+  gekozen"* (§13.25.9). Previously carried here uncited; now sourced.
+- **In 80-column mode the horizontal scroll is switched off** (§13.25.1, §13.25.2).
+- Often used with the Word Processor ROM module; **requires an add-on board** on any T.
+
+#### What the "hardware mod" actually is — CORRECTED 2026-08-04 (supersedes the same-day entry)
+**CORRECTION — this doc briefly said the board replaces the SAA5050. It does not. It replaces the
+SAA5020.** That earlier entry was written from the owner's hedged recollection ("afaik … the
+SAA5050 is unplugged") a few hours before the source scan arrived; the article contradicts it
+three separate times and the article wins. Recorded rather than silently overwritten because the
+two chips play opposite roles in §4's contention model, so the error is worth being able to
+recognise if it resurfaces anywhere downstream.
+
+What the article actually describes (§13.25.1, §13.25.2, §13.25.4, §13.25.7):
+- The **SAA5020** — the 24-pin clock/timing generator, position **7112** on the old CPU board,
+  **7204** on the new one (the article's running text says 7284, but its own §13.25.11 diagram
+  says 7204 and no 7284 exists in that board's numbering — treat 7204 as correct) — is
+  **desoldered** from the CPU board. A daughterboard is mounted above the vacated position, the
+  SAA5020 is **re-seated on the daughterboard**, and the daughterboard plugs into the freed
+  socket. **The SAA5050 stays soldered in place on the motherboard, untouched.**
+- Beyond the socket, the board takes **nine flying leads** to five motherboard ICs (old-board
+  positions 7133, 7134 ×2, 7138, 7147, 7154 ×2; the new board's equivalents are 7221, 7222 ×2,
+  7245 ×2, 7247, 7251), plus **two cut PCB tracks** and an added **330 Ω/680 Ω/1 nF cursor-
+  correction RC network**. It is an invasive modification, not a plug-in.
+- **Two CPU board revisions** exist with materially different layouts; the newer one was designed
+  with this conversion in mind (J7/J8 links provided). Position numbers are revision-specific.
+
+Consequences for the emulator, unchanged by the correction:
+- **It is an OPT-IN, T-ONLY add-on**, not a mode every T has. "Upgraded model T" does **not**
+  imply the 80-column board — the RAM/floppy upgrade axis and this one are unrelated.
+- **It cannot exist on a P2000M — that machine has no SAA5050 (owner, 2026-08-04)**, and the
+  M's native 80×24 business display is different circuitry driving the larger 4 KB buffer.
+  **Three distinct things must never be conflated:** (1) this daughterboard on a T; (2) the M's
+  native 80-column display; (3) the M's separate 512×256 bitmap graphics card (§5a). Only (1) is
+  in scope.
+- **It is not a slot device** — §5c's device inventory has been corrected accordingly.
+
+#### CONFIRMED mechanism — how the cadence doubles (article §13.25.2/§13.25.3)
+This is the part §4's contention model hangs off, and the article is explicit:
+- A **24 MHz crystal oscillator** on the board, followed by a **÷2** stage giving **12 MHz** with
+  an accurately 50% duty cycle. From this the board derives *"some other pulse shapes which
+  normally come out of the IC SAA5020 twice as slowly."*
+- An **LS157 multiplexer** selects, per signal, either the SAA5020's own output or the board's
+  doubled-rate substitute. The four switched signals are **F6** (dot clock → SAA5050 pin 19),
+  **F1** (character clock → SAA5050 pin 20), **LOSE** (→ SAA5050 pin 26) and **RACK** (→ the
+  motherboard's row-address logic).
+- **The SAA5020 is NOT overclocked.** It remains in circuit running at 6 MHz and continues to
+  generate line and field timing; only its character-rate outputs are bypassed. **This is the
+  key structural fact:** the raster geometry of §4/§4a — 64 µs line, 313-line field, active
+  window at char-times 15–54, the 49/240/24 vertical split, the 928×626 full-field buffer — is
+  **entirely unchanged in 80-column mode.** The same active window simply carries 80 half-width
+  cells instead of 40 full-width ones.
+- **Therefore: character-fetch rate 1 MHz → 2 MHz, 40 → 80 fetch slots per active line, each
+  half as long, inside an unchanged 40 µs active window.** Total fetch-eligible time per line is
+  unchanged. This is exactly the "clean doubled fetch cadence" the roadmap asked for — it drops
+  into the existing SAA5020 fetch-timing unit as a cadence parameter, and **must not** be built
+  as a special-cased second mode beside the existing model.
+  - **Marked as INFERENCE, not quotation:** the article never discusses bus contention, and
+    never states the line period is preserved. Preservation follows from the SAA5020 remaining
+    in circuit generating sync — strongly implied, not written. The *observable* end result (80
+    distinct characters fetched and displayed per line) **is** stated outright (§13.25.9).
+  - **Still not derivable, exactly as in 40-col mode:** how much of each slot the fetch actually
+    occupies (§4a's "one parameter that is NOT derivable"). Halving the slot does not tell us
+    the duty cycle within it. Carry the same build-against-now default.
+
+#### CONFIRMED — the port latch and read-back both live ON THE BOARD (§13.25.2, §13.25.9)
+*"De besturing van de omschakelaar geschiedt door een circuit dat op een output-instructie
+reageert. Dit is de halve S74. … De 'stand' van de schakelaar is uitleesbaar gemaakt met behulp
+van de schakeling boven de halve LS74."* The `OUT` decode (a half 74S74) and the `IN` read-back
+path are both board-side, using signals tapped from the motherboard's existing decoders.
+**Nothing on an unmodified T latches port `0x00` bit 0 or answers port `0x70`.**
+
+This is behaviourally load-bearing because the article documents a **software presence-probe**:
+*"By switching back and forth a few times between 80 and 40 characters and each time checking
+whether this has been taken over, a program can 'see' whether an 80-character board is
+present."* So:
+- **Board fitted:** `OUT 0,x` latches; `IN 0x70` bit 0 reads back what was written.
+- **Board absent:** the write must go nowhere and `IN 0x70` must **not** track it — otherwise
+  every presence-probing program wrongly concludes the board is fitted. With this project's
+  open-bus convention (absent device → `0xFF`), a probe writing 0 and reading `0xFF` correctly
+  concludes "absent". **Make sure port `0x70` is genuinely unclaimed when the board is absent**
+  rather than defaulting to a zero-returning stub, which would make the probe report "40-column
+  board present" and is the more likely accidental implementation.
+
+**Port `0x70` has a SECOND, unrelated user — and it is a P2000M mechanism (2026-08-04).** Worth
+recording because it looks alarming at first sight: the monitor ROM appears to hammer "the
+80-column port" on every cassette operation. It does not conflict, and it is not about the
+80-column board at all.
+- Enumerating every `OUT` in the documented monitor disassembly turns up **two writes to `0x70`**,
+  in `Cassette.asm`'s `off_M` / `on_M` routines — `LD A,0FFh / OUT (070h),A` before a cassette
+  transfer, `XOR A / OUT (070h),A` after. The ROM's own comments read: *"turn off/on Video memory
+  access on model M — on model T this has no effect."*
+- **This independently confirms a mechanism this doc had already recorded but not connected.**
+  §5d's M2200 port-table cross-check lists `0x70`-`0x7F` as "video wait-lock, disabling the
+  video-CPU-disable interrupt during disk/cassette transfer", and flagged it as "an existing but
+  previously uncited mechanism". It is now cited twice, from independent sources — the M2200
+  manual appendix and the P2000 monitor ROM's own code — and the ROM shows the *exact* usage
+  pattern (bracket the transfer, `0xFF` on, `0x00` off).
+- **Port `0x70` therefore means different things by model and direction:** on a **T with the
+  80-column board**, the **read** side is the board's mode read-back (this section). On an **M**,
+  the **write** side gates video memory access during transfers. **No interaction on a T:** the
+  board claims only the read side and its mode latch is on port `0x00`'s *write* side, so the
+  ROM's writes land on an unclaimed port and are correctly inert — verified, not assumed.
+- **For whenever M support is undertaken:** this is a real M behaviour with firmware that already
+  drives it, and §5d's flag still stands — the contention model does not currently special-case
+  video lockout during disk/cassette bursts, and on the M it evidently should.
+
+#### CONFIRMED — the pan register is CLEARED in hardware, not ignored (§13.25.1, §13.25.2)
+The mode latch *"also switches off the horizontal scroll via pin 1 of IC34."* IC34 is old-board
+position 7134, a **74LS273** (new-board equivalent 7222, likewise a 74LS273) — the scroll
+register. **Pin 1 of a 74LS273 is the asynchronous master reset** (datasheet inference, flagged
+as such), so entering 80-column mode **clears the scroll register to 0** and holds it cleared.
+Emulator consequence, and it is a real behavioural difference, not a formality:
+- Entering 80-col: `PanX` → **0**. Not saved, not masked — cleared.
+- While in 80-col: writes to port `0x30` are held cleared (the latch's reset is asserted).
+- Returning to 40-col: `PanX` is **still 0**, and stays 0 until the CPU writes port `0x30`
+  again. A program that set a pan, switched to 80 and back would find its pan gone — a
+  user-visible difference from any "save and restore" implementation.
+
+#### CONFIRMED — the glyph path is unchanged (§13.25.2, §13.25.4)
+The SAA5050 stays in place and is simply clocked at 12 MHz. The article reports *"text, colour,
+graphics, double height and blinking"* all still work. So the existing font table
+(`Saa5050Font.cs`), the P2000T inverted-colour 160–255 trick, the national character remaps and
+the teletext control codes **all continue to apply unchanged in 80-column mode** — no second
+font path, no mode-dependent glyph behaviour.
+
+**Except for one documented artifact (DECIDED 2026-08-04, owner: reproduce it, behind a config
+toggle).** The article is candid that at 12 MHz the SAA5050 runs *"far outside its
+specifications"*, and that *"sometimes one sees, at the position of a switch-over character, a
+small block or a few dashes instead of a space."* Its own commissioning procedure (§13.25.8)
+calls the block before "PHILIPS CASSETTE BASIC" **normal**. Owner's decision: *"Sticking to the
+'cycle exact' idea, it should reproduce it, but I don't know the root cause of the artifacts…
+Since it is a selectable add-on we could make 'show SAA 80 column artifacts' an option in the
+config."* So:
+- Add a **`Show SAA 80-column artifacts`** config toggle, sibling in spirit to the existing
+  **"show contention glitches"** toggle (§3a) — same pattern: an authentic-but-ugly hardware
+  behaviour the user can switch off.
+- **The rule itself is NOT sourced.** The article says only "sometimes", gives no root cause, and
+  characterises neither which control characters nor under what conditions. Flagged in code as a
+  placeholder awaiting real-hardware capture — the same posture as §4's unresolved
+  corruption-mode question, and resolvable by the same kind of capture (real board, real screen,
+  photograph the control-character positions).
+- **NARROWED 2026-08-04, owner observation from a real 80-column screen.** The first build fired
+  on *every* code that renders blank, which the owner reported as visibly wrong: *"all zero
+  screen values also show as a block"*, and more generally *"anything not a glyph is too strong a
+  setting."* **The current rule is the owner's list — codes 8 (Flash), 13 (Double height), 24
+  (Conceal)** — deliberately the three "set" codes only, not their "off" counterparts (9 Steady,
+  12 Normal height). Still a placeholder: the owner was explicit that they don't know the full
+  set, and the article names no codes at all.
+- **The `0x00` case is a genuine finding, not just a bad default, and is worth keeping even if
+  the artifact rule changes again:** `0x00` is simultaneously **the cleared/power-on VRAM fill
+  (§5b) and not a defined SAA5050 control code at all** — it falls through the control-code
+  switch as a no-op. So a rule keyed on "renders blank" turns an *empty screen* into solid blocks
+  edge to edge. Any future blank-cell heuristic has to account for that collision.
+  - **SAA5050 code-space map (established while fixing this, worth having recorded):**
+    **defined** = 1–9, 12, 13, 17–26, 28–31; **undefined and inert** = **0, 10, 11, 14, 15, 16,
+    27**.
+  - A control cell that hold-graphics substitutes a held mosaic glyph into is **not** a space, so
+    it draws no artifact — a refinement over "every control cell", taken from the article's own
+    wording *"instead of a space"*.
+- Toggle is meaningless without the board and when in 40-column mode; grey it out accordingly.
+
+#### CONFIRMED — the VRAM row stride really is 80, and §4's pseudocode is WRONG
+The article's warning that programs *"often make use of the left-hand and right-hand screen of
+40 characters each"* and that *"in the 80-character setting the data of both screen halves would
+disturb each other"* (§13.25.9) only makes sense if the two 40-column screens are **horizontally
+adjacent within one row** — i.e. an **80-byte row stride**, with the port-`0x30` register sliding
+a 40-wide window across it. That matches §5's own Memory/video text (*"2 screens in size, 80
+chars × 24 rows, `0x5000`–`0x577F`"*, 0x780 = 1920 = 80 × 24; pan 0–40 where 40 *"shows the 2nd
+screen to the right of the base"*) and rules out the alternative reading (a 40-byte stride with a
+linear base offset, which would scroll **vertically** by a row at offset 40, not sideways).
+- **RESOLVED 2026-08-04 — doc-only error, the code was always right.** §4's snippet said
+  `fetchAddr = videoBase + (charRow * 40) + column`; `Video.OnColumnFetch` has always used
+  `PageTable.VideoRamStart + charRow * BufferColumns + (PanX + column) % BufferColumns` with
+  `BufferColumns = 80`. **No pre-existing 40-column bug, nothing to fix.** §4's snippet is now
+  corrected. The consequence the milestone spec drew from it holds: 80-column mode needed **no
+  address remapping at all** — it is literally `PanX = 0, column = 0..79` over the same buffer.
+- Incidental corroboration from the article's §13.25.11 board diagram: **74LS283 adders**
+  (positions 7225/7226) sit beside **74LS193 counters** (7223/7224), consistent with the scroll
+  being an adder on the video column address — i.e. a genuine column offset.
+
+#### Motivation — VOLORG (owner, 2026-08-04): a want, not a requirement
+`VOLORG.BAS` (on the real owner-supplied `volorg.dsk` PDOS working disk, the fixture from the
+closed Disk I/O investigation) renders a screen that **looks better in 80 columns** but does
+**not require** it — it runs correctly on a 40-column T today. This is a fidelity /
+quality-of-life feature that **blocks nothing**, and VOLORG is not expected to issue `OUT 0,1`
+itself; on real hardware the user or a wide-screen-aware utility sets the mode and VOLORG's
+already-80-wide screen writes become fully visible. Consistent with the article's own note that
+software of the era generally did not do the switching, which is why a hardware forcing contact
+was provided.
+
+#### Also in the article, recorded for completeness
+- **Hardware forcing contact:** an input (`80 kar`, 1 kΩ pull-up) that switches to 80 columns
+  when momentarily grounded, provided for software predating the mode switch. The article
+  **advises against using it**, precisely because of the two-screen clash above. **Not worth
+  emulating** — no software drives it and it has no port. Noted only so it is not mistaken for
+  a second control path if it turns up in another source.
+- **Display quality caveat:** at 80 columns the characters are twice as narrow and the article
+  recommends a monochrome monitor; on an aerial-connected TV the text is unreadable, and on a
+  colour set the letters *"drown in the pattern of colour stripes."* Not an emulation concern,
+  but it is the authentic reason 80-column mode stayed a niche option — worth knowing before
+  treating a crisp emulated 80-column screen as "what users saw".
+- **The video RAM is a TMM 2016** — a 2 K × 8 **static** RAM, physically distinct from the eight
+  D416C dynamic chips forming main RAM (§13.25.11 diagram). **Independent confirmation of §4's
+  VRAM-only contention scope**, which rests on exactly that separation. *Minor flag:* §5b's
+  power-on-garbage entry reasons from *"it is all Dynamic ram"* — that rationale is imprecise for
+  the VRAM specifically. The **conclusion is unaffected** (SRAM also powers up with
+  indeterminate content, and the owner's observation was of VRAM directly); only the stated
+  reason needs narrowing to main RAM. Likewise §5b's held-RESET/refresh-decay note applies to
+  the DRAM, not to the video RAM.
+
+#### DECIDED — config surface (owner, 2026-08-04): a new T-only "modifications" axis
+The board gets its **own config axis in §3a: a T-only "modifications" axis** for socket/piggyback
+hardware modifications — **orthogonal** to the three-way internal-slot board (none / RAM-only /
+floppy+RAM), since a modified T can also have any of those. The article supports the shape: this
+board displaces the SAA5020 and taps nine motherboard pins, so it is a modification, not a card.
+§5a's hires overlay board plausibly joins the same axis later, though that is not decided here.
+- **Reset-to-apply**, like every other topology change.
+- **Default off.** A machine with no board fitted must be indistinguishable from today's.
+- **Unavailable (not merely off) when the model is M.**
+- Carries the `Show SAA 80-column artifacts` toggle above as a sub-option.
+
+#### Settled regardless of everything else
+**Reset default is 40 columns** (now sourced), and **every existing 40-column timing, contention
+and video regression test must pass byte-identical with the board absent.** That second point is
+the primary safety net for this milestone.
+
+#### IMPLEMENTED — machine milestone 25 / UI milestone 20, 2026-08-04
+Built to the spec in [`docs/P2000T-80col-milestone-spec.md`](P2000T-80col-milestone-spec.md).
+Regression gate held: `P2000.Machine.Tests` **678 total, 666 passed, 12 skipped, 0 failed** — the
+12 skipped and the pre-existing 615 passing unchanged; `P2000.UI.Tests` **253/253**.
+
+As built, where it differs from or resolves the spec:
+- **Config axis** is `MachineConfig.Modifications.EightyColumnBoard` +
+  `.ShowEightyColumnArtifacts`, default off / on respectively, reset-to-apply, **rejected (not
+  ignored) on a P2000M**. Config window gains a "Modifications" section between SLOT1 and
+  Monitor ROM; the artifact toggle greys out unless the board is fitted.
+- **Fetch-slot quantisation** took §4a's fallback, not the char-clock master — see §4a's
+  "Fetch-slot quantisation — AS BUILT" for the expression and the reasoning.
+- **8 rendered lanes measured not to cost glyph identity** — §4a's "Rendered lanes at 80
+  columns". One item still open for the owner: whether the coarser smoothing gradient looks
+  acceptable on screen.
+- **Ports: no conflict.** Port `0x70` had no claimant, and port `0x00`'s *write* side had none
+  either — **the keyboard registers reads on `0x00`–`0x09` only** (§5f), which is worth knowing
+  independently of this milestone. Board absent → both genuinely unclaimed → `IN 0x70` reads
+  open-bus `0xFF`, so the article's presence probe correctly reports "absent" (asserted by test
+  against the `0x00` a zero-returning stub would give).
+- **File formats:** `.cfg` **1 → 2** (new `modifications` key; **v1 still loads**, degrading to
+  "no board fitted"), `.state` **8 → 9** with `MinVersion` raised (v8 rejected) — with the board
+  fitted the stream gains a one-bool block and the generator's per-line array widens 40 → 80.
+- **Byte-identity for an unmodified machine was designed in, not hoped for:** the generator array
+  and the corruption overlay are sized from the board's *presence* (constructor parameter), so a
+  board-absent machine writes identical `.state` bytes and allocates an identical overlay.
+- **UI side:** the corrupted-cell overlay width is now **passed, not assumed** —
+  `EmulationRunner.FrameReady` gained a `corruptionWidth` argument (40, or 80 with the board
+  enabled) and `VramGridControl` a `ViewportWidth` property driving both the yellow viewport
+  rectangle and the corruption stride. In 80-column mode the rectangle correctly spans the whole
+  grid, since the pan register is held cleared. **No display-mode or crop change was needed** —
+  80-column mode does not touch the raster, so the 928×626 buffer, the (144, 98) crop, the four
+  display modes, aspect correction and the screenshot path are all untouched.
+
+#### RESOLVED — the port-`0x30` gap this milestone surfaced (2026-08-04)
+The implementation flagged that **nothing in the project registers port `0x30`** — `Video.PanX`
+is a plain settable property whose CPU-facing control had been marked unconfirmed since machine
+milestone 5, while this doc described the register as CONFIRMED with no citation. **Both halves
+are now answered:** the owner supplied the Philips manual's description (§5g — a 16-port
+write-only range `0x30`–`0x3F`, bit 7 blanks video, bits 0–6 pan), and wiring it is **machine
+milestone 26**.
+- The 80-column pan-clear behaviour was implemented **at the property**, not at a port. That
+  turns out to be the right seam: milestone 26 registers the port range and routes writes into
+  the same property, so the hold-cleared-while-80-column behaviour is inherited with no rework.
+- One interaction milestone 26 must get right: **while in 80-column mode the pan field is held
+  cleared in hardware, but bit 7 (blank) is not** — they share a register but not a fate. A write
+  of `0x80 | 25` while in 80-column mode must blank the display and still leave `PanX` at 0.
 
 ### Sound
 - 1-bit, single-channel speaker (square-wave beeper).
@@ -2215,6 +2807,21 @@ TRS-80 / Video Genie hires kits (e.g. 384×192 XOR'd over text).
 512×256 graphics card is a different machine's hardware. The T overlay board is the
 add-on emulated in MAME PR #7577.
 
+**Nor with the T's 80-column text board — THREE separate things (clarified 2026-08-04).**
+(1) **This** hires overlay board: a T add-on producing a genlocked *bitmap* layer composited
+over the still-running teletext layer. (2) The **80-column text board** (§5): a different T
+add-on that **takes over the SAA5020's socket** (the SAA5020 is desoldered and re-seated on the
+daughterboard) and substitutes doubled-rate character-timing signals so the SAA5050 — which
+stays in place — runs at 12 MHz and shows 80 teletext character columns. Still character based,
+no bitmap. (3) The **P2000M's** 512×256 graphics card: another machine entirely.
+**Both T boards leave the SAA5050 in circuit**, so unlike an earlier same-day note here
+suggested, they are not obviously mutually exclusive — but they *both* manipulate video timing
+(the overlay adds a parallel bitmap fetch; the 80-column board doubles the character cadence),
+so combining them is an unexplored interaction, not a supported combination. Treat them as
+mutually exclusive in config until someone has evidence otherwise. And note for the open item
+below: **the P2000M has no SAA5050**, so nothing about the M's video hardware can be inferred
+from either T board.
+
 ### How it fits the cycle-exact framework
 The single-master-clock tick loop absorbs it cleanly — the overlay is just another
 consumer of the SAA5020-derived master clock. Three additions:
@@ -2247,6 +2854,10 @@ consumer of the SAA5020-derived master clock. Three additions:
   these kits but is NOT confirmed for this board.
 - **Hires dot clock**, and whether enabling it perturbs teletext timing (the 80-col
   mod already shows the SAA5050 clock switches 6→12 MHz; the board may share that).
+  **Caveat added 2026-08-04:** treat that as a loose analogy, not evidence. The 80-col board
+  *replaces* the SAA5050 and may be switching a clock the SAA5020 shares (§5, open item 1) —
+  a genlocked overlay that leaves the SAA5050 in place cannot perturb teletext timing the same
+  way, or it would corrupt the very layer it composites over.
 
 ### Where the answers live
 - **MAME PR #7577** (author "Bekkie", apparently the board designer) is the best
@@ -2261,6 +2872,16 @@ consumer of the SAA5020-derived master clock. Three additions:
 ---
 
 ## 5b. Cassette drive (MDCR) — device design
+
+> **MODEL GATE — the whole of §5b is P2000T-ONLY (DECIDED 2026-08-04, owner real-hardware
+> inspection; recorded on the model-selector axis in §3a).** A real **P2000M has no MDCR
+> installed at all** — no deck, no MDCR ports, no CPOUT tape-control lines, no CPRIN cassette
+> status. Everything below (the device, both timing-policy paths, the CIP-wait boot path, the
+> `.cas` host API, the tape-capacity figures) describes the **T**, including a T fitted with a
+> RAM-only or floppy+RAM extension board — adding a floppy to a T does **not** remove its
+> cassette. When M support is undertaken (§14), instantiate no cassette device on that model
+> rather than an empty one; see §3a for the full consequence list (boot path, CPOUT fan-out,
+> hidden-not-empty UI controls).
 
 ### Boot sequence & the bare-machine cassette-wait (CONFIRMED from disassembly)
 What the monitor ROM does at startup, and why the cassette matters even on a bare machine:
@@ -2689,8 +3310,20 @@ slot abstraction must distinguish them — "slot" is not one uniform thing.
 
 Devices identified for this model: SLOT1 ROMs (BASIC, DB manager); SLOT2 I/O cards
 (comms, parallel I/O, EPROM programmer, CP/M?); internal-slot floppy/CTC (§5d/§5e); hires
-overlay (§5a) and 80-col card (bus TBD — likely internal/full-bus given video access);
-cassette/MDCR (§5b — on-board, NOT a slot).
+overlay (§5a); cassette/MDCR (§5b — on-board, NOT a slot).
+
+**CORRECTED (2026-08-04): the 80-column board is NOT a slot device and has been removed from the
+list above.** It was previously carried here as "80-col card (bus TBD — likely internal/full-bus
+given video access)" — that was wrong. Per the 1986 newsletter article (§5, and
+[`docs/P2000T-80column-board-1986-newsletter.md`](P2000T-80column-board-1986-newsletter.md)) the
+80-column modification is a **daughterboard that takes over the SAA5020's socket** — the SAA5020
+is desoldered from the CPU board, re-seated on the daughterboard, and the daughterboard plugs
+into the vacated socket — plus **nine flying leads** to five motherboard ICs, **two cut PCB
+tracks**, and an added RC network. It occupies no expansion slot, claims no slot's bus
+discipline, and is **impossible on the P2000M, which has no SAA5050 for it to drive**. Model it
+as a **T-only opt-in modification device** on §3a's modifications axis, not a slot card.
+(An earlier same-day entry here said the board replaces the *SAA5050*; that was written from a
+hedged recollection before the source scan arrived and is wrong — see §5's correction note.)
 
 ### PIN LAYOUTS
 **SLOT1 / PORT1 — CONFIRMED (memory-mapped ROM slot).** 30-contact PCB edge connector,
@@ -2977,13 +3610,23 @@ project's `0x8C`/`0x8D`/`0x90` — this manual doesn't break the FDC ports down 
 so it neither confirms nor contradicts the exact `0x90`-only vs `0x90`-`0x93` control-range
 detail already sourced from the ROM disassembly). Also confirms from the same appendix: `0x50`-
 `0x5F` = Bell (matches the sound device's port `0x50` bit 0, §5 Sound), `0x30`-`0x3F` = Video
-horizontal-scroll (matches the confirmed pan register, port `0x30`, §5 Memory/video), and `0x70`-
-`0x7F` = video wait-lock, disabling the video-CPU-disable interrupt during disk/cassette transfer
-— an existing but previously uncited mechanism worth flagging for the contention model (§4): real
-hardware apparently disables the video-memory-access-lockout interrupt during disk/tape transfers
-specifically, which this project's contention model does not currently special-case. Not
-acted on here — flagged for whoever next touches the disk/cassette transfer path to check whether
-authentic-mode contention should be suppressed during an active disk/cassette I/O burst.
+horizontal-scroll, and `0x70`-`0x7F` = video wait-lock, disabling the video-CPU-disable interrupt
+during disk/cassette transfer. **Both of those last two were UPGRADED 2026-08-04 and this
+paragraph under-read them at the time:**
+- `0x30`-`0x3F` was read here as merely "matching the confirmed pan register, port `0x30`". It was
+  also confirming the **16-port range**, which this doc then carried as a single port for months.
+  Now sourced twice — this appendix and the Philips manual (§5g).
+- `0x70`-`0x7F` was flagged as "an existing but previously uncited mechanism". **It is now cited a
+  second time, from the monitor ROM's own code:** `Cassette.asm`'s `off_M`/`on_M` bracket every
+  cassette transfer with `OUT (070h),0FFh` … `OUT (070h),0` and are commented *"turn off/on Video
+  memory access on model M — on model T this has no effect"* (§5, "Port `0x70` has a SECOND,
+  unrelated user"). So the mechanism is real, firmware already drives it, and the usage pattern is
+  known.
+- **The contention flag still stands, unacted on:** real hardware disables the
+  video-memory-access-lockout during disk/tape transfers specifically, which this project's
+  contention model does not special-case. For the T this is moot (the ROM says so itself); for
+  the M it is a genuine behaviour to model. Flagged for whoever next touches the disk/cassette
+  transfer path or starts M support.
 
 **Extension Board signal listing — CONFIRMED (2026-07-23, manual's Appendix A, PDF pp.117-119),
 matches this project's model closely, with signal NAMES now independently sourced from a second
@@ -3480,542 +4123,48 @@ monitor-ROM disassembly** (presence probe + driver command sequence), the owner'
    file's existing error/discard-dialog style. Full `P2000.UI.Tests`: 182/182 green (was 170
    before this and the preceding round).
 
-**PARTIALLY FIXED (2026-07-28) — THREE real `Upd765` bugs found via instrumentation and fixed;
-the owner's original "Disk I/O error" symptom is NOT fully closed, root cause of what remains is
-still open.** Original repro (owner-reported, 2026-07-28): 2 drives configured, 35-track SS, the
-sourced `Basic24k.bin` cartridge + boot floppy in drive 1, `volorg.dsk` in drive 2 — both
-write-enabled. Boot succeeds cleanly into "Philips Disk BASIC, release 1.6 UK, 27568 bytes
-free," but every subsequent `LOAD`/`SAVE` failed with "Disk I/O error," on any drive, regardless
-of letter. Per this entry's own prior instruction, `Upd765` was instrumented with a trace hook
-(kept in permanently as a debug aid) and driven through the real repro end-to-end (real ROM,
-real cartridge, real disk images, real keyboard input) rather than guessed at.
+**RESOLVED AND FIXED (2026-08-04) — root cause was a genuine `Upd765` timing gap; fix confirmed
+end-to-end.** Original symptom (owner-reported, 2026-07-28): after a clean boot into PDOS ("Philips
+Disk BASIC, release 1.6 UK"), every `LOAD`/`SAVE` failed with "Disk I/O error," on any drive. Three
+real `Upd765` bugs were found and fixed early on (2026-07-28) but did not fully close the symptom.
+The investigation that followed (Parts A–I, 2026-07-28 through 2026-08-04) confirmed PDOS is a
+genuine **CP/M 2.2 BDOS clone** (function codes 0x0F/0x14/0x1A = F_OPEN/F_READ/F_DMAOFF, standard
+36-byte FCB layout — see [seasip.info/Cpm/bdos.html](https://www.seasip.info/Cpm/bdos.html)), traced
+file reads down to completing correctly for 13 of every 14 sector operations, and ultimately found
+the real root cause: PDOS's FDC command always requests a wide EOT window, but for the LAST sector
+of a track the window collapses to exactly one sector, so completion fires via `Upd765.ReadData`'s
+own natural/synchronous end-of-buffer check instead of PDOS's own terminal-count write (which
+already had a settle delay). The natural-completion path had no such delay, so its interrupt could
+arrive while the CPU was still inside PDOS's semi-DMA polling loop rather than idling in its
+busy-wait loop — PDOS's redirect handler then discarded the wrong stack frame, and execution ended
+up waiting forever for a second interrupt that would never come, timing out after ~3.8M T-states.
 
-**Three real, confirmed bugs found and fixed — all only reachable through a command shape
-nothing had exercised before this: TC (Terminal Count)-forced early transfer completion.** Real
-Disk BASIC's LOAD driver requests a wide EOT window on READ DATA, takes only the one sector it
-wants, then writes the TC control-latch bit to abort the rest — legitimate real technique, but
-the ROM's own fixed-EOT boot reads always complete naturally, so this path was never exercised
-before now:
-1. **The result phase reported the EOT window's TAIL sector, not the sector actually
-   transferred** — computed from the requested length instead of bytes actually moved before TC
-   fired. Same bug also affected `WRITE DATA`'s commit (would have written the zero-initialized
-   tail of the full requested buffer, not just what was actually sent) and, preventively, the
-   FORMAT/scan paths (no confirmed real caller uses TC there yet). All fixed to bound by actual
-   bytes transferred.
-2. **`CompleteTransfer`'s ST0 was unconditionally `0x00`, never encoding the addressed
-   drive/head** the way SENSE INTERRUPT STATUS already did. Invisible for drive 1/head 0 (every
-   prior test and the ROM's own boot read use drive 1 exclusively) — broke immediately for drive
-   2 (this repro). **This was the fix that stopped an observed 14-28× identical-sector retry
-   loop outright** — the driver's own integrity check evidently treats an addressed-unit
-   mismatch in ST0 as failure and retries the same read verbatim until giving up.
-3. **TC-forced completion fired its result-ready signal SYNCHRONOUSLY inside the triggering
-   port write** — the same "lost wakeup" bug class already fixed for SEEK/RECALIBRATE (a driver
-   writes TC then HALTs waiting for the completion interrupt; completing it inline delivers and
-   consumes that interrupt before the driver ever reaches its own HALT). Fixed by deferring
-   TC-forced completion through the same deferred-completion mechanism SEEK already uses, applied
-   under both timing policies (unlike SEEK's fast-mode-only guard, since here the risk window is
-   driver-code-length, not transfer pacing).
+**Fix:** `Upd765.DeferNaturalCompletion()` — natural/synchronous end-of-transfer completions (in
+both `ReadData` and `WriteData`) now go through the same one-tick-deferred completion path as
+forced/TC completions, via a new `PendingAction.NaturalCompletion` case in `Tick()`, rather than
+completing synchronously in the same tick the buffer fills. Applied uniformly to every transfer's
+natural completion (not special-cased to track-end), matching the assumption that real silicon has
+some non-zero completion-to-interrupt delay regardless of which byte ends a transfer.
 
-**Combined effect, independently verified, not just argued for:** before these fixes, the FDC
-trace showed the directory scan repeating sector 1 forever (`1,1,1,1,1,...`, 14-28×); after all
-three fixes, it advances through all 16 directory sectors in the exact confirmed physical
-interleave order — `1,7,13,3,9,15,5,11,2,8,14,4,10,16` — matching `docs/P2000T-disk-formats.md`
-§6a's interleave finding exactly. **This is now a THIRD independent confirmation of that
-interleave pattern** (previously: the source docx's own table, and `VOLINFO.BAS`'s real text
-reconstructing correctly under it) — this time from watching a real, unmodified Z80 driver's
-actual behavior under emulation, not static disk inspection.
+**Verification:** full `P2000.Machine.Tests` suite green — 627 total, 615 passed, 12 skipped
+(retired diagnostic tests from earlier in the investigation), 0 failed. `RUN"VOLORG"` now loads and
+runs successfully end-to-end across the full owner manual repro (RESET / SYSTEM B ×2 / FILES /
+RUN"VOLORG" ×2 / FILES), confirmed by the owner on real hardware behavior parity as well as in the
+emulator.
 
-**NOT fully resolved — genuinely stuck past this point.** `LOAD "B:VOLORG"` (and separately
-`LOAD "B:VOLINFO"`, to rule out a red herring) still ends in "Disk I/O error" after the driver
-correctly scans all 16 directory sectors, including the one holding the target file's real,
-independently-verified FCB. Two hypotheses tested and DISPROVEN by direct experiment: (a) the
-result's cylinder field should echo `track+1` rather than the true 0-based cylinder, by analogy
-with `jwsformat.asm`'s confirmed off-by-one — no change either way; (b) the target FCB's own
-incidental `0xF3` first byte (the same value as the system-disk signature) confuses the driver —
-disproven, since `VOLINFO` (no `0xF3`) fails identically. **What would be needed to go further:
-a disassembly of Philips Disk BASIC's own resident LOAD driver — still not available/planned
-(owner, 2026-07-28) — showing what it does with the 256 bytes read back from each candidate
-sector.** The FDC's own command/status/data are now correct by every datasheet-derivable measure
-available without that source; whatever still fails is either a driver-internal check with no
-external signature, or a genuine PDOS-format nuance this project's model doesn't yet capture.
+Two loose ends, deliberately not chased further: plain `RESET` on the system disk also stopped
+producing "Disk I/O error" once the fix landed, which may mean this same timing bug affected more
+than just `RUN"VOLORG"` (revisits an earlier "this is correct, intentional behavior" conclusion from
+the investigation's early rounds — flagged for whoever next touches the RESET/boot path). And
+`SAVE`'s original symptom, traced separately early on, is very likely fixed by the same change (it
+touches `WriteData` identically to `ReadData`) but was not explicitly re-exercised in the final
+confirmation pass, which only ran `RUN"VOLORG"`.
 
-**SAVE traced separately (owner's own follow-up question) — a different failure shape, same
-open root cause.** `SAVE "B:TEST"` reads directory sector 1 exactly ONCE (same now-correct
-command shape) then fails immediately — it never issues SENSE DRIVE STATUS (no write-protect
-check ever runs) and never attempts a WRITE DATA. Rules out a write-protect-detection bug;
-shows SAVE's give-up threshold differs from LOAD's (one read vs. LOAD's full 16-sector search).
-
-**Second owner follow-up ("I tried a save on a clean disk, also got Disk I/O error, but it took
-longer to appear") — real, explained in SHAPE, not in root cause.** Three-way comparison, all
-ending in "Disk I/O error": `volorg.dsk` as-is (VOLORG's FCB starts `0xF3`) — SAVE reads sector 1
-once, fails immediately. A genuinely blank disk (all-zero, no `0xF3` anywhere) — SAVE scans all
-16 sectors in the same confirmed order, then fails. `volorg.dsk` with just that one `0xF3` byte
-patched to `0x00` (rest of the FCB unchanged/occupied) — ALSO scans all 16, isolating that it's
-specifically the `0xF3` byte VALUE, not occupied-vs-empty content, that makes SAVE short-circuit.
-**Very plausibly legitimate real Disk BASIC behavior, not a bug:** `0xF3` at this exact location
-is the same byte `getdos` itself checks for a system disk (§5d) — real Disk BASIC's SAVE quite
-plausibly refuses to write to what it believes is a system disk, protecting boot media, exactly
-as a real DOS would. This is the same "one genuine ambiguity in the format"
-`docs/P2000T-disk-formats.md` §7 item 8 already flagged (milestone 22a) — not a new finding, a
-newly-observed consequence of it. **Does not explain the remaining bug** — the blank-disk and
-patched-disk cases (no `0xF3` anywhere) still fail after their full scan, so this gate only
-governs how many sectors get scanned before failing, not whether the command ultimately
-succeeds.
-
-**Third owner follow-up (pushing on a banking hypothesis — "Basic24 needs at least a switchable
-bank; did you check anything landed in banked memory and the switches have real effect?") —
-chased directly, banking mechanism itself cleared, root cause still open.** A real, previously-
-unclosed test gap was found along the way: only banks 0-1 (of 6 real T102 banks) had ever been
-tested for mutual isolation — banks 2-5 never had a dedicated test; now added and passing. In
-the live repro: bank 1 holds real, recognizable Z80 ISR-setup code at `0xE000` (consistent with
-`getdos`'s own driver load target), banks 2-5 show distinct untouched power-on noise (correctly
-allocated, simply unused this session), bank 0 is all-zero (plausibly Disk BASIC's own cleared
-workspace) — no open-bus, aliasing, or cross-bank corruption. Exactly 12 real bank-select writes
-occur during a single SAVE attempt, consistent with BASIC (bank 0) repeatedly calling into the
-DOS driver (bank 1) and switching back. **Conclusion: the banking mechanism (isolation,
-persistence, real addressing effect) checks out — doesn't look like a `PageTable` bug.** Does
-NOT rule out a specific timing/ordering interaction between disk I/O and a bank switch; only a
-disassembly could confirm that. Narrows where the root cause ISN'T, not where it is.
-
-**Fourth owner follow-up (2026-08-02) — real BASIC-level ground truth sourced for the first time
-(a genuine third-party reference document, not disassembly-only reasoning), plus a live manual
-repro that both explains one prior mystery and rules out a hopeful theory for this one.** Two new
-primary sources: **"P2000 Adresboekje" (Rob Geutskens, 1986)**, a hardware/software memory-map
-booklet with a dedicated Disk BASIC/PDOS section (parsed in full, `&H6000`–`&H8A90` plus the BASIC
-token table — see the maintainer's own parsed copy), and **the official Philips "Disk BASIC"
-manual's Appendix A/B** (BASIC file commands, disk I/O procedures).
-- **Named, direct hit in the Adresboekje: `&H6091` = "Flag for Disk I/O error (see `&H69BB`)."**
-  `&H69BB` itself isn't separately documented — it falls inside `&H6900`–`&H6ED3`, glossed only as
-  "Disk BASIC's own startup routine." That range sits inside `&H6200`–`&H8A90`, which the same
-  booklet identifies as the ~8K of the interpreter **loaded from tracks 3/4/5 of the system disk
-  at boot**, not the 16K cartridge ROM — i.e. `&H69BB`'s actual code may not be in `Basic24k.bin`
-  at all. The token table separately gives real Disk-BASIC entry points for `LOAD` (`&H376F`),
-  `SAVE` (`&H3872`), `FILES` (`&H3543`), `OPEN` (`&H33D0`) — these sit in the lower address range
-  plausibly inside the ROM half, so likely ARE reachable directly from `Basic24k.bin`.
-- **The official manual's Appendix A.4 (`RESET`) states outright: "After DISK I/O ERROR the
-  statement RESET has to be given"** — i.e. this error is DOCUMENTED as a normal, recoverable
-  condition tied to disk-administration state, not necessarily an FDC-level fault. Also documents
-  `SYSTEM A`/`SYSTEM B` (set default drive) and that `RESET` is required after any diskette
-  exchange so PDOS re-reads the new disk's administration into RAM.
-- **Owner ran a manual repro directly against this, live, in the emulator (2026-08-02) — real,
-  reproducible, and it separates two distinct phenomena that were previously conflated:**
-  1. Plain `RESET` (default drive still A, the system/boot disk) → "Disk I/O error." Matches the
-     Adresboekje's own explanation exactly: a system disk's track 1 does **not** hold a normal FCB
-     index (only working disks' track 1 does) — reading it as one legitimately fails. Not a bug.
-  2. `SYSTEM B` (switch default drive to B) — **first attempt: "Disk I/O error"; the exact same
-     command run again immediately: "OK."** A real, reproducible "needs a retry" quirk on a
-     drive-switch command, most plausibly explained by the `&H6091` flag being left set (stale)
-     from the prior failed `RESET` and only clearing after being reported once — i.e. the first
-     `SYSTEM B` may be inheriting an unrelated earlier failure rather than genuinely failing itself.
-  3. `FILES` (now on drive B) correctly listed both real files (`VOLORG.BAS`, `VOLINFO.BAS`) —
-     directory scan continues to check out, consistent with everything established above.
-  4. **`RUN"VOLORG"` → "Disk I/O error" — tried a second time immediately, specifically to test
-     whether the same "retry clears it" pattern applies here too. It does NOT: identical failure
-     both times.** This cleanly rules out "stale drive-switch flag" as the explanation for the
-     original LOAD/RUN bug specifically (unlike `SYSTEM B`), while further confirming the failure
-     is downstream of a working, correctly-scanned directory and a verified-present FCB — i.e.
-     genuinely stuck in the file-transfer path itself, exactly where this entry left off above.
-- **Net effect: the `SYSTEM B` stale-retry behavior is a real, separate, minor bug worth its own
-  narrow fix** (candidate mechanism: `&H6091` not being cleared/re-evaluated at the right point
-  relative to a drive switch) **— but is now confirmed NOT to be the LOAD/RUN root cause.** The
-  original mystery is narrowed, not solved: something in the actual data-transfer stage, after FCB
-  lookup, still fails, unaffected by drive/administration state being otherwise clean.
-
-**Fifth owner follow-up (2026-08-02/03, cc-bugfix-prompt-9 dispatched to CC) — Part A RESOLVED
-(not a bug), Part B significantly NARROWED (still open).** Following directly from the fourth
-follow-up above, CC instrumented the owner's exact manual repro live (`&H6091` traced across
-`RESET`→`SYSTEM B`×2→`FILES`→`RUN"VOLORG"`×2→`FILES`) before doing any disassembly, then
-disassembled two narrow, specific regions to explain what the trace showed.
-- **Part A — `SYSTEM B`'s stale-retry quirk: CONFIRMED real, correct PDOS behavior, NOT a bug,
-  no fix needed.** Every PDOS call returns through a wrapper at `&H698D`–`&H69D5` — code that
-  lives in the ~8K disk-loaded interpreter chunk (`&H6200`–`&H8A90`), not in the 16K cartridge
-  ROM, matching the Adresboekje's own account. Reconstructed that chunk directly from
-  `diskbasic_1.6uk.dsk` (tracks 3–5, plain sequential read) and confirmed it byte-for-byte via
-  the literal string "PHILIPS DISK BASIC" landing exactly where the Adresboekje predicts
-  (`&H693D`). The wrapper reads a result/class byte PDOS's driver leaves at `&H60BB`: classes
-  `{0x02, 0x0A, 0x0B, 0x0C}` unconditionally set `&H6091=2` and jump to the error-print path
-  (`&H69BB`, matching the Adresboekje's naming exactly) regardless of whether the underlying disk
-  operation actually succeeded; class `0x1A` leaves `&H6091` completely untouched (the real
-  "stale flag persists" mechanism); anything else clears it (success). `SYSTEM B`'s own
-  drive-select call returns class `0x02` on its first call — one of the unconditional-error
-  classes — which is why the flag gets set and the error prints, with no fault at all in the
-  FDC-level directory scan underneath it. *Why* the second call returns a different class is
-  decided inside PDOS's own driver code (loaded from boot-floppy tracks 1–2, a third region not
-  yet disassembled) — flagged as out of scope for this pass, not guessed at. Consistent with the
-  manual's own "after DISK I/O ERROR the statement RESET has to be given."
-  - **Bonus: a real bug found and fixed in the investigation's own test tooling (not the
-    emulator).** `SnapshotScreenText` used a 40-byte VRAM row stride; the real layout is 80
-    bytes/row (`Video.cs`'s own `BufferColumns=80` + `PanX` windowing) — confirmed via a raw VRAM
-    hex dump showing every real line starting on an 80-byte boundary. The 40-stride bug only ever
-    exposed the first 12 of 24 real rows and happened to still look plausible for short messages,
-    which is how an earlier pass wrongly concluded "`SYSTEM B` hangs forever, prints nothing."
-    Fixed in the new `DiskIoErrorFlagTrace.cs`'s copy of the helper; **the identical helper in
-    `PdosLoadSaveRepro.cs` still has the bug** — explicitly left unfixed (out of scope), flagged
-    for whoever next touches that file.
-- **Part B — the original LOAD/RUN "Disk I/O error": FDC/CTC/interrupt emulation now PROVEN
-  entirely correct; the real gap is narrower and still open.** A full trace
-  (`Channel0InterruptDuringGapDiag.cs`, new permanent regression guard) shows CTC channel 0
-  (wired to the FDC completion interrupt) firing and delivering correctly for all 15 real READ
-  DATA completions in `RUN"VOLORG"`'s directory scan, in the confirmed interleave order — no
-  missed interrupt, no delivery bug anywhere in that layer. But after the last directory sector
-  completes, the FDC trace goes completely silent: **`RUN"VOLORG"` never attempts to read
-  VOLORG's actual file data at all**, despite its FCB being confirmed present and correctly
-  located. Execution instead falls into a hardcoded 65536-iteration busy-wait/timeout loop
-  (`docs/PDOS_wip.asm`'s `le95fh`/`le962h`) that exists to be interrupted early by a real disk
-  operation's own completion (a stack-manipulation redirect at `&H6135` installed by
-  `sub_e8c3h`) — since no operation was ever started, nothing redirects it, and it burns through
-  its full ~3.8M-T-state duration before `channel_time_out`/`sub_e943h` fires, writes the generic
-  "always error" class `0x02` into the same result byte the Part A wrapper reads, and turns off
-  the FDC motor. This is what actually prints the error, independent of whatever the directory
-  scan itself found.
-  - **What's now open (narrower than the 2026-07-28 entry's "genuinely stuck, FDC trace shows
-    everything correct"):** WHY does PDOS's own logic, immediately after successfully finding
-    VOLORG's FCB, decide NOT to proceed to reading the file's data — falling instead into a
-    busy-wait designed for "wait for an actual disk operation," not "there's nothing to wait
-    for"? That decision sits between the directory-scan dispatch and `sub_e7abh`/`le7b0h` (the
-    real file-data-read entry point) — most likely a real FCB validation/allocation-map check
-    the `volorg.dsk` fixture's FCB doesn't satisfy (a possible fixture-content issue, not
-    necessarily an emulator bug), but this is flagged, not confirmed. Needs disassembly of that
-    specific narrow region; the owner's own in-progress `docs/PDOS_wip.asm` annotation is the
-    natural next place to look.
-  - **Connects to, rather than contradicts, `FILES`'s own trailing "Disk I/O error"** (noted in
-    the fourth follow-up above): `FILES`'s directory read also genuinely succeeds and still ends
-    in the same error, suggesting the same class of bug — something downstream of a successful
-    directory operation still trips the error path, possibly `FILES`'s own end-of-listing step
-    hitting a structurally similar "expected to be interrupted, never is" gap. Not confirmed to
-    be the identical code path.
-  - **Small, separate loose end, not conflated with the main finding:** the directory scan only
-    ever reads 14 of the 16 sectors the confirmed interleave defines per track
-    (`1,7,13,3,9,15,5,11,2,8,14,4,10,16`, stopping just before sectors 6/12) — true in both
-    failing (`RUN`) and succeeding (`FILES`) cases alike, so it doesn't look like the cause of
-    the error itself. Left as its own small open question. **UN-FLAGGED (Eighth owner follow-up
-    below) — this was never a separate, unrelated curiosity. It is very likely the actual root
-    cause of the entire investigation:** the same 14-of-16 sector-advancement limitation governs
-    real file-data reads too, and is what actually stops `RUN"VOLORG"` short, long before any
-    CP/M-level EOF condition would legitimately end the read.
-
-**Sixth owner follow-up (2026-08-03, cc-bugfix-prompt-10 dispatched to CC, leaning on the owner's
-own growing `docs/PDOS_wip.asm` annotations as primary ground truth) — the "why does PDOS skip
-the file-data read" question is narrowed FURTHER, but still NOT resolved.**
-- **The dispatcher is never even asked.** A call-site-level trace (new regression test,
-  `Sube943hCallerDiag.cs`) confirms exactly one real call to `sub_e943h` for the whole
-  `RUN"VOLORG"` attempt, from `channel_time_out` (`0xE978`) — ruling out the two other candidate
-  call sites that were still open at the end of the fifth follow-up above. A second trace
-  (`DispatchFunctionCodeTraceDiag.cs`) confirms PDOS's own top-level dispatcher
-  (`CPM_entry_point`, `0xE000`) NEVER receives any function code beyond `0x0F`/`0x1A`/`0x14`
-  across all 29 dispatcher entries in the attempt — in particular, `0x39` (this investigation's
-  own working hypothesis for "the real file-data-read trigger," per `docs/PDOS_wip.asm`'s
-  `le229h`) is never sent. The directory scan simply cycles `0x1A`/`0x14` through all 14 real
-  sectors and stops — no further dispatcher entry of any kind follows, straight into the
-  busy-wait. So the failure is not a PDOS-dispatch-level branch going the wrong way; PDOS is
-  simply never asked to do anything else.
-- **Both `0x1A` and `0x14` route to the identical PDOS-side handler**, confirmed directly in
-  `docs/PDOS_wip.asm`: `le12dh`'s dispatch chain sends both (with several other codes) to
-  `le149h` → `sub_e705h`, which stashes the function code and FCB pointer and calls `sub_f2fdh`
-  (`0xF2FD`) — since PDOS's own top-level dispatcher treats `0x1A`/`0x14` identically, the real
-  per-code behavior must live inside `sub_f2fdh`. **CORRECTED below (Seventh owner follow-up) —
-  this specific claim ("identical handler") was a static read of the annotated dispatch chain,
-  never live-confirmed, and turned out to be wrong: `0x1A` and `0x14` reach `sub_f2fdh` but land
-  on two DIFFERENT jump-table targets, not a shared one.**
-- **`sub_f2fdh` is a SECOND, internal jump table, indexed by the same function code — this is
-  PDOS's actual FCB-compare/decision engine, and the concrete, narrowed location of whatever
-  decides "keep scanning" vs. "found it, transition to a real read."** Confirmed structurally
-  (computes `lf307h + 2*code`, jumps to the stored address) but NOT yet functionally — the
-  table's raw bytes currently mis-disassemble as garbage code (nothing marks that region as
-  data yet), and roughly a dozen distinct case-handler subroutines sit beyond it, unread beyond
-  confirming they exist. **None of `sub_f2fdh` or its case handlers are in the owner's own
-  `docs/PDOS_wip.asm` yet — this is CC's own raw disassembly, explicitly flagged as reaching only
-  far enough to find the jump-table shape, not to read any handler's actual behavior.** **Update
-  (Seventh owner follow-up below): this "structurally, not yet functionally" caveat was the load-
-  bearing one — the jump table's existence was real, but which targets it actually produces for
-  this repro was not yet live-confirmed when this entry was written, and the "roughly a dozen"
-  scope has since collapsed to exactly 3.**
-- **What's still open, narrower than before:** two live possibilities, not yet distinguished — (a)
-  `sub_f2fdh`'s own `C=0x14`/`C=0x1A` handlers run a real FCB-name-compare and, for this fixture's
-  actual FCB content, never signal "match found, transition to read" (the fixture-/FCB-validation
-  theory from the fifth follow-up, now localized to a specific jump table rather than "somewhere
-  in PDOS"); or (b) the handlers DO signal a match correctly, but whatever should act on that
-  (issuing `0x39` or equivalent) is a decision made on the BASIC side — the disk-loaded LOAD/RUN
-  token driver, a different code region from PDOS's own bank-1 driver, per the Part A `&H698D`-
-  `&H69D5` wrapper finding — and that decision never gets made. Disambiguating needs disassembling
-  `sub_f2fdh`'s `C=0x14`/`C=0x1A` jump targets and their sub-handlers (a dozen-plus unread
-  subroutines) — a substantial follow-on task, explicitly not attempted this pass, per this
-  project's own "narrow, don't guess" convention. **Both possibilities remain live after the
-  Seventh follow-up below — it pins down WHERE to look (3 exact addresses) but not yet WHICH of
-  (a)/(b) is true, since none of the 3 handler bodies has been read yet.**
-
-**Seventh owner follow-up (2026-08-03, cc-bugfix-prompt-11 dispatched to CC — the owner's own
-direct question, "are the un-disassembled pieces of code even being hit at all?") — live-trace
-CONFIRMS `sub_f2fdh` really is reached, but CORRECTS the Sixth follow-up's "identical handler"
-claim and re-sizes the remaining work precisely.**
-- **Result 1: execution genuinely reaches `sub_f2fdh` — confirmed by real PC observation, not
-  inference.** 30 genuine calls across the whole `RUN"VOLORG"` attempt, each verified via the
-  actual `CALL sub_f2fdh` bytes (`CD FD F2`) at the return address, applying the same
-  don't-trust-a-bare-PC-match discipline the `sub_e943h` trace already established. Answers the
-  owner's question directly: this is neither "zero, unreached" nor "a wholly different,
-  undocumented path" — the Sixth follow-up's citation of the dispatch chain into
-  `sub_e705h`/`sub_f2fdh` was directionally correct.
-- **Result 2 — corrects the Sixth follow-up's own claim: `0x14` and `0x1A` do NOT share a
-  handler.** Three distinct routing codes actually reach `sub_f2fdh` in this repro — `0x0F` (×1),
-  `0x14` (×14), `0x1A` (×15) — and each lands on its OWN distinct jump-table target: `0x0F` →
-  `0xF370`, `0x14` → `0xF3A0`, `0x1A` → `0xF3CA`. Every one of the 30 computed targets was
-  independently reconfirmed by directly observing the CPU's PC actually arrive there (30/30 —
-  not just a static table read). **This sizes the next disassembly pass at exactly 3 handler
-  addresses, not "a dozen unread subroutines"** — the dozen-plus candidate subroutine list the
-  Sixth follow-up's raw-byte read turned up remains unconfirmed as to which, if any, correspond
-  to these three targets; the targets themselves are now known precisely, their bodies are still
-  undisassembled.
-- **A genuine, flagged discrepancy, not explained away: 30 `sub_f2fdh` entries vs. the Sixth
-  follow-up's own 29 top-level dispatcher entries.** One more call reaches `sub_f2fdh` here than
-  reaches `CPM_entry_point` (`0xE000`) at the top level — meaning at least one call in this repro
-  does NOT originate from BASIC's own top-level `CALL &H6205` PDOS invocation. `sub_e705h` has a
-  second, alternate entry point (`sub_e706h`, immediately following it in `docs/PDOS_wip.asm`,
-  skipping the `ld c,a` step and assuming C is already set) — most likely explanation: PDOS's own
-  internal code calls into `sub_e706h` directly at least once, reusing the same code space for an
-  internal purpose, bypassing BASIC's dispatch entirely. Not confirmed — flagged as an open,
-  secondary thread, not chased further this pass. Relatedly, this repro's single `0x0F` arrival
-  here is confirmed NOT to come from the same `0x0F` branch the Sixth follow-up traced at the
-  top-level dispatcher (that branch's own body never calls `sub_e705h`) — so it's part of the same
-  "bypasses the top dispatcher" discrepancy, not a contradiction of the Sixth follow-up's separate
-  `0x0F` account.
-- **Net effect on the open question:** still not resolved — but now precisely scoped. The next
-  step is disassembling exactly three handler bodies at `0xF370` (`0x0F`'s target),
-  `0xF3A0` (`0x14`'s target), and `0xF3CA` (`0x1A`'s target) to determine whether they run a real
-  FCB-compare that legitimately never matches this fixture (theory (a) above) or signal a match
-  that something downstream fails to act on (theory (b)) — plus, if convenient, chasing the
-  `sub_e706h` direct-entry discrepancy as a secondary thread.
-
-**Eighth owner follow-up (2026-08-03, cc-bugfix-prompt-12 + a decisive mid-investigation
-addendum) — LIKELY RESOLVES the original "Disk I/O error" investigation. Neither of the
-Seventh follow-up's two theories was correct; a third, better-supported explanation is confirmed
-instead.**
-- **The decisive new input: PDOS's function codes are a direct CP/M 2.2 BDOS clone, not an
-  independent design.** `0x0F`/`0x14`/`0x1A` match standard CP/M 2.2 BDOS exactly — F_OPEN
-  (Open File), F_READ (Read next sequential 128-byte record), F_DMAOFF (Set DMA address)
-  ([seasip.info/Cpm/bdos.html](https://www.seasip.info/Cpm/bdos.html)) — consistent with the
-  dispatcher already being labeled `CPM_entry_point` in the existing disassembly. Real CP/M's own
-  directory-search functions (F_SFIRST/F_SNEXT, `0x11`/`0x12`) are confirmed never called here
-  (Part C/D). This reframed everything: the 14-15 physical reads every prior entry here labeled
-  "the directory scan" were never actually checked against the documented directory track/sector
-  location — `0x1A`/`0x14` alternating is the textbook CP/M idiom for reading a file's DATA, not
-  for searching a directory.
-- **Disassembly of the three handler bodies confirms this directly.** `0x0F`→`0xF370` matches
-  F_OPEN's job (locates/primes a file's working state via `sub_f2d4h`/`sub_f068h`).
-  `0x14`→`0xF3A0` is a byte-for-byte match to F_READ's own textbook shape: it reads the FCB's real
-  CP/M `CR` (current record, FCB offset `+0x20`) and `RC` (record count, offset `+0x0F`) fields
-  directly, comparing `CR < RC` (issue the next physical read) vs. `CR >= RC` (real CP/M EOF,
-  return immediately). `0x1A`→`0xF3CA` matches F_DMAOFF exactly: a pure buffer-priming operation
-  with no disk I/O of its own.
-- **Live trace confirms all three theories from the Seventh follow-up are wrong, and pins down
-  what's actually happening:**
-  - VOLORG's own FCB (confirmed real bytes on `volorg.dsk`: name `"VOLORG  "`, ext `"BAS"`,
-    record count `0x2C`=44, allocation records `{4,5,6,7,12,13,14,15,16,17,18}`) is the active FCB
-    from the very first relevant read and stays so throughout — **theory (a) (a failing FCB
-    compare) is directly disproven.**
-  - The physical FDC reads: one initial read on track 1 (the directory — F_OPEN locating
-    VOLORG's FCB), then **all 14 remaining reads target track 2 — VOLORG's OWN real data track**,
-    independently confirmed from its allocation map. The read pipeline is doing exactly the right
-    thing. **Theory (b) (a correct match nothing acts on) is also not right** — PDOS's F_READ
-    machinery is genuinely, repeatedly, successfully acting on VOLORG's real data.
-  - Tracked directly off VOLORG's FCB: **`RC` stays constant at 44 throughout (never corrupted);
-    `CR` only ever reaches 13 — nowhere near 44.** CP/M's own EOF condition (`CR>=RC`) is
-    confirmed to NEVER fire in this repro — there is no EOF condition here to mishandle at all.
-  - **The real, confirmed mechanism:** the physical-sector-read-advancement machinery underlying
-    BOTH directory reads and file-data reads shares a genuine limitation that stops exactly 2
-    sectors short of a complete 16-sector track, every time, regardless of context — and this
-    happens long before any CP/M-level EOF condition would legitimately end the read. Once that
-    limit is hit, no further FDC command is ever issued (consistent with every prior part's own
-    observation), and the hardcoded busy-wait/timeout eventually fires, producing "Disk I/O
-    error" — not a disk-content problem with `volorg.dsk`, not a dropped BASIC-side decision, but
-    this shared sector-advancement limitation.
-- **This directly UN-FLAGS the "14-of-16 sectors" loose end from the Fifth follow-up above (Part
-  B, 2026-07-28's own original observation) — it was never a separate, unrelated curiosity; it is
-  very likely the actual root cause of the entire "Disk I/O error" symptom chain across this whole
-  investigation.**
-- **`volorg.dsk` is very likely NOT a damaged/bad fixture** — the read pipeline (FCB location,
-  F_READ dispatch, physical track targeting, `CR`/`RC` bookkeeping) all work correctly right up to
-  the sector-advancement limit; nothing about VOLORG's own FCB or file content is implicated. Worth
-  telling the owner directly: the P2500/CP/M image search that prompted this whole reframing may no
-  longer be needed to rule out fixture damage — though independent confirmation is still welcome.
-  A related, real bug was also found and fixed in the investigation's OWN test tooling along the
-  way: `Upd765.CurrentTransfer.Sector`, sampled at a transfer's `COMPLETE` event, was reporting one
-  sector past the one that actually just finished (an off-by-one in how the sample point relates
-  to the already-advanced transfer-byte-count) — corrected in the new trace, not a change to
-  `Upd765` itself.
-- **What's NOT yet resolved:** the EXACT mechanism inside the shared sector-advancement code that
-  causes the 2-sector shortfall (candidate location: `leb9eh`/`sub_f447h`/the `lf555h`
-  interleave-lookup table, per a brief look this pass) — a genuinely different, much narrower
-  disassembly task than anything attempted so far, not started this pass. Also still open,
-  unchanged: the 30-vs-29 `sub_e706h` direct-entry discrepancy from the Seventh follow-up (a quick
-  recheck this pass found no additional cheap signal).
-
-**Ninth owner follow-up (2026-08-04, cc-bugfix-prompt-13) — the three candidate "2-sectors-short"
-mechanisms are ALL EXONERATED; the investigation re-narrows rather than closes.**
-- **The `lf555h` interleave table is confirmed COMPLETE, not short** — its raw bytes (read
-  correctly this time, not mis-rendered as garbage instructions) are the full 16-entry sequence
-  `1,7,13,3,9,15,5,11,2,8,14,4,10,16,6,12`; indices 14/15 genuinely hold the "missing" sectors 6
-  and 12.
-- **The table-index computation (`sub_f447h`, called from `lebe5h`/`0xEBF0` — NOT `leb9eh`'s own
-  internal check at `0xEB9E`, which is an unrelated subtraction) is a clean, UNCAPPED linear
-  counter in both the `SYSTEM B` and `RUN"VOLORG"` contexts.** Live-traced: it cleanly advances
-  `0,1,2,...,13`, carry is FALSE on every call (no boundary/underflow condition ever fires), and
-  every table byte read matches the confirmed interleave. Called 1-2 more times, this exact code
-  would correctly compute indices 14/15 and read the real sectors 6/12. **None of the three named
-  candidates contain any cap at all — this disproves Part E's own working hypothesis for where
-  the limit lives.**
-- **What this means: the "stop after 14" decision is made entirely OUTSIDE PDOS's own bank-1
-  driver code.** Combined with Part D's dispatcher trace (nothing beyond the 14th `0x14`/F_READ
-  call ever reaches PDOS — not a 15th read, not F_CLOSE, nothing) and Part E's CR/RC tracking
-  (CR stops at 13, RC stays at VOLORG's genuine 44, EOF never triggers): PDOS's driver is a
-  passive, correctly-functioning component that would read further if asked. Whatever decides to
-  stop asking lives in BASIC's own record-reading loop — a different, disk-loaded code region
-  from PDOS's own bank-1 driver (`docs/PDOS_wip.asm`) — not yet disassembled as of this entry.
-- **Owner follow-up experiment, same day: directly disproves a "VOLINFO's FCB byte 15" coincidence
-  theory.** The owner patched VOLINFO's own FCB byte 15 from `0x0E`(14) to `0x2C`(44, matching
-  VOLORG's) on a real disk image and re-ran the repro — same stop-at-14 effect, unchanged. The "14"
-  is not read from or influenced by VOLINFO's FCB at all. Also confirmed: **BASIC issues 14
-  discrete, per-record `0x1A`/`0x14` call PAIRS through the top-level dispatcher — not one bulk
-  "load the file" call that lets PDOS loop internally.** The stop decision is made on BASIC's own
-  side, between individual calls, reinforcing the "external to PDOS" conclusion via a second,
-  independent line of evidence.
-- **Does NOT resolve whether this is correct, faithful P2000 behavior or a genuine bug — still
-  open in either direction as of this entry.** VOLINFO's own real FCB byte 15 = 14 (a different
-  file that genuinely only needs 14 of its 16 allocated sectors) vs. VOLORG's own byte 15 = 44
-  (needs far more) makes an intentional 14-sector stop implausible for VOLORG specifically, but
-  why BASIC's loop would stop early regardless is not yet identified.
-- **A real instrumentation bug found and fixed along the way, not an emulator bug:** the new
-  trace's first pass read the wrong memory cell for `sub_f447h`'s subtrahend (missing a double
-  pointer indirection — `(0xF662)` holds a pointer, not the value itself), producing nonsensical
-  index values that briefly looked like a genuine out-of-bounds bug before the fix revealed it was
-  a test artifact.
-
-**Owner real-hardware corroboration (2026-08-04) — a genuine P2000M, real floppies, no errors.**
-The owner booted an actual P2000M into Disk BASIC and ran `FILES` and `LOAD "VOLORG"` from real
-floppy disks (not the `.dsk` image fixtures — content parity between the two is NOT confirmed).
-**Both completed with no errors, as expected on working hardware.** This doesn't settle the
-open question above on its own (the physical floppy's actual byte content may differ from
-`volorg.dsk`), but it's a real, independent data point weighing against "this 14-sector stop is
-correct, faithful P2000 behavior" — genuine hardware running the equivalent operation is not
-observed to fail the same way. **Owner-observed follow-up detail: watching the real drive LED
-during `FILES`, it flashes repeatedly rather than staying lit continuously** — consistent with,
-and independent physical corroboration of, Part G's own disassembly-derived conclusion that
-BASIC issues discrete, separate per-sector operations rather than one bulk multi-sector transfer.
-Real hardware genuinely behaves the discrete way the ROM disassembly says it should; this isn't
-an artifact of how the emulator's own trace tooling observes things.
-
-**Tenth owner follow-up (2026-08-04) — found and disassembled BASIC's own read loop (cartridge
-ROM, not PDOS); corrects a mid-investigation working hypothesis; re-narrows the open question
-further and pauses there at the owner's request.**
-- **The three fixed call sites in `Basic-24.bin` that issue every PDOS call for this repro are now
-  pinned down precisely:** `0x3487` (F_OPEN, once), `0x32A8` (F_READ, 14×), `0x32D0` (F_DMAOFF,
-  14×) — matching Part D's dispatcher-level counts exactly, now at real ROM addresses.
-  Disassembled directly from `Basic-24.bin` via the project's own `Z80.Disassembler` (this is
-  cartridge ROM content, fully available — unlike PDOS's disk-loaded driver).
-- **The loop structure around the two repeated call sites:** `0x323A` loads a pointer from fixed
-  cell `0x63A3`, checks a 2-byte counter at `[pointer+0x26..0x27]` — if nonzero, decrements it and
-  returns ONE BYTE from a computed position in a 256-byte buffer (a byte-by-byte program scanner,
-  not a per-sector operation). Once that counter hits zero, falls through to check a SECOND,
-  separate 2-byte counter at `[pointer+0x24..0x25]` — if that is also zero, the loop exits
-  (`0x3279`); otherwise it calls `0x327F`, which issues one real DMAOFF+READ pair to refill the
-  256-byte buffer. `0x63A3` itself is set once, inside LOAD's own setup code (`0x376F`-`0x3830`,
-  previously documented in Part B).
-- **Live-tracing the first counter CORRECTS a working hypothesis formed while reading the code
-  cold.** It is NOT "records remaining, decremented once per sector" as first assumed — it's a
-  byte-level scan counter, entered ~3300 times for the whole attempt (far more than 14). Confirmed
-  precisely: **exactly 13 full 256-byte scan cycles occur (3328 bytes total) before the loop stops
-  — not 14 —** and the last cycle ends exactly at 0, not cut short mid-buffer. Reconstructing
-  VOLORG's own real byte stream from `volorg.dsk` found no plausible "end of program" marker (no
-  null link-pointer, the usual tokenized-BASIC convention) anywhere near that 3328-byte boundary —
-  so this isn't simply "BASIC correctly found the program's real end."
-- **What's now precisely un-explained, narrower than before:** the loop's real exit condition is
-  governed by the SECOND counter (`[pointer+0x24..0x25]`), checked only once the byte-scan counter
-  empties — its live value, initial value, and update rule have not yet been traced. The exact
-  relationship between "13 full byte-scan cycles," "14 real disk sector reads" (the 14th disk read
-  fetches a sector never actually consumed by the byte-scanner before the loop exits), and this
-  second counter's own threshold is not yet reconciled.
-- **Investigation deliberately paused here, at the owner's own explicit request, to decide how to
-  continue** — not because a natural stopping point was reached.
-
-**Eleventh owner follow-up (2026-08-04, cc-bugfix-prompt-14) — LIKELY CLOSES the root-cause
-question, though not the investigation itself: this is not BASIC's loop gracefully deciding to
-stop after 14. It's a genuine hang on the 14th operation.**
-- **All three candidate exit mechanisms inside BASIC's own loop are directly disproven by live
-  trace:** the second counter (`[pointer+0x24..0x25]`, Part G's own leading candidate) is set
-  once, to 256, and never changes for the whole loop — it cannot be what triggers the exit.
-  F_READ's own EOF return value (`A=1`) never occurs — A is confirmed always `0` (success) — and
-  working through the actual branch polarity shows `A=0` makes the loop continue, not exit, so
-  this path could never have been the mechanism even if EOF had fired. A third,
-  previously-unexamined leading check inside `0x323A` itself (`[pointer+0]==3`, jumping to a
-  different ROM address) also never fires — that byte stays `1` throughout.
-- **The real reconciling fact: only 13 genuine F_READ returns are ever observed, even though 14
-  real physical disk completions were already confirmed (Part E).** Precisely timed: the last
-  genuine byte-scan loop entry happens BEFORE the 14th physical disk completion — meaning the
-  13th cycle's own completion is what triggers the 14th real disk read (genuinely issued,
-  genuinely completes at the FDC level), but that 14th call's own `CALL 6205h` never returns to
-  BASIC, ever, within any reasonable trace window.
-- **Conclusion: BASIC's own loop logic is correct — none of its three exit checks are broken.**
-  BASIC is correctly, faithfully waiting for its 14th F_READ call to return; it never does. This
-  is the SAME busy-wait/timeout mechanism already fully diagnosed at the PDOS/bank-1 level in
-  Parts B/C (`busy_wait_for_interrupt` → `channel_time_out` → `sub_e943h`) — now understood to be
-  triggered from a REAL, physically-completing 14th disk operation, not "no further command ever
-  issued" as Part E's framing suggested (accurate for the T-state window it examined, incomplete
-  for the full picture). "Disk I/O error" is a genuine hang on one specific real operation, not an
-  early, deliberate stop.
-- **Still open, now narrowed to a specific kind of question:** WHY does the 14th disk operation's
-  own completion (confirmed physically real at the FDC level) fail to deliver its
-  interrupt/redirect back into a normal return from the `CALL 6205h` that issued it, when the
-  identical mechanism worked correctly for the prior 13? This is now about the specific
-  interrupt-redirect/completion-signaling path for exactly one call, not about counters, EOF
-  checks, or loop logic. Not yet reconciled with the real-P2000M no-error result — floppy-content
-  parity with the `.dsk` fixtures is unconfirmed, so this could point to a fixture/content
-  difference, an emulator timing/interrupt bug specific to a 14th same-track sequential operation,
-  or something else entirely.
-
-**Owner follow-up (2026-08-04) — CORRECTION to this entry's own first draft (twice over: which
-disk was tested, AND how far the conclusion reaches). The second disk tested is the SYSTEM/boot
-disk itself (the one whose tracks 3-5 get loaded as PDOS's disk-loaded driver chunk, and whose
-track 1 is scanned at `RESET`/boot) — NOT a `volorg.dsk`-equivalent data disk. A second,
-independently-sourced boot disk (`.imd` format, QWERTZ keymap, evidently a different
-regional/market system-disk variant/pressing from `diskbasic_1.6uk.dsk`, the fixture this whole
-investigation's PDOS disassembly was reconstructed from since Part A) reproduces the IDENTICAL
-"Disk I/O error" symptom pattern.** **What this rules out, precisely, per the owner's own
-correction: that the BOOT/system disk specifically is a faulty/corrupted fixture** — two boot
-disks from evidently different origins (a different keyboard-layout variant implies a different
-regional pressing, not just a copy of the same file) both trigger the same failure pattern,
-meaningful corroboration that the driver code disassembled from `diskbasic_1.6uk.dsk` in Parts
-A/E/F isn't an artifact of one damaged system-disk copy. **What it does NOT rule out: `volorg.dsk`
-itself (the data disk holding VOLORG.BAS, the actual file `RUN`/`LOAD` targets throughout this
-investigation) being a bad or unrepresentative fixture — that remains exactly as open as before.**
-The two disks play different roles in the repro (one supplies the driver code that runs, the
-other supplies the file data that code reads) and testing one says nothing about the other. Also
-doesn't by itself distinguish "genuine emulator bug" from "a characteristic shared by how these
-system disks are formatted that the emulator mishandles regardless of which specific disk" —
-consistent with the eleventh follow-up's own finding that PDOS's read pipeline and BASIC's loop
-logic are both independently confirmed correct.
-
-**Confirmed (owner, 2026-07-28):** the monitor ROM is only supportive during this phase (its
-role is the initial boot/presence-probe, §5b/§5d) — Disk BASIC's own resident driver (cartridge
-+ the two system tracks loaded at boot) is what actually owns LOAD/SAVE I/O once BASIC is
-running. **Update (2026-08-04): CC has since disassembled several narrow, specific regions across
-both the disk-loaded PDOS chunk AND the cartridge ROM itself (`Basic-24.bin`) — a from-scratch
-full disassembly of either is still not planned, but targeted, live-trace-verified disassembly of
-specific mechanisms has moved the investigation from "apparently resolved" (ninth follow-up's own
-predecessor, since corrected) through "pinned to BASIC's cartridge-ROM read loop" (tenth
-follow-up) to what the eleventh follow-up above confirms is LIKELY THE ACTUAL ROOT CAUSE.**
-BASIC's own loop logic is now confirmed correct in full — all three of its candidate exit checks
-are disproven as the mechanism. **The real finding: BASIC's 14th `F_READ` call genuinely triggers
-a real, physically-completing 14th disk operation (confirmed at the FDC level) whose own
-completion signal never makes it back to that call's own `CALL 6205h` — the call simply never
-returns, and the SAME busy-wait/timeout mechanism already diagnosed in the second follow-up above
-(`channel_time_out`/`sub_e943h`) eventually fires and reports "Disk I/O error."** This is a
-genuine hang on one specific real operation, not an early or deliberate stop, and not a bug in
-PDOS's CP/M-clone F_OPEN/F_READ/F_DMAOFF handlers, sector-advancement code, or CR/RC bookkeeping
-— all of which are now confirmed correct and uncapped. **What's still open, narrowed to a
-specific kind of question: why does the 14th operation's completion signal fail to redirect back
-into a normal return, when the identical mechanism works for the prior 13?** Not yet reconciled
-with the real P2000M's no-error result from real floppies (tested during the tenth follow-up) —
-floppy-content parity with the `.dsk` fixtures used throughout this investigation remains
-unconfirmed.
+The full week-plus investigation (Parts A through I: the CP/M-clone discovery, the interleave-table
+and FCB verification work, the three exonerated candidate mechanisms, the BASIC cartridge-ROM read
+loop trace, the 14th-operation hang isolation, and the final root-cause trace) is preserved in
+[`docs/P2000T-diskio-investigation-history.md`](P2000T-diskio-investigation-history.md) for anyone
+who wants the full provenance; this section keeps only the final state.
 
 **RESOLVED AND FIXED (2026-07-30) — root cause found and confirmed via an actual observed boot:
 "JWS Dos boots perfectly now."** Three hypotheses were investigated in sequence (checksum failure;
@@ -4475,6 +4624,11 @@ Scanning is driven by **KBIEN = bit 6 (0x40) of port 0x10 (CPOUT)**:
   and the ISR parses all ten to find which keys.
 - Matrix: **10 rows (ports 0x00–0x09) × 8 columns**.
 - Scanning itself is invoked from the **IM1 / RST 38h (video 50 Hz) interrupt**.
+- **The keyboard claims these ports for READS ONLY — port `0x00` is shared (noted 2026-08-04).**
+  Its *write* side belongs to the 80-column board's mode latch (§5, `OUT 0,1` / `OUT 0,0`), so
+  `0x00` is a read/write split across two devices in the same way CPRIN (`0x20`) and CPOUT
+  (`0x10`) split by direction. Nothing conflicts today — the port dispatch registers reads and
+  writes separately — but do not treat `0x00` as keyboard-exclusive when adding devices.
 
 **Independently confirmed (2026-07-23), official Philips T&M Reference Manual, Ch3 "KEYBOARD":**
 §3.1 states the physical matrix is *"ten x-lines and 8 y-lines"* — matches the confirmed 10×8
@@ -4726,6 +4880,11 @@ physical P2000T hardware verification session — supersedes the "still to confi
   lowest common multiple, hires as slot device) and device structure — zero mention
   of contention artifacts.
 - MAME *does* model the 80-col clock switch (port 0x00 bit 0 / port 0x70 bit 0).
+  **Use it as a STRUCTURAL cross-check only (2026-08-04):** it confirms the two ports and the
+  switch's existence, but since MAME models no contention (bullet above) its 80-col *timing* is
+  not authoritative for the fetch-cadence question §5 flags as this feature's central unknown.
+  Its slot-device source may still reveal whether the board drives its own addresses or rides a
+  shared clock — worth reading alongside the owner's incoming magazine scan, not instead of it.
 - Good for: how a cycle-accurate driver is *structured*, the SAA5050 device, the
   scheduler model. Verify specifics against current source.
 
@@ -4884,6 +5043,20 @@ Two architectures hide under "cycle-accurate":
 
 ## 9. Suggested next steps / open items
 
+> **Video control register (ports `0x30`-`0x3F`) — DONE.** Implemented 2026-08-04 as **machine
+> milestone 26 / UI milestone 21** (§5g, and §3a for the config-window relayout that rode along).
+> Pan and blank are both wired for the first time; the emulator could previously do neither.
+> Still open from it: what pan values 41–127 actually do on real hardware (owner intends to test),
+> and — much less importantly — whether blanking suppresses VRAM fetches, which §5g explains is
+> nearly unobservable and affects only the corrupted-cell diagnostic overlay.
+>
+> **Do not use this document as the source of truth for milestone numbers (flagged 2026-08-04).**
+> It lags the findings logs between sync passes. The 80-column milestone spec derived "UI
+> milestone 18" from this doc's highest UI reference (17) and was wrong — `P2000.UI` CLAUDE.md
+> §14 had since grown items 18 and 19 (both 2026-07-31), so the work landed as **UI milestone
+> 20**. The machine number, 25, happened to be correct. **Take the next free number from
+> `CLAUDE_machine.md` §13 / `CLAUDE_ui.md` §14, not from here.**
+
 1. **Z80 cycle-stepped core (DECIDED: write our own in C#)** — biggest task. One
    T-state per step, full bus/pin state exposed each tick (address, data, MREQ, IORQ, RD,
    WR, M1, RFSH). Model the tick/pin design on floooh's z80.h; use Dotneteer's engine as
@@ -4906,7 +5079,26 @@ Two architectures hide under "cycle-accurate":
    - Z80 unconditional priority; collided slot → blank/black cell; per-slot, no persistence.
    - Contention only during active-display fetch slots (none in v-blank / h-blank).
 6. Implement the inverted-colour (160–255) behaviour early — needed for Ghosthunt etc.
-7. Implement 80-col clock switch (port 0x00 bit 0 / port 0x70 bit 0) once 40-col is solid.
+7. **80-col board (port 0x00 bit 0 / port 0x70 bit 0) — DONE. Implemented 2026-08-04 as machine
+   milestone 25 / UI milestone 20**; see §5's "IMPLEMENTED" and "OPEN" entries and §4a's two
+   as-built subsections. Two things did not close with it: whether the coarser 8-lane smoothing
+   gradient is acceptable on screen (owner's call), and the port-`0x30` gap §5 now flags. The
+   original item is kept below for the record.
+   Was deferred behind "once 40-col is solid"; 40-col is solid and
+   the mechanism is now sourced from the 1986 *P2000 Nieuwsbrief* article (§5, full translation
+   in [`docs/P2000T-80column-board-1986-newsletter.md`](P2000T-80column-board-1986-newsletter.md)).
+   Settled: a **T-only opt-in daughterboard** taking over the **SAA5020's** socket (not the
+   SAA5050's — see §5's correction), **impossible on the M**; a 24 MHz ÷2 → 12 MHz clock on the
+   board feeding an **LS157** that substitutes doubled-rate F6/F1/LOSE/RACK, so the **character
+   cadence goes 1→2 MHz (40→80 fetch slots per active line, each half as long) inside an
+   unchanged raster geometry**; the port latch and read-back are **both on the board** (so an
+   unmodified T must leave port `0x70` open-bus, or the article's documented software
+   presence-probe breaks); the pan register is **hardware-cleared**, not preserved; the glyph
+   path is **unchanged**; reset default is **40 columns**. Config: a new **T-only modifications
+   axis** (§3a), default off, with a `Show SAA 80-column artifacts` sub-toggle for the
+   out-of-spec control-character rendering the article documents. Fidelity feature — blocks
+   nothing (`VOLORG.BAS` merely looks better in 80 columns). Prerequisite to check first: §4's
+   fetch-address pseudocode uses a 40-byte row stride and must be 80.
 8. **Hires overlay board (defer until stock T is solid):** implement as an opt-in slot
    device — parallel bitmap fetch on the master clock, LCM-resolution compositing with
    the teletext layer, separate bitmap-RAM contention. Extract the board constants

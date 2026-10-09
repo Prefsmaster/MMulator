@@ -426,6 +426,13 @@ extension); cassette = `.cas` (primary) / `.p2000t`; config = `.cfg`; state = `.
   **copies on enqueue** (`Array.Copy` — the machine reuses the buffer immediately) into a
   `ConcurrentQueue`, playing silence on starvation and restarting the source after a stop.
   `Silk.NET.OpenAL` 2.21.0 exposes only unsafe pointer overloads, so the sink uses `fixed`/`&`.
+- **The native OpenAL library is NOT vendored — run `tools/get-openal.ps1` once per clone.**
+  It downloads OpenAL Soft into `src/P2000.UI/runtimes/<rid>/native/`, which `P2000.UI.csproj`
+  copies to the output root. Each `Content` item is guarded by `Exists(...)`, so a fresh clone
+  **builds and runs fine without it — silently, with no audio**, which is the failure mode to
+  recognise. `runtimes/` is gitignored (the Windows DLL had been committed by accident until
+  2026-08-04). On Linux use the distro's `libopenal.so.1`; on macOS the system framework is
+  picked up automatically.
 
 ---
 

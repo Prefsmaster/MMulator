@@ -18,3 +18,8 @@ tests/Z80.Tests/SingleStepTests/data/
 # Consequence to remember: a genuinely new test fixture added under assets/ will be silently
 # ignored. Commit one with `git add -f assets/<file>`.
 assets/
+
+# Native OpenAL Soft libraries: fetched by tools/get-openal.ps1, not vendored.
+# P2000.UI.csproj already guards each Content item with Exists(...), so a clone without them
+# builds fine — it just has no audio until the script is run (see P2000.UI/CLAUDE.md §9).
+src/P2000.UI/runtimes/

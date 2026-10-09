@@ -92,12 +92,22 @@ Nine commits, all pushed. In brief:
 Owner-reported. Investigated 2026-08-04 far enough to eliminate the obvious cause and name a
 concrete mechanism — see "Suggested next steps".
 
-### 2. Ghosthunt display glitches "kloppen niet" (don't look right)
-The contention glitches don't match real hardware. **Be careful with this one:** reference doc §4
-records the exact corruption mode (data bleed vs. bus contention vs. fetch suppression) as an
-OPEN question needing a logic-analyzer capture. The emulator's build-against-now default is
-"collided slot → blank/black cell". So this may not be fixable from the armchair — expect to hit
-the hardware-capture wall. Read §4's "Open: WHICH corruption mode" before investing.
+### ~~2. Ghosthunt display glitches "kloppen niet"~~ — ALREADY FIXED 2026-07-22, todo entry is stale
+**This item in `docs/todo list.md` should be struck.** The reported symptom — glitches
+concentrated in the **top ~15%** of the screen — was diagnosed and fixed: `VideoFetchUnit` was
+scheduling fetches from field-T-state 0, treating the 49-line vertical pre-roll as
+fetch-eligible, so contention was applied where real hardware does no fetching at all. 49/313 ≈
+15.7%, matching the symptom. Fixed by adding `VideoFetchUnit.VerticalBlankLines = 49` and gating
+`IsActiveLine` to lines 49–288. Full entry in `docs/CLAUDE_machine_findings_archive.md`
+(2026-07-22, "full-field framebuffer + 49-line pre-roll fetch fix").
+
+Caveat on the live log: the **2026-07-19** flag entry still live in machine §17 ends with
+"implementation-side verification and any resulting fix still outstanding" — that trailing line
+was never updated when the fix landed three days later. Don't read it as still open.
+
+What genuinely remains is **not** this bug but the cosmetic question of what a corrupted cell
+should *look* like (data bleed vs. contention vs. suppression) — see the open-questions table
+below. That one needs a logic analyzer.
 
 ### 3. CSAVE replace/append "gaat nog niet helemaal goed"
 Tape write path edge cases. Self-contained; `docs/MDCR-implementation.md` + the ms.9a findings are
@@ -190,7 +200,8 @@ tabs.
 
 ### What I would *not* start with
 
-- **Ghosthunt display glitches** — likely blocked on a logic-analyzer capture (see Known bugs #2).
+- **Ghosthunt display glitches** — already fixed (Known bugs #2); only the cosmetic
+  corruption-mode question remains, and that is blocked on a logic-analyzer capture.
 - **P2000M** — a large new axis; the T still has open polish and bugs.
 - **Tabbed config window** — UI 21's two-column layout is interim but adequate; revisit when the
   next config axis makes it awkward, not before.
